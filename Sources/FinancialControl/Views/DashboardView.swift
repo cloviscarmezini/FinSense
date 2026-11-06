@@ -40,7 +40,7 @@ public struct DashboardView: View {
                     MonthNavigatorBar(store: store)
 
                     Button {
-                        store.isAIChatPresented = true
+                        store.openAIChat()
                     } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "sparkles.bubble.fill")
@@ -84,7 +84,9 @@ public struct DashboardView: View {
                     .tint(Color(hex: "#10B981"))
 
                     Button {
-                        showImportStatementSheet = true
+                        store.requireInstalledLLM(forFeature: "Importar Extrato PDF / Relatório com IA Local") {
+                            showImportStatementSheet = true
+                        }
                     } label: {
                         Label("Importar Extrato PDF / Relatório (IA Local)", systemImage: "doc.text.magnifyingglass")
                     }
@@ -449,26 +451,32 @@ public struct DashboardView: View {
                             .font(.caption)
                         }
 
-                        ForEach(store.accounts) { account in
-                            HStack(spacing: 12) {
-                                AccountAvatarView(account: account, size: 36)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(account.name)
-                                        .font(.subheadline.weight(.semibold))
-                                    if !account.agency.isEmpty || !account.accountNumber.isEmpty {
-                                        Text("Ag: \(account.agency) • CC: \(account.accountNumber)")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
+                        if store.accounts.isEmpty {
+                            Text("Nenhuma conta cadastrada. Acesse Configurações → Contas para adicionar.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            ForEach(store.accounts) { account in
+                                HStack(spacing: 12) {
+                                    AccountAvatarView(account: account, size: 36)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(account.name)
+                                            .font(.subheadline.weight(.semibold))
+                                        if !account.agency.isEmpty || !account.accountNumber.isEmpty {
+                                            Text("Ag: \(account.agency) • CC: \(account.accountNumber)")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
                                     }
+                                    Spacer()
+                                    let bal = store.currentBalance(forAccount: account.id)
+                                    Text(BRLFormatters.currency(bal))
+                                        .font(.subheadline.bold())
+                                        .foregroundStyle(bal >= 0 ? Color.primary : Color(hex: "#EF4444"))
                                 }
-                                Spacer()
-                                let bal = store.currentBalance(forAccount: account.id)
-                                Text(BRLFormatters.currency(bal))
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(bal >= 0 ? Color.primary : Color(hex: "#EF4444"))
+                                .padding(8)
+                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
                             }
-                            .padding(8)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
                         }
                     }
                     .padding(18)

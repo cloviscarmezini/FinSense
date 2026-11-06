@@ -336,6 +336,10 @@ public struct CreateInvestmentSheet: View {
                 Button("Cancelar") { dismiss() }
                 Spacer()
                 Button("Criar Investimento") {
+                    guard !store.accounts.isEmpty else {
+                        errorMsg = "Cadastre pelo menos uma conta em Configurações → Contas antes de criar um investimento."
+                        return
+                    }
                     let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                     let cleanGroup = groupName.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !cleanName.isEmpty, !cleanGroup.isEmpty else {
@@ -454,6 +458,10 @@ public struct ContributeInvestmentSheet: View {
                 Button("Cancelar") { dismiss() }
                 Spacer()
                 Button(movementType == .deposit ? "Confirmar Aporte no Investimento" : "Confirmar Resgate") {
+                    guard !store.accounts.isEmpty else {
+                        errorMsg = "Cadastre pelo menos uma conta em Configurações → Contas antes de movimentar valores."
+                        return
+                    }
                     guard let val = BRLFormatters.parseAmount(amountText), val > 0 else {
                         errorMsg = "Informe um valor válido maior que zero."
                         return

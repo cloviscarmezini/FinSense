@@ -388,6 +388,10 @@ public struct CreateCreditContractSheet: View {
                 Button("Cancelar") { dismiss() }
                 Spacer()
                 Button("Criar \(kind.title)") {
+                    guard !store.accounts.isEmpty else {
+                        errorMsg = "Cadastre pelo menos uma conta em Configurações → Contas antes de criar um \(kind.title.lowercased())."
+                        return
+                    }
                     let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !cleanName.isEmpty else {
                         errorMsg = "Informe o nome do \(kind.title.lowercased())."

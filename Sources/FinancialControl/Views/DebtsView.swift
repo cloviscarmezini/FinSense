@@ -32,7 +32,7 @@ public struct DebtsView: View {
                     Spacer()
 
                     Button {
-                        store.isAIChatPresented = true
+                        store.openAIChat()
                     } label: {
                         Label("Perguntar à IA Local", systemImage: "sparkles.bubble.fill")
                     }
@@ -166,9 +166,11 @@ public struct DebtsView: View {
 
                 Button {
                     let question = "Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida \"\(debt.name)\"?"
-                    store.isAIChatPresented = true
-                    Task {
-                        await llmService.sendUserQuestion(question, store: store)
+                    store.requireInstalledLLM(forFeature: "Simular Prazo da Dívida '\(debt.name)' na IA Local") {
+                        store.isAIChatPresented = true
+                        Task {
+                            await llmService.sendUserQuestion(question, store: store)
+                        }
                     }
                 } label: {
                     Label("Simular Prazo na IA", systemImage: "sparkles")
@@ -475,6 +477,10 @@ public struct PayDebtNegotiationSheet: View {
                 Button("Cancelar") { dismiss() }
                 Spacer()
                 Button("Confirmar Pagamento e Remover Dívida") {
+                    guard !store.accounts.isEmpty else {
+                        errorMsg = "Cadastre uma conta em Configurações → Contas antes de registrar o pagamento."
+                        return
+                    }
                     guard let finalAmount = BRLFormatters.parseAmount(negotiatedAmountText), finalAmount > 0 else {
                         errorMsg = "Informe um valor de negociação válido."
                         return

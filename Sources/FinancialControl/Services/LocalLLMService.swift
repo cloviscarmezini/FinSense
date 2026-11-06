@@ -229,6 +229,9 @@ public final class LocalLLMService: ObservableObject {
         filterMode: StatementImportFilterMode,
         store: FinancialDataStore
     ) async -> [ParsedStatementTransaction] {
+        guard store.requireInstalledLLM(forFeature: "Análise e Importação de Relatório com LLM Local", action: {}) else {
+            return []
+        }
         isAnalyzingStatement = true
         defer { isAnalyzingStatement = false }
 
@@ -241,6 +244,9 @@ public final class LocalLLMService: ObservableObject {
         filterMode: StatementImportFilterMode,
         store: FinancialDataStore
     ) async -> [ParsedStatementTransaction] {
+        guard store.requireInstalledLLM(forFeature: "Análise e Importação de Relatório com LLM Local", action: {}) else {
+            return []
+        }
         isAnalyzingStatement = true
         defer { isAnalyzingStatement = false }
 
@@ -253,7 +259,7 @@ public final class LocalLLMService: ObservableObject {
             filterMode: filterMode
         )
 
-        let modelName = store.llmConfig.selectedModel?.displayName ?? "Motor Financeiro Local (macOS)"
+        let modelName = store.llmConfig.selectedModel?.displayName ?? "LLM Local"
         for idx in parsed.indices {
             parsed[idx].extractedDetails = "[IA Local: \(modelName)] \(parsed[idx].extractedDetails)"
         }
@@ -264,6 +270,9 @@ public final class LocalLLMService: ObservableObject {
     // MARK: - 100% Finance-Focused Local AI Chat Engine with Full Database Access
 
     public func sendUserQuestion(_ question: String, store: FinancialDataStore) async {
+        guard store.requireInstalledLLM(forFeature: "Chat Financeiro com IA Local", action: {}) else {
+            return
+        }
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 

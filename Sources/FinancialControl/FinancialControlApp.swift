@@ -106,7 +106,7 @@ public struct MainContentView: View {
                     }
 
                     Button {
-                        store.isAIChatPresented = true
+                        store.openAIChat()
                     } label: {
                         HStack {
                             Image(systemName: "sparkles.bubble.fill")
@@ -155,6 +155,9 @@ public struct MainContentView: View {
         }
         .sheet(isPresented: $store.isAIChatPresented) {
             AIChatSheetView(store: store, llmService: llmService)
+        }
+        .sheet(isPresented: $store.isLLMInstallAlertPresented) {
+            LLMInstallRequiredSheet(store: store, llmService: llmService)
         }
     }
 
@@ -226,7 +229,7 @@ public struct FinancialControlApp: App {
                 Divider()
 
                 Button("Abrir Chat com IA Local") {
-                    store.isAIChatPresented = true
+                    store.openAIChat()
                 }
                 .keyboardShortcut("k", modifiers: [.command])
             }

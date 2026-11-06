@@ -125,7 +125,9 @@ public struct TransactionsView: View {
                 .tint(Color(hex: "#10B981"))
 
                 Button {
-                    showImportSheet = true
+                    store.requireInstalledLLM(forFeature: "Importar Relatório / Extrato com IA Local") {
+                        showImportSheet = true
+                    }
                 } label: {
                     Label("Importar Relatório / Extrato (IA Local)", systemImage: "doc.text.magnifyingglass")
                 }
@@ -445,7 +447,9 @@ public struct TransactionEditorSheet: View {
 
                 if existingTransaction == nil {
                     Button {
-                        showEmbeddedStatementImporter = true
+                        store.requireInstalledLLM(forFeature: "Importar Relatório com LLM Local") {
+                            showEmbeddedStatementImporter = true
+                        }
                     } label: {
                         Label(
                             "Importar Relatório (Extrato c/ LLM Local)",
@@ -501,9 +505,25 @@ public struct TransactionEditorSheet: View {
                         }
                     }
 
-                    Picker("Conta Bancária", selection: $accountId) {
-                        ForEach(store.accounts) { acc in
-                            Text(acc.name).tag(acc.id)
+                    if store.accounts.isEmpty {
+                        HStack {
+                            Text("Nenhuma conta cadastrada.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button("Ir para Contas") {
+                                dismiss()
+                                store.selectedDestination = .settings
+                                store.selectedSettingsSection = .accounts
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    } else {
+                        Picker("Conta Bancária", selection: $accountId) {
+                            ForEach(store.accounts) { acc in
+                                Text(acc.name).tag(acc.id)
+                            }
                         }
                     }
                 }
@@ -624,7 +644,7 @@ public struct TransactionEditorSheet: View {
                 attachmentPath = existing.attachmentPath
                 attachmentName = existing.attachmentName
             } else {
-                categoryId = store.categories(for: type).first?.id ?? store.categories.first!.id
+                categoryId = store.fallbackCategoryId(for: type)
                 accountId = store.accounts.first?.id ?? UUID()
             }
         }
@@ -644,6 +664,10 @@ public struct TransactionEditorSheet: View {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             validationError = "Informe o nome da transação."
+            return
+        }
+        guard !store.accounts.isEmpty else {
+            validationError = "Cadastre pelo menos uma conta bancária em Configurações → Contas antes de lançar transações."
             return
         }
         guard let parsedAmount = BRLFormatters.parseAmount(amountText), parsedAmount > 0 else {
@@ -875,7 +899,7 @@ public struct StatementImportSheet: View {
                                 Spacer()
 
                                 Picker("", selection: Binding(
-                                    get: { item.suggestedCategoryId ?? store.categories(for: item.type).first!.id },
+                                    get: { item.suggestedCategoryId ?? store.fallbackCategoryId(for: item.type) },
                                     set: { newCatId in
                                         item.suggestedCategoryId = newCatId
                                         if let cat = store.category(for: newCatId) {
@@ -930,6 +954,10 @@ public struct StatementImportSheet: View {
                 Spacer()
 
                 Button {
+                    guard !store.accounts.isEmpty else {
+                        importSummaryMessage = "Atenção: Cadastre pelo menos uma conta bancária em Configurações → Contas antes de importar transações."
+                        return
+                    }
                     let summary = store.importParsedTransactions(
                         parsedItems,
                         intoAccountId: selectedAccountId,
