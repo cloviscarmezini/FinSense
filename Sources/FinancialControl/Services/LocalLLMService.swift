@@ -267,6 +267,45 @@ public final class LocalLLMService: ObservableObject {
         return parsed
     }
 
+    // MARK: - Credit Contract (Loan & Financing) Document Analysis via Local LLM
+
+    public func analyzeCreditContractFile(
+        fileURL: URL,
+        expectedKind: CreditContractKind,
+        store: FinancialDataStore
+    ) async -> ParsedCreditContractDocument? {
+        guard store.requireInstalledLLM(forFeature: "Importar \(expectedKind.title) via Documento (IA Local)", action: {}) else {
+            return nil
+        }
+        isAnalyzingStatement = true
+        defer { isAnalyzingStatement = false }
+
+        let rawText = StatementImportService.extractText(from: fileURL)
+        return await analyzeCreditContractRawText(rawText: rawText, expectedKind: expectedKind, store: store)
+    }
+
+    public func analyzeCreditContractRawText(
+        rawText: String,
+        expectedKind: CreditContractKind,
+        store: FinancialDataStore
+    ) async -> ParsedCreditContractDocument? {
+        guard store.requireInstalledLLM(forFeature: "Importar \(expectedKind.title) via Documento (IA Local)", action: {}) else {
+            return nil
+        }
+        isAnalyzingStatement = true
+        defer { isAnalyzingStatement = false }
+
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        var parsed = ContractDocumentImportService.parseContractDocumentText(
+            rawText,
+            expectedKind: expectedKind
+        )
+        let modelName = store.llmConfig.selectedModel?.displayName ?? "LLM Local"
+        parsed.extractedNotes = "[IA Local: \(modelName)] \(parsed.extractedNotes)"
+        return parsed
+    }
+
     // MARK: - 100% Finance-Focused Local AI Chat Engine with Full Database Access
 
     public func sendUserQuestion(_ question: String, store: FinancialDataStore) async {

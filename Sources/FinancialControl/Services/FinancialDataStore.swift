@@ -1032,10 +1032,12 @@ public final class FinancialDataStore: ObservableObject {
     public func createCreditContract(
         kind: CreditContractKind,
         name: String,
+        contractNumber: String? = nil,
         loanSubtype: LoanSubtype? = .consignado,
         financingSubtype: FinancingSubtype? = .imovel,
         amortizationSystem: AmortizationSystem = .price,
         totalContractedAmount: Double,
+        outstandingBalance: Double? = nil,
         installmentAmount: Double,
         billingDay: Int,
         totalInstallments: Int,
@@ -1043,24 +1045,30 @@ public final class FinancialDataStore: ObservableObject {
         startDate: Date?,
         accountId: UUID,
         notes: String = "",
-        referenceDate: Date = Date()
+        referenceDate: Date = Date(),
+        overridePastInstallmentsCount: Int? = nil,
+        overrideFirstFutureBillingDate: Date? = nil
     ) -> CreditContract {
         let creditCategoryId = fallbackCategoryId(for: .expense, matchingSubstring: "Empréstimos")
 
-        let scheduleInfo = computePastInstallmentsAndFirstFutureDate(
+        let computedSchedule = computePastInstallmentsAndFirstFutureDate(
             startDate: startDate,
             billingDay: billingDay,
             totalInstallments: totalInstallments,
             referenceDate: referenceDate
         )
+        let pastCount = min(max(overridePastInstallmentsCount ?? computedSchedule.pastInstallmentsCount, 0), totalInstallments)
+        let firstFutureDate = overrideFirstFutureBillingDate ?? computedSchedule.firstFutureBillingDate
 
         let contract = CreditContract(
             kind: kind,
             name: name,
+            contractNumber: contractNumber,
             loanSubtype: kind == .loan ? (loanSubtype ?? .consignado) : nil,
             financingSubtype: kind == .financing ? (financingSubtype ?? .imovel) : nil,
             amortizationSystem: amortizationSystem,
             totalContractedAmount: totalContractedAmount,
+            outstandingBalance: outstandingBalance,
             installmentAmount: installmentAmount,
             billingDay: billingDay,
             totalInstallments: totalInstallments,
@@ -1068,17 +1076,17 @@ public final class FinancialDataStore: ObservableObject {
             startDate: startDate,
             accountId: accountId,
             categoryId: creditCategoryId,
-            pastInstallmentsElapsedAtCreation: scheduleInfo.pastInstallmentsCount,
+            pastInstallmentsElapsedAtCreation: pastCount,
             notes: notes
         )
         contracts.append(contract)
 
         // Gera APENAS as transações futuras a partir da data atual e dia da cobrança
-        let remainingToCreate = max(totalInstallments - scheduleInfo.pastInstallmentsCount, 0)
+        let remainingToCreate = max(totalInstallments - pastCount, 0)
         for offset in 0..<remainingToCreate {
-            let installmentNumber = scheduleInfo.pastInstallmentsCount + offset + 1
-            let dueDate = calendar.date(byAdding: .month, value: offset, to: scheduleInfo.firstFutureBillingDate)
-                ?? scheduleInfo.firstFutureBillingDate
+            let installmentNumber = pastCount + offset + 1
+            let dueDate = calendar.date(byAdding: .month, value: offset, to: firstFutureDate)
+                ?? firstFutureDate
             let tx = FinancialTransaction(
                 name: "\(name) - Parcela \(installmentNumber)/\(totalInstallments)",
                 details: "\(contract.kind.title) (\(contract.subtypeDisplayName)) • Juros \(String(format: "%.2f", monthlyInterestRate))% a.m.",
@@ -1101,6 +1109,18 @@ public final class FinancialDataStore: ObservableObject {
         sortTransactions()
         save()
         return contract
+    }
+
+    /// Retorna o Saldo Devedor atual do contrato (informado/extraído do documento menos amortizações extras, ou calculado a valor presente)
+    public func currentOutstandingBalance(for contract: CreditContract) -> Double {
+        guard !contract.isSettled else { return 0.0 }
+        if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
+            let paidInApp = transactions.filter { $0.linkedContractId == contract.id && $0.isPaid && $0.installmentIndex != nil }.count
+            let estimatedPrincipalPerInstallment = explicitBalance / Double(max(contract.totalInstallments - contract.pastInstallmentsElapsedAtCreation, 1))
+            let reducedByPaidInstallments = Double(paidInApp) * estimatedPrincipalPerInstallment
+            return max(explicitBalance - contract.extraAmortizedTotal - reducedByPaidInstallments, 0.0)
+        }
+        return projectedPayoffAmount(for: contract)
     }
 
     public func unpaidTransactions(forContract contractId: UUID) -> [FinancialTransaction] {

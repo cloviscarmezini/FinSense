@@ -612,6 +612,7 @@ public enum BRLFormatters {
     public static func parseAmount(_ text: String) -> Double? {
         let cleaned = text
             .replacingOccurrences(of: "R$", with: "")
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if cleaned.isEmpty { return nil }
 
@@ -627,6 +628,28 @@ public enum BRLFormatters {
         } else {
             return Double(cleaned)
         }
+    }
+
+    /// Formata qualquer entrada digitada mantendo apenas números e aplicando máscara de moeda Real (Ex: "450981" -> "R$ 4.509,81")
+    public static func formatCurrencyMaskedInput(_ rawText: String) -> String {
+        let digitsOnly = rawText.filter { $0.isNumber }
+        guard !digitsOnly.isEmpty else { return "" }
+        // Remove zeros à esquerda em excesso
+        let trimmedDigits = String(digitsOnly.drop(while: { $0 == "0" }))
+        if trimmedDigits.isEmpty {
+            return currency(0.0)
+        }
+        // Limita a 14 dígitos para evitar overflow (até R$ 999.999.999.999,99)
+        let safeDigits = String(trimmedDigits.prefix(14))
+        guard let cents = UInt64(safeDigits) else { return currency(0.0) }
+        let value = Double(cents) / 100.0
+        return currency(value)
+    }
+
+    /// Filtra apenas dígitos inteiros para campos de quantidade de parcelas / meses
+    public static func formatDigitsOnly(_ rawText: String, maxDigits: Int = 4) -> String {
+        let digits = rawText.filter { $0.isNumber }
+        return String(digits.prefix(maxDigits))
     }
 }
 

@@ -620,10 +620,12 @@ public struct CreditContract: Identifiable, Codable, Hashable {
     public var id: UUID
     public var kind: CreditContractKind
     public var name: String
+    public var contractNumber: String?
     public var loanSubtype: LoanSubtype?
     public var financingSubtype: FinancingSubtype?
     public var amortizationSystem: AmortizationSystem
     public var totalContractedAmount: Double
+    public var outstandingBalance: Double?
     public var installmentAmount: Double
     public var billingDay: Int
     public var totalInstallments: Int
@@ -645,10 +647,12 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         id: UUID = UUID(),
         kind: CreditContractKind,
         name: String,
+        contractNumber: String? = nil,
         loanSubtype: LoanSubtype? = .consignado,
         financingSubtype: FinancingSubtype? = nil,
         amortizationSystem: AmortizationSystem = .price,
         totalContractedAmount: Double,
+        outstandingBalance: Double? = nil,
         installmentAmount: Double,
         billingDay: Int,
         totalInstallments: Int,
@@ -669,10 +673,12 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.id = id
         self.kind = kind
         self.name = name
+        self.contractNumber = contractNumber
         self.loanSubtype = loanSubtype
         self.financingSubtype = financingSubtype
         self.amortizationSystem = amortizationSystem
         self.totalContractedAmount = abs(totalContractedAmount)
+        self.outstandingBalance = outstandingBalance.map { abs($0) }
         self.installmentAmount = abs(installmentAmount)
         self.billingDay = min(max(billingDay, 1), 31)
         self.totalInstallments = max(totalInstallments, 1)
