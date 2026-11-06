@@ -501,11 +501,15 @@ public struct TransactionEditorSheet: View {
 
             Form {
                 Section("Dados Principais") {
-                    TextField("Nome (Ex: Supermercado Delta, Salário, Condomínio)", text: $name)
+                    BorderedTextField(
+                        label: "Nome da Transação",
+                        placeholder: "Ex: Supermercado Delta, Salário, Condomínio",
+                        text: $name
+                    )
 
-                    HStack(spacing: 14) {
-                        TextField(
-                            type == .expense && recurrenceMode == .installment
+                    HStack(alignment: .bottom, spacing: 14) {
+                        BRLCurrencyTextField(
+                            label: type == .expense && recurrenceMode == .installment
                                 ? "Valor Cheio Total (R$)"
                                 : "Valor (R$)",
                             text: $amountText
@@ -514,7 +518,11 @@ public struct TransactionEditorSheet: View {
                         DatePicker("Data", selection: $date, displayedComponents: [.date])
                     }
 
-                    TextField("Detalhes / Observações (Opcional)", text: $details)
+                    BorderedTextField(
+                        label: "Detalhes / Observações (Opcional)",
+                        placeholder: "Ex: Compras da semana, NF, observação",
+                        text: $details
+                    )
                 }
 
                 Section("Classificação e Conta") {
@@ -558,10 +566,11 @@ public struct TransactionEditorSheet: View {
                         .pickerStyle(.segmented)
 
                         if recurrenceMode == .installment {
-                            Stepper(
-                                "Número de Parcelas: \(installmentsOrMonthsCount)x",
+                            EditableIntegerStepperField(
+                                label: "Quantidade de Parcelas (Digite ou ajuste)",
                                 value: $installmentsOrMonthsCount,
-                                in: 2...72
+                                range: 2...240,
+                                unitSuffix: "parcelas"
                             )
                             if let totalVal = BRLFormatters.parseAmount(amountText), totalVal > 0 {
                                 let perInstallment = totalVal / Double(installmentsOrMonthsCount)
@@ -570,10 +579,11 @@ public struct TransactionEditorSheet: View {
                                     .foregroundStyle(.secondary)
                             }
                         } else if recurrenceMode == .repeated {
-                            Stepper(
-                                "Repetir por \(installmentsOrMonthsCount) meses",
+                            EditableIntegerStepperField(
+                                label: "Quantidade de Meses em Repetir (Digite ou ajuste)",
                                 value: $installmentsOrMonthsCount,
-                                in: 2...60
+                                range: 2...240,
+                                unitSuffix: "meses"
                             )
                             if let monthlyVal = BRLFormatters.parseAmount(amountText), monthlyVal > 0 {
                                 Text("O mesmo valor de \(BRLFormatters.currency(monthlyVal)) será repetido por \(installmentsOrMonthsCount) meses consecutivos.")
@@ -654,7 +664,7 @@ public struct TransactionEditorSheet: View {
                 type = existing.type
                 name = existing.name
                 details = existing.details
-                amountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: existing.amount)) ?? String(format: "%.2f", existing.amount)
+                amountText = BRLFormatters.currency(existing.amount)
                 date = existing.date
                 isPaid = existing.isPaid
                 categoryId = existing.categoryId

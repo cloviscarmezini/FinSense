@@ -283,8 +283,15 @@ public struct DebtEditorSheet: View {
 
             Form {
                 Section("Identificação e Valor") {
-                    TextField("Nome da Dívida (Ex: Cartão Mercado Pago)", text: $name)
-                    TextField("Valor da Dívida (R$)", text: $originalAmountText)
+                    BorderedTextField(
+                        label: "Nome da Dívida",
+                        placeholder: "Ex: Cartão Mercado Pago",
+                        text: $name
+                    )
+                    BRLCurrencyTextField(
+                        label: "Valor da Dívida (R$)",
+                        text: $originalAmountText
+                    )
 
                     Toggle("Informar data em que contraiu a dívida (Opcional)", isOn: $hasContractedDate)
                     if hasContractedDate {
@@ -337,7 +344,11 @@ public struct DebtEditorSheet: View {
                 }
 
                 Section("Observações (Opcional)") {
-                    TextField("Ex: Aguardando campanha de desconto para pagamento à vista", text: $notes)
+                    BorderedTextField(
+                        label: "Observações",
+                        placeholder: "Ex: Aguardando campanha de desconto para pagamento à vista",
+                        text: $notes
+                    )
                 }
             }
             .formStyle(.grouped)
@@ -394,7 +405,7 @@ public struct DebtEditorSheet: View {
         .onAppear {
             if let existing = existingDebt {
                 name = existing.name
-                originalAmountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: existing.originalAmount)) ?? String(format: "%.2f", existing.originalAmount)
+                originalAmountText = BRLFormatters.currency(existing.originalAmount)
                 if let cd = existing.contractedDate {
                     hasContractedDate = true
                     contractedDate = cd
@@ -478,8 +489,10 @@ public struct PayDebtNegotiationSheet: View {
                             .font(.headline)
                     }
 
-                    TextField("Valor da Negociação (R$)", text: $negotiatedAmountText)
-                        .font(.system(size: 15, weight: .bold))
+                    BRLCurrencyTextField(
+                        label: "Valor da Negociação (R$)",
+                        text: $negotiatedAmountText
+                    )
 
                     if abs(discount) > 0.01 {
                         HStack {
@@ -526,12 +539,11 @@ public struct PayDebtNegotiationSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 520, height: 430)
+        .frame(width: 520, height: 450)
         .onAppear {
             selectedAccountId = store.accounts.first?.id ?? UUID()
             // Vem preenchido inicialmente com o valor original!
-            negotiatedAmountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: debt.originalAmount))
-                ?? String(format: "%.2f", debt.originalAmount)
+            negotiatedAmountText = BRLFormatters.currency(debt.originalAmount)
         }
     }
 }

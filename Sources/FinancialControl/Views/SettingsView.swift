@@ -838,7 +838,7 @@ public struct AccountEditorSheet: View {
     @State private var customImagePath: String? = nil
     @State private var showRemoveImageConfirmation: Bool = false
     @State private var colorHex: String = "#EC7000"
-    @State private var initialBalanceText: String = "0,00"
+    @State private var initialBalanceText: String = "R$ 0,00"
     @State private var agency: String = ""
     @State private var accountNumber: String = ""
     @State private var errorMsg: String? = nil
@@ -850,11 +850,26 @@ public struct AccountEditorSheet: View {
 
             Form {
                 Section("Dados da Conta") {
-                    TextField("Nome da Conta (Ex: Itaú Unibanco, Nubank, Santander)", text: $name)
-                    HStack(spacing: 12) {
-                        TextField("Saldo Inicial (R$)", text: $initialBalanceText)
-                        TextField("Agência (Opcional)", text: $agency)
-                        TextField("Conta (Opcional)", text: $accountNumber)
+                    BorderedTextField(
+                        label: "Nome da Conta",
+                        placeholder: "Ex: Itaú Unibanco, Nubank, Santander",
+                        text: $name
+                    )
+                    HStack(alignment: .bottom, spacing: 12) {
+                        BRLCurrencyTextField(
+                            label: "Saldo Inicial (R$)",
+                            text: $initialBalanceText
+                        )
+                        BorderedTextField(
+                            label: "Agência (Opcional)",
+                            placeholder: "Ex: 0001",
+                            text: $agency
+                        )
+                        BorderedTextField(
+                            label: "Conta (Opcional)",
+                            placeholder: "Ex: 12345-6",
+                            text: $accountNumber
+                        )
                     }
                 }
 
@@ -988,7 +1003,7 @@ public struct AccountEditorSheet: View {
                 selectedPresetId = existing.bankPresetId
                 customImagePath = existing.customImagePath
                 colorHex = existing.colorHex
-                initialBalanceText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: existing.initialBalance)) ?? "0,00"
+                initialBalanceText = BRLFormatters.currency(existing.initialBalance)
                 agency = existing.agency
                 accountNumber = existing.accountNumber
             }

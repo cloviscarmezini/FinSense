@@ -142,9 +142,9 @@ public struct MainContentView: View {
                 case .investments:
                     InvestmentsView(store: store)
                 case .loans:
-                    LoansAndFinancingsView(store: store, kind: .loan)
+                    LoansAndFinancingsView(store: store, llmService: llmService, kind: .loan)
                 case .financings:
-                    LoansAndFinancingsView(store: store, kind: .financing)
+                    LoansAndFinancingsView(store: store, llmService: llmService, kind: .financing)
                 case .debts:
                     DebtsView(store: store, llmService: llmService)
                 case .settings:
@@ -188,8 +188,9 @@ public struct FinancialControlApp: App {
             MainContentView(store: store, llmService: llmService)
                 .frame(minWidth: 1120, minHeight: 740)
                 .onAppear {
-                    // Garante que uma cópia em PDF do extrato anexo esteja disponível na pasta do usuário para testes
+                    // Garante que cópias em PDF dos documentos anexos estejam disponíveis na pasta do usuário
                     _ = SampleItauStatementData.ensureSamplePDFExists(in: store.storageDirectory)
+                    SampleContractDocumentsData.ensureSampleContractPDFsExist(in: store.storageDirectory)
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 }
         }

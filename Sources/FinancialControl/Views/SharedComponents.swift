@@ -293,3 +293,204 @@ public struct MetricCardView: View {
         )
     }
 }
+
+// MARK: - Visible Bordered Text Input, BRL Currency Masked Input & Editable Integer Stepper
+
+public struct BorderedTextField: View {
+    public let label: String?
+    public let placeholder: String
+    @Binding public var text: String
+    public var suffix: String? = nil
+
+    public init(
+        label: String? = nil,
+        placeholder: String,
+        text: Binding<String>,
+        suffix: String? = nil
+    ) {
+        self.label = label
+        self.placeholder = placeholder
+        self._text = text
+        self.suffix = suffix
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if let label, !label.isEmpty {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                TextField(placeholder, text: $text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13.5))
+
+                if let suffix, !suffix.isEmpty {
+                    Text(suffix)
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.primary.opacity(0.32), lineWidth: 1.2)
+            )
+        }
+    }
+}
+
+/// Input monetário com borda visível, permitindo apenas números e aplicando máscara automática de Real (R$ 1.234,56)
+public struct BRLCurrencyTextField: View {
+    public let label: String
+    @Binding public var text: String
+    public var placeholder: String
+
+    public init(
+        label: String,
+        text: Binding<String>,
+        placeholder: String = "R$ 0,00"
+    ) {
+        self.label = label
+        self._text = text
+        self.placeholder = placeholder
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if !label.isEmpty {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                Text("R$")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.accentColor.opacity(0.14))
+                    )
+                    .foregroundStyle(Color.accentColor)
+
+                TextField(placeholder, text: $text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    .onChange(of: text) { _, newValue in
+                        let formatted = BRLFormatters.formatCurrencyMaskedInput(newValue)
+                        if formatted != newValue {
+                            text = formatted
+                        }
+                    }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.primary.opacity(0.32), lineWidth: 1.2)
+            )
+        }
+    }
+}
+
+/// Campo numérico com borda visível que permite digitar manualmente números inteiros (ex: quantidade de parcelas ou meses) + Stepper
+public struct EditableIntegerStepperField: View {
+    public let label: String
+    @Binding public var value: Int
+    public let range: ClosedRange<Int>
+    public var unitSuffix: String
+
+    @State private var textValue: String = ""
+
+    public init(
+        label: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        unitSuffix: String = "x"
+    ) {
+        self.label = label
+        self._value = value
+        self.range = range
+        self.unitSuffix = unitSuffix
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if !label.isEmpty {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    TextField("\(range.lowerBound)", text: $textValue)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .frame(minWidth: 46)
+                        .onChange(of: textValue) { _, newValue in
+                            let digits = BRLFormatters.formatDigitsOnly(newValue, maxDigits: 4)
+                            if digits != newValue {
+                                textValue = digits
+                            }
+                            if let parsed = Int(digits) {
+                                let clamped = min(max(parsed, range.lowerBound), range.upperBound)
+                                if value != clamped {
+                                    value = clamped
+                                }
+                            }
+                        }
+
+                    if !unitSuffix.isEmpty {
+                        Text(unitSuffix)
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(Color.primary.opacity(0.32), lineWidth: 1.2)
+                )
+
+                Stepper(
+                    "",
+                    value: Binding(
+                        get: { value },
+                        set: { newVal in
+                            let clamped = min(max(newVal, range.lowerBound), range.upperBound)
+                            value = clamped
+                            textValue = "\(clamped)"
+                        }
+                    ),
+                    in: range
+                )
+                .labelsHidden()
+            }
+        }
+        .onAppear {
+            textValue = "\(value)"
+        }
+        .onChange(of: value) { _, newVal in
+            let str = "\(newVal)"
+            if textValue != str {
+                textValue = str
+            }
+        }
+    }
+}

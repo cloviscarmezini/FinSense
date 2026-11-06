@@ -280,7 +280,7 @@ public struct CreateInvestmentSheet: View {
     @State private var name: String = ""
     @State private var groupName: String = ""
     @State private var investmentAccountId: UUID = UUID()
-    @State private var initialBalanceText: String = "0,00"
+    @State private var initialBalanceText: String = "R$ 0,00"
     @State private var showInConsolidated: Bool = true
     @State private var iconSymbol: String = "chart.line.uptrend.xyaxis"
     @State private var colorHex: String = "#10B981"
@@ -296,7 +296,11 @@ public struct CreateInvestmentSheet: View {
 
             Form {
                 Section("Identificação e Grupo") {
-                    TextField("Grupo (Ex: Caixinha Itaú, CDB Santander, Tesouro Direto)", text: $groupName)
+                    BorderedTextField(
+                        label: "Grupo do Investimento",
+                        placeholder: "Ex: Caixinha Itaú, CDB Santander, Tesouro Direto",
+                        text: $groupName
+                    )
                     if !store.investmentGroups.isEmpty {
                         HStack {
                             Text("Grupos existentes:")
@@ -311,7 +315,11 @@ public struct CreateInvestmentSheet: View {
                             }
                         }
                     }
-                    TextField("Nome do Investimento (Ex: Cofrinho Reserva, CDB Liquidez Diária)", text: $name)
+                    BorderedTextField(
+                        label: "Nome do Investimento",
+                        placeholder: "Ex: Cofrinho Reserva, CDB Liquidez Diária",
+                        text: $name
+                    )
                 }
 
                 Section("Conta Vinculada e Saldo Inicial") {
@@ -320,7 +328,10 @@ public struct CreateInvestmentSheet: View {
                             Text(acc.name).tag(acc.id)
                         }
                     }
-                    TextField("Saldo Inicial já investido (R$)", text: $initialBalanceText)
+                    BRLCurrencyTextField(
+                        label: "Saldo Inicial já investido (R$)",
+                        text: $initialBalanceText
+                    )
                     Toggle("Exibir no consolidado geral", isOn: $showInConsolidated)
                 }
 
@@ -340,7 +351,11 @@ public struct CreateInvestmentSheet: View {
                                 }
                         }
                     }
-                    TextField("Observações (Ex: 100% do CDI, liquidez diária)", text: $notes)
+                    BorderedTextField(
+                        label: "Observações (Opcional)",
+                        placeholder: "Ex: 100% do CDI, liquidez diária",
+                        text: $notes
+                    )
                 }
             }
             .formStyle(.grouped)
@@ -441,7 +456,10 @@ public struct ContributeInvestmentSheet: View {
                     }
                     .pickerStyle(.segmented)
 
-                    TextField("Valor (R$)", text: $amountText)
+                    BRLCurrencyTextField(
+                        label: "Valor (R$)",
+                        text: $amountText
+                    )
                     DatePicker("Data", selection: $date, displayedComponents: [.date])
                 }
 
@@ -462,7 +480,11 @@ public struct ContributeInvestmentSheet: View {
                         }
                     }
 
-                    TextField("Observação (Opcional)", text: $notes)
+                    BorderedTextField(
+                        label: "Observação (Opcional)",
+                        placeholder: "Ex: Aporte mensal, resgate parcial",
+                        text: $notes
+                    )
                 }
             }
             .formStyle(.grouped)

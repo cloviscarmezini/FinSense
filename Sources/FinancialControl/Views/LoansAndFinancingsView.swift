@@ -2,21 +2,25 @@ import SwiftUI
 
 public struct LoansAndFinancingsView: View {
     @ObservedObject public var store: FinancialDataStore
+    @ObservedObject public var llmService: LocalLLMService
     public let kind: CreditContractKind
 
     @State private var showCreateSheet: Bool = false
+    @State private var showImportDocumentSheet: Bool = false
     @State private var contractToAmortize: CreditContract? = nil
     @State private var contractToSettle: CreditContract? = nil
     @State private var contractPendingDeletion: CreditContract? = nil
 
-    public init(store: FinancialDataStore, kind: CreditContractKind) {
+    public init(store: FinancialDataStore, llmService: LocalLLMService, kind: CreditContractKind) {
         self.store = store
+        self.llmService = llmService
         self.kind = kind
     }
 
     public var body: some View {
         let activeList = store.activeContracts(for: kind)
         let settledList = store.settledContracts(for: kind)
+        let totalOutstandingBalance = activeList.reduce(0.0) { $0 + store.currentOutstandingBalance(for: $1) }
         let totalNominal = activeList.reduce(0.0) { $0 + store.remainingNominalAmount(for: $1) }
         let totalProjectedPayoff = activeList.reduce(0.0) { $0 + store.projectedPayoffAmount(for: $1) }
         let totalSavingsOnPayoff = max(totalNominal - totalProjectedPayoff, 0)
@@ -24,19 +28,28 @@ public struct LoansAndFinancingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 // Header
-                HStack(alignment: .center) {
+                HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(kind == .loan ? "Gestão de Empréstimos" : "Gestão de Financiamentos (Imóvel e Carro)")
                             .font(.system(size: 26, weight: .bold, design: .rounded))
                         Text(
                             kind == .loan
-                                ? "Controle consignados e empréstimos com cálculo de amortização, projeção de quitação e geração inteligente apenas de parcelas futuras"
-                                : "Controle financiamentos de Imóvel e Carro com cálculo de amortização, projeção de quitação e parcelas futuras"
+                                ? "Controle consignados e empréstimos, importe documentos com IA Local, acompanhe o Saldo Devedor e amortize parcelas"
+                                : "Controle financiamentos de Imóvel e Carro, importe demonstrativos com IA Local, acompanhe o Saldo Devedor e projeções"
                         )
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     }
                     Spacer()
+
+                    Button {
+                        store.requireInstalledLLM(forFeature: "Importar \(kind.title) via Documento (IA Local)") {
+                            showImportDocumentSheet = true
+                        }
+                    } label: {
+                        Label("Importar Documento (IA Local)", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .buttonStyle(.bordered)
 
                     Button {
                         showCreateSheet = true
@@ -48,19 +61,27 @@ public struct LoansAndFinancingsView: View {
                 }
 
                 // KPI Cards
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
                     MetricCardView(
-                        title: "Saldo Nominal das Parcelas Futuras",
-                        value: BRLFormatters.currency(totalNominal),
+                        title: "Saldo Devedor Atual",
+                        value: BRLFormatters.currency(totalOutstandingBalance),
                         subtitle: "\(activeList.count) \(kind.title.lowercased())(s) ativo(s)",
+                        icon: "exclamationmark.shield.fill",
+                        tint: Color(hex: "#EF4444")
+                    )
+
+                    MetricCardView(
+                        title: "Soma Nominal das Parcelas",
+                        value: BRLFormatters.currency(totalNominal),
+                        subtitle: "Total das parcelas futuras a vencer",
                         icon: kind == .loan ? "banknote.fill" : "house.and.flag.fill",
                         tint: kind == .loan ? Color(hex: "#D97706") : Color(hex: "#8B5CF6")
                     )
 
                     MetricCardView(
-                        title: "Projeção Total para Quitar Hoje",
+                        title: "Projeção para Quitar Hoje",
                         value: BRLFormatters.currency(totalProjectedPayoff),
-                        subtitle: "Valor presente c/ desconto de juros futuros",
+                        subtitle: "Valor presente c/ desconto de juros",
                         icon: "sparkles.rectangle.stack.fill",
                         tint: Color(hex: "#10B981")
                     )
@@ -82,15 +103,26 @@ public struct LoansAndFinancingsView: View {
                             .foregroundStyle(.secondary)
                         Text("Nenhum \(kind.title.lowercased()) ativo cadastrado")
                             .font(.title3.bold())
-                        Text("Ao criar um \(kind.title.lowercased()) com data de início no passado, o app preserva todo o histórico contratual mas gera automaticamente apenas as transações das parcelas futuras.")
+                        Text("Cadastre manualmente ou importe um documento PDF (ex: Demonstrativo de Crédito ou Evolução de Financiamento) usando a LLM local.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: 580)
-                        Button("Cadastrar \(kind.title)") {
-                            showCreateSheet = true
+                        HStack(spacing: 12) {
+                            Button {
+                                store.requireInstalledLLM(forFeature: "Importar \(kind.title) via Documento (IA Local)") {
+                                    showImportDocumentSheet = true
+                                }
+                            } label: {
+                                Label("Importar de Documento PDF (IA Local)", systemImage: "sparkles.rectangle.stack.fill")
+                            }
+                            .buttonStyle(.bordered)
+
+                            Button("Cadastrar \(kind.title) Manualmente") {
+                                showCreateSheet = true
+                            }
+                            .buttonStyle(.borderedProminent)
                         }
-                        .buttonStyle(.borderedProminent)
                     }
                     .frame(maxWidth: .infinity, minHeight: 280)
                     .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
@@ -105,7 +137,10 @@ public struct LoansAndFinancingsView: View {
             .padding(24)
         }
         .sheet(isPresented: $showCreateSheet) {
-            CreateCreditContractSheet(store: store, kind: kind)
+            CreateCreditContractSheet(store: store, llmService: llmService, kind: kind)
+        }
+        .sheet(isPresented: $showImportDocumentSheet) {
+            ImportCreditContractDocumentSheet(store: store, llmService: llmService, kind: kind)
         }
         .sheet(item: $contractToAmortize) { contract in
             AmortizeContractSheet(store: store, contract: contract)
@@ -137,6 +172,7 @@ public struct LoansAndFinancingsView: View {
     private func contractCard(_ contract: CreditContract) -> some View {
         let paidCount = store.paidTransactionsCount(forContract: contract)
         let remainingCount = store.remainingInstallmentsCount(for: contract)
+        let outstandingBalance = store.currentOutstandingBalance(for: contract)
         let nominalRemaining = store.remainingNominalAmount(for: contract)
         let projectedPayoff = store.projectedPayoffAmount(for: contract)
         let discountEstimate = max(nominalRemaining - projectedPayoff, 0)
@@ -159,9 +195,16 @@ public struct LoansAndFinancingsView: View {
                             .background(Capsule().fill(Color(hex: accentHex).opacity(0.16)))
                             .foregroundStyle(Color(hex: accentHex))
                     }
-                    Text("\(contract.amortizationSystem.rawValue) • Cobrança todo dia \(contract.billingDay)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text("\(contract.amortizationSystem.rawValue) • Cobrança todo dia \(contract.billingDay)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let contractNo = contract.contractNumber, !contractNo.isEmpty {
+                            Text("• Contrato: \(contractNo)")
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 Spacer()
@@ -176,17 +219,24 @@ public struct LoansAndFinancingsView: View {
                 .help("Excluir contrato e parcelas futuras não pagas")
             }
 
-            // Contract Details Grid
+            // Contract Details Grid (Incluindo o campo "Saldo devedor" no card!)
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+                detailCell(
+                    label: "Saldo Devedor",
+                    value: BRLFormatters.currency(outstandingBalance),
+                    valueColor: Color(hex: "#EF4444")
+                )
                 detailCell(label: "Valor Total Contratado", value: BRLFormatters.currency(contract.totalContractedAmount))
                 detailCell(label: "Valor da Parcela", value: BRLFormatters.currency(contract.installmentAmount))
                 detailCell(label: "Taxa de Juros", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
                 detailCell(label: "Parcelas Totais", value: "\(contract.totalInstallments)x (\(remainingCount)x futuras)")
-                detailCell(label: "Saldo Nominal Futuro", value: BRLFormatters.currency(nominalRemaining))
                 detailCell(
-                    label: "Data de Início",
+                    label: "Data em que foi feito",
                     value: contract.startDate.map { BRLFormatters.shortDate($0) } ?? "A partir da criação"
                 )
+                detailCell(label: "Saldo Nominal Futuro", value: BRLFormatters.currency(nominalRemaining))
+                detailCell(label: "Parcelas Pagas", value: "\(paidCount) de \(contract.totalInstallments)")
+                detailCell(label: "Vencimento Mensal", value: "Todo dia \(contract.billingDay)")
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
@@ -214,7 +264,7 @@ public struct LoansAndFinancingsView: View {
                         Text("Projeção de valor para quitar:")
                             .font(.subheadline.weight(.semibold))
                     }
-                    Text("Desconto estimado de juros futuros (\(contract.subtypeDisplayName)): \(BRLFormatters.currency(discountEstimate))")
+                    Text("Saldo Devedor: \(BRLFormatters.currency(outstandingBalance)) • Desconto est. sobre nominal: \(BRLFormatters.currency(discountEstimate))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -234,6 +284,13 @@ public struct LoansAndFinancingsView: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(Color(hex: "#10B981").opacity(0.30), lineWidth: 1)
             )
+
+            if !contract.notes.isEmpty {
+                Text(contract.notes)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
 
             // Action Buttons: Amortizar & Quitar
             HStack(spacing: 12) {
@@ -268,13 +325,14 @@ public struct LoansAndFinancingsView: View {
     }
 
     @ViewBuilder
-    private func detailCell(label: String, value: String) -> some View {
+    private func detailCell(label: String, value: String, valueColor: Color = .primary) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Text(value)
                 .font(.caption.bold())
+                .foregroundStyle(valueColor)
                 .lineLimit(1)
         }
     }
@@ -284,15 +342,18 @@ public struct LoansAndFinancingsView: View {
 
 public struct CreateCreditContractSheet: View {
     @ObservedObject public var store: FinancialDataStore
+    @ObservedObject public var llmService: LocalLLMService
     @Environment(\.dismiss) private var dismiss
 
     public let kind: CreditContractKind
 
     @State private var name: String = ""
+    @State private var contractNumber: String = ""
     @State private var loanSubtype: LoanSubtype = .consignado
     @State private var financingSubtype: FinancingSubtype = .imovel
     @State private var amortizationSystem: AmortizationSystem = .price
     @State private var totalContractedText: String = ""
+    @State private var outstandingBalanceText: String = ""
     @State private var installmentAmountText: String = ""
     @State private var billingDay: Int = 10
     @State private var totalInstallments: Int = 48
@@ -301,10 +362,12 @@ public struct CreateCreditContractSheet: View {
     @State private var startDate: Date = Date()
     @State private var accountId: UUID = UUID()
     @State private var notes: String = ""
+    @State private var showEmbeddedDocImporter: Bool = false
     @State private var errorMsg: String? = nil
 
-    public init(store: FinancialDataStore, kind: CreditContractKind) {
+    public init(store: FinancialDataStore, llmService: LocalLLMService, kind: CreditContractKind) {
         self.store = store
+        self.llmService = llmService
         self.kind = kind
     }
 
@@ -316,18 +379,48 @@ public struct CreateCreditContractSheet: View {
         )
         let futureToCreate = max(totalInstallments - previewSchedule.pastInstallmentsCount, 0)
 
-        VStack(alignment: .leading, spacing: 18) {
-            Text("Cadastrar \(kind.title)")
-                .font(.title2.bold())
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Cadastrar \(kind.title)")
+                        .font(.title2.bold())
+                    Text("Preencha os dados manualmente ou importe um documento PDF com interpretação via LLM local")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+
+                Button {
+                    store.requireInstalledLLM(forFeature: "Importar \(kind.title) via Documento (IA Local)") {
+                        showEmbeddedDocImporter = true
+                    }
+                } label: {
+                    Label("Importar Documento (LLM Local)", systemImage: "sparkles.rectangle.stack.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#6366F1"))
+            }
+
+            Divider()
 
             Form {
                 Section("Identificação e Modalidade") {
-                    TextField(
-                        kind == .loan
-                            ? "Nome (Ex: Consignado Itaú, Empréstimo Pessoal)"
-                            : "Nome (Ex: Apartamento Centro, Financiamento Honda Civic)",
-                        text: $name
-                    )
+                    HStack(spacing: 12) {
+                        BorderedTextField(
+                            label: "Nome do \(kind.title)",
+                            placeholder: kind == .loan
+                                ? "Ex: Consignado Santander, Empréstimo Pessoal"
+                                : "Ex: Financiamento Habitação CAIXA, Honda Civic",
+                            text: $name
+                        )
+
+                        BorderedTextField(
+                            label: "Nº do Contrato (Opcional)",
+                            placeholder: "Ex: 783694303",
+                            text: $contractNumber
+                        )
+                        .frame(width: 190)
+                    }
 
                     if kind == .loan {
                         Picker("Tipo do Empréstimo", selection: $loanSubtype) {
@@ -351,29 +444,85 @@ public struct CreateCreditContractSheet: View {
                     }
                 }
 
-                Section("Valores, Parcelas e Juros") {
-                    HStack(spacing: 14) {
-                        TextField("Valor Total Contratado (R$)", text: $totalContractedText)
-                        TextField("Valor da Parcela (R$)", text: $installmentAmountText)
+                Section("Valores (R$), Saldo Devedor, Parcelas e Juros") {
+                    HStack(spacing: 12) {
+                        BRLCurrencyTextField(
+                            label: "Valor Total Contratado (R$)",
+                            text: $totalContractedText
+                        )
+
+                        BRLCurrencyTextField(
+                            label: "Saldo Devedor Atual (R$)",
+                            text: $outstandingBalanceText
+                        )
+
+                        BRLCurrencyTextField(
+                            label: "Valor da Parcela (R$)",
+                            text: $installmentAmountText
+                        )
+                    }
+
+                    HStack(spacing: 16) {
+                        EditableIntegerStepperField(
+                            label: "Quantidade de Parcelas (Digite ou ajuste)",
+                            value: $totalInstallments,
+                            range: 1...600,
+                            unitSuffix: "parcelas"
+                        )
+
+                        EditableIntegerStepperField(
+                            label: "Dia de Cobrança (1 a 31)",
+                            value: $billingDay,
+                            range: 1...31,
+                            unitSuffix: "dia"
+                        )
                     }
 
                     HStack(spacing: 14) {
-                        Stepper("Qtd. de Parcelas: \(totalInstallments)x", value: $totalInstallments, in: 1...420)
-                        Stepper("Dia de Cobrança: \(billingDay)", value: $billingDay, in: 1...31)
-                    }
+                        BorderedTextField(
+                            label: "Taxa de Juros Mensal (% a.m.)",
+                            placeholder: "Ex: 2,0087",
+                            text: $interestRateText,
+                            suffix: "% a.m."
+                        )
+                        .frame(width: 220)
 
-                    HStack(spacing: 14) {
-                        TextField("Taxa de Juros Mensal (% a.m.)", text: $interestRateText)
-                        Picker("Conta Padrão", selection: $accountId) {
-                            ForEach(store.accounts) { acc in
-                                Text(acc.name).tag(acc.id)
+                        if store.accounts.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Conta Bancária")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                HStack {
+                                    Text("Nenhuma conta cadastrada.")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                    Button("Ir para Contas") {
+                                        dismiss()
+                                        store.selectedDestination = .settings
+                                        store.selectedSettingsSection = .accounts
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        } else {
+                            Picker("Conta Padrão", selection: $accountId) {
+                                ForEach(store.accounts) { acc in
+                                    Text(acc.name).tag(acc.id)
+                                }
                             }
                         }
                     }
+
+                    BorderedTextField(
+                        label: "Observações (Opcional)",
+                        placeholder: "Ex: Desconto em folha, indexador TR...",
+                        text: $notes
+                    )
                 }
 
                 Section("Data de Início Inteligente (Opcional)") {
-                    Toggle("Informar Data de Início do Contrato", isOn: $hasStartDate)
+                    Toggle("Informar Data em que o Contrato foi feito (Data de Início)", isOn: $hasStartDate)
 
                     if hasStartDate {
                         DatePicker("Data de Início", selection: $startDate, displayedComponents: [.date])
@@ -382,7 +531,7 @@ public struct CreateCreditContractSheet: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Como funciona o registro inteligente:")
                             .font(.caption.bold())
-                        Text("• O contrato registra o Valor Total, Juros e as \(totalInstallments) parcelas totais.")
+                        Text("• O contrato registra o Valor Total, Saldo Devedor, Juros e as \(totalInstallments) parcelas totais.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text("• Parcelas já ocorridas no passado: \(previewSchedule.pastInstallmentsCount) (não poluem seu extrato passado).")
@@ -424,15 +573,19 @@ public struct CreateCreditContractSheet: View {
                         errorMsg = "Informe o valor da parcela."
                         return
                     }
+                    let outBal = BRLFormatters.parseAmount(outstandingBalanceText)
                     let rateVal = BRLFormatters.parseAmount(interestRateText) ?? 0.0
+                    let cleanContractNo = contractNumber.trimmingCharacters(in: .whitespacesAndNewlines)
 
                     store.createCreditContract(
                         kind: kind,
                         name: cleanName,
+                        contractNumber: cleanContractNo.isEmpty ? nil : cleanContractNo,
                         loanSubtype: kind == .loan ? loanSubtype : nil,
                         financingSubtype: kind == .financing ? financingSubtype : nil,
                         amortizationSystem: amortizationSystem,
                         totalContractedAmount: totalVal,
+                        outstandingBalance: outBal,
                         installmentAmount: instVal,
                         billingDay: billingDay,
                         totalInstallments: totalInstallments,
@@ -448,10 +601,385 @@ public struct CreateCreditContractSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 620, height: 600)
+        .frame(width: 680, height: 670)
         .onAppear {
             accountId = store.accounts.first?.id ?? UUID()
         }
+        .sheet(isPresented: $showEmbeddedDocImporter) {
+            ImportCreditContractDocumentSheet(
+                store: store,
+                llmService: llmService,
+                kind: kind,
+                onCompleteImport: {
+                    dismiss()
+                }
+            )
+        }
+    }
+}
+
+// MARK: - Import Credit Contract Document Sheet (LLM Local Document Interpreter)
+
+public struct ImportCreditContractDocumentSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    @ObservedObject public var llmService: LocalLLMService
+    @Environment(\.dismiss) private var dismiss
+
+    public let kind: CreditContractKind
+    public var onCompleteImport: (() -> Void)? = nil
+
+    @State private var selectedFileName: String = "Nenhum documento selecionado"
+    @State private var parsedDoc: ParsedCreditContractDocument? = nil
+
+    // Campos editáveis após a leitura pela LLM
+    @State private var name: String = ""
+    @State private var contractNumber: String = ""
+    @State private var loanSubtype: LoanSubtype = .consignado
+    @State private var financingSubtype: FinancingSubtype = .imovel
+    @State private var amortizationSystem: AmortizationSystem = .price
+    @State private var totalContractedText: String = ""
+    @State private var outstandingBalanceText: String = ""
+    @State private var installmentAmountText: String = ""
+    @State private var billingDay: Int = 25
+    @State private var totalInstallments: Int = 36
+    @State private var paidInstallmentsCount: Int = 10
+    @State private var interestRateText: String = "2,0087"
+    @State private var startDate: Date = Date()
+    @State private var firstFutureBillingDate: Date = Date()
+    @State private var selectedAccountId: UUID = UUID()
+    @State private var notes: String = ""
+    @State private var errorMsg: String? = nil
+
+    public init(
+        store: FinancialDataStore,
+        llmService: LocalLLMService,
+        kind: CreditContractKind,
+        onCompleteImport: (() -> Void)? = nil
+    ) {
+        self.store = store
+        self.llmService = llmService
+        self.kind = kind
+        self.onCompleteImport = onCompleteImport
+    }
+
+    public var body: some View {
+        let futureCount = max(totalInstallments - paidInstallmentsCount, 0)
+
+        VStack(alignment: .leading, spacing: 16) {
+            // Header
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "cpu.fill")
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                        Text("Importar \(kind.title) com Base em Documento (LLM Local)")
+                            .font(.title2.bold())
+                    }
+                    Text(
+                        kind == .loan
+                            ? "Selecione o PDF do Demonstrativo Descritivo de Crédito (ou carregue o anexo Santander) para extrair valores, Saldo Devedor e data original."
+                            : "Selecione o PDF de Evolução do Financiamento (ou carregue o anexo CAIXA Habitação) para extrair valores, Saldo Devedor e data original."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let activeModel = store.llmConfig.selectedModel {
+                    Label(activeModel.displayName, systemImage: "checkmark.seal.fill")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color.green.opacity(0.15)))
+                        .foregroundStyle(.green)
+                }
+            }
+
+            // Document Selection Bar
+            HStack(spacing: 12) {
+                Button {
+                    if let url = MacFilePicker.pickStatementFile() {
+                        selectedFileName = url.lastPathComponent
+                        Task {
+                            if let doc = await llmService.analyzeCreditContractFile(
+                                fileURL: url,
+                                expectedKind: kind,
+                                store: store
+                            ) {
+                                applyParsedDocument(doc)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Selecionar Documento PDF do Mac...", systemImage: "folder.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#6366F1"))
+
+                Button {
+                    let sampleTitle = kind == .loan
+                        ? "DEMONSTRATIVO DESCRITIVO DE CRÉDITO.pdf"
+                        : "CAIXA_Evoluçao_do_Contrato.pdf"
+                    let sampleRaw = kind == .loan
+                        ? SampleContractDocumentsData.santanderLoanOCRText
+                        : SampleContractDocumentsData.caixaFinancingOCRText
+                    selectedFileName = sampleTitle
+                    Task {
+                        if let doc = await llmService.analyzeCreditContractRawText(
+                            rawText: sampleRaw,
+                            expectedKind: kind,
+                            store: store
+                        ) {
+                            applyParsedDocument(doc)
+                        }
+                    }
+                } label: {
+                    Label(
+                        kind == .loan
+                            ? "Carregar Anexo: DEMONSTRATIVO DESCRITIVO DE CRÉDITO.pdf"
+                            : "Carregar Anexo: CAIXA_Evoluçao_do_Contrato.pdf",
+                        systemImage: "doc.richtext.fill"
+                    )
+                }
+                .buttonStyle(.bordered)
+
+                Spacer()
+            }
+
+            if llmService.isAnalyzingStatement {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("A LLM local está interpretando o documento, extraindo Saldo Devedor, juros, data de contratação e cronograma de parcelas...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.indigo.opacity(0.1)))
+            }
+
+            if parsedDoc == nil && !llmService.isAnalyzingStatement {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Image(systemName: "doc.text.viewfinder")
+                        .font(.system(size: 46))
+                        .foregroundStyle(.secondary)
+                    Text("Selecione um documento PDF ou clique no botão acima para carregar o documento anexo de exemplo")
+                        .font(.headline)
+                    Text("A LLM local identificará automaticamente o contrato, data em que foi feito, Saldo Devedor, parcelas pagas e parcelas futuras.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            } else if parsedDoc != nil {
+                Form {
+                    Section("Dados Extraídos do Documento (\(selectedFileName))") {
+                        HStack(spacing: 12) {
+                            BorderedTextField(
+                                label: "Nome do \(kind.title)",
+                                placeholder: "Nome do Contrato",
+                                text: $name
+                            )
+
+                            BorderedTextField(
+                                label: "Nº do Contrato",
+                                placeholder: "Contrato",
+                                text: $contractNumber
+                            )
+                            .frame(width: 190)
+                        }
+
+                        HStack(spacing: 12) {
+                            BRLCurrencyTextField(
+                                label: "Valor Total Contratado (R$)",
+                                text: $totalContractedText
+                            )
+
+                            BRLCurrencyTextField(
+                                label: "Saldo Devedor (R$)",
+                                text: $outstandingBalanceText
+                            )
+
+                            BRLCurrencyTextField(
+                                label: "Valor da Parcela (R$)",
+                                text: $installmentAmountText
+                            )
+                        }
+
+                        HStack(spacing: 14) {
+                            EditableIntegerStepperField(
+                                label: "Total de Parcelas",
+                                value: $totalInstallments,
+                                range: 1...600,
+                                unitSuffix: "meses"
+                            )
+
+                            EditableIntegerStepperField(
+                                label: "Parcelas Já Pagas no Passado",
+                                value: $paidInstallmentsCount,
+                                range: 0...600,
+                                unitSuffix: "pagas"
+                            )
+
+                            EditableIntegerStepperField(
+                                label: "Dia de Cobrança",
+                                value: $billingDay,
+                                range: 1...31,
+                                unitSuffix: "dia"
+                            )
+                        }
+
+                        HStack(spacing: 14) {
+                            BorderedTextField(
+                                label: "Taxa de Juros (% a.m.)",
+                                placeholder: "Ex: 2,0087",
+                                text: $interestRateText,
+                                suffix: "% a.m."
+                            )
+                            .frame(width: 180)
+
+                            DatePicker("Data em que foi feito", selection: $startDate, displayedComponents: [.date])
+
+                            DatePicker("Próximo Vencimento Futuro", selection: $firstFutureBillingDate, displayedComponents: [.date])
+                        }
+
+                        HStack(spacing: 14) {
+                            if store.accounts.isEmpty {
+                                HStack {
+                                    Text("Nenhuma conta bancária cadastrada.")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                    Button("Ir para Configurações → Contas") {
+                                        dismiss()
+                                        store.selectedDestination = .settings
+                                        store.selectedSettingsSection = .accounts
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            } else {
+                                Picker("Conta Bancária para Cobrança das Parcelas Futuras", selection: $selectedAccountId) {
+                                    ForEach(store.accounts) { acc in
+                                        Text(acc.name).tag(acc.id)
+                                    }
+                                }
+                            }
+                        }
+
+                        BorderedTextField(
+                            label: "Detalhes Extraídos pela LLM",
+                            placeholder: "Detalhes do contrato",
+                            text: $notes
+                        )
+
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(Color(hex: "#10B981"))
+                            Text("Resumo da Importação: Contrato feito em \(BRLFormatters.shortDate(startDate)) • \(paidInstallmentsCount) parcelas passadas preservadas • Serão geradas \(futureCount) parcelas futuras a partir de \(BRLFormatters.shortDate(firstFutureBillingDate)) • Saldo Devedor: \(outstandingBalanceText).")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color(hex: "#10B981"))
+                        }
+                    }
+                }
+                .formStyle(.grouped)
+            }
+
+            if let errorMsg {
+                Text(errorMsg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("Cancelar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    confirmImport()
+                } label: {
+                    Label("Confirmar e Importar \(kind.title)", systemImage: "checkmark.circle.fill")
+                        .fontWeight(.semibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#10B981"))
+                .disabled(parsedDoc == nil)
+            }
+        }
+        .padding(22)
+        .frame(width: 820, height: 640)
+        .onAppear {
+            selectedAccountId = store.accounts.first?.id ?? UUID()
+        }
+    }
+
+    private func applyParsedDocument(_ doc: ParsedCreditContractDocument) {
+        parsedDoc = doc
+        name = doc.name
+        contractNumber = doc.contractNumber
+        loanSubtype = doc.loanSubtype
+        financingSubtype = doc.financingSubtype
+        amortizationSystem = doc.amortizationSystem
+        totalContractedText = BRLFormatters.currency(doc.totalContractedAmount)
+        outstandingBalanceText = BRLFormatters.currency(doc.outstandingBalance)
+        installmentAmountText = BRLFormatters.currency(doc.installmentAmount)
+        billingDay = doc.billingDay
+        totalInstallments = doc.totalInstallments
+        paidInstallmentsCount = doc.paidInstallmentsCount
+        interestRateText = String(format: "%.4f", doc.monthlyInterestRate).replacingOccurrences(of: ".", with: ",")
+        startDate = doc.startDate
+        firstFutureBillingDate = doc.firstFutureBillingDate
+        notes = doc.extractedNotes
+        errorMsg = nil
+    }
+
+    private func confirmImport() {
+        guard !store.accounts.isEmpty else {
+            errorMsg = "Cadastre pelo menos uma conta bancária em Configurações → Contas antes de importar o contrato."
+            return
+        }
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty else {
+            errorMsg = "Informe o nome do contrato."
+            return
+        }
+        guard let totalVal = BRLFormatters.parseAmount(totalContractedText), totalVal > 0 else {
+            errorMsg = "Informe o valor total contratado."
+            return
+        }
+        guard let instVal = BRLFormatters.parseAmount(installmentAmountText), instVal > 0 else {
+            errorMsg = "Informe o valor da parcela."
+            return
+        }
+        let outBal = BRLFormatters.parseAmount(outstandingBalanceText) ?? totalVal
+        let rateVal = BRLFormatters.parseAmount(interestRateText) ?? 0.0
+
+        store.createCreditContract(
+            kind: kind,
+            name: cleanName,
+            contractNumber: contractNumber.isEmpty ? nil : contractNumber,
+            loanSubtype: kind == .loan ? loanSubtype : nil,
+            financingSubtype: kind == .financing ? financingSubtype : nil,
+            amortizationSystem: amortizationSystem,
+            totalContractedAmount: totalVal,
+            outstandingBalance: outBal,
+            installmentAmount: instVal,
+            billingDay: billingDay,
+            totalInstallments: totalInstallments,
+            monthlyInterestRate: rateVal,
+            startDate: startDate,
+            accountId: selectedAccountId,
+            notes: notes,
+            overridePastInstallmentsCount: paidInstallmentsCount,
+            overrideFirstFutureBillingDate: firstFutureBillingDate
+        )
+        onCompleteImport?()
+        dismiss()
     }
 }
 
@@ -479,6 +1007,7 @@ public struct AmortizeContractSheet: View {
 
     public var body: some View {
         let currentRemaining = store.remainingInstallmentsCount(for: contract)
+        let currentOutstanding = store.currentOutstandingBalance(for: contract)
         let currentProjectedPV = store.projectedPayoffAmount(for: contract)
 
         VStack(alignment: .leading, spacing: 18) {
@@ -490,6 +1019,13 @@ public struct AmortizeContractSheet: View {
 
             Form {
                 Section("Resumo Atual do Contrato") {
+                    HStack {
+                        Text("Saldo Devedor Atual:")
+                        Spacer()
+                        Text(BRLFormatters.currency(currentOutstanding))
+                            .fontWeight(.bold)
+                            .foregroundStyle(Color(hex: "#EF4444"))
+                    }
                     HStack {
                         Text("Parcelas Futuras Restantes:")
                         Spacer()
@@ -506,10 +1042,13 @@ public struct AmortizeContractSheet: View {
                 }
 
                 Section("Pagamento da Amortização") {
-                    TextField("Valor Amortizado (R$)", text: $amountPaidText)
-                        .onChange(of: amountPaidText) { _, _ in
-                            recalculatePreview()
-                        }
+                    BRLCurrencyTextField(
+                        label: "Valor Amortizado (R$)",
+                        text: $amountPaidText
+                    )
+                    .onChange(of: amountPaidText) { _, _ in
+                        recalculatePreview()
+                    }
 
                     Picker("Conta de onde saiu o pagamento", selection: $selectedAccountId) {
                         ForEach(store.accounts) { acc in
@@ -531,15 +1070,25 @@ public struct AmortizeContractSheet: View {
                         recalculatePreview()
                     }
 
-                    Stepper(
-                        "Nova Quantidade de Parcelas Restantes: \(newRemainingInstallments)x",
-                        value: $newRemainingInstallments,
-                        in: 1...max(currentRemaining, 1)
+                    HStack(spacing: 14) {
+                        EditableIntegerStepperField(
+                            label: "Nova Qtd. de Parcelas Restantes",
+                            value: $newRemainingInstallments,
+                            range: 1...max(currentRemaining, 1),
+                            unitSuffix: "parcelas"
+                        )
+
+                        BRLCurrencyTextField(
+                            label: "Novo Valor da Parcela (R$)",
+                            text: $newInstallmentAmountText
+                        )
+                    }
+
+                    BorderedTextField(
+                        label: "Observações (Opcional)",
+                        placeholder: "Ex: Amortização extraordinária FGTS / 13º salário",
+                        text: $notes
                     )
-
-                    TextField("Novo Valor da Parcela (R$)", text: $newInstallmentAmountText)
-
-                    TextField("Observações (Opcional)", text: $notes)
                 }
             }
             .formStyle(.grouped)
@@ -576,12 +1125,11 @@ public struct AmortizeContractSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 560, height: 540)
+        .frame(width: 580, height: 590)
         .onAppear {
             selectedAccountId = contract.accountId
             newRemainingInstallments = max(store.remainingInstallmentsCount(for: contract), 1)
-            newInstallmentAmountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: contract.installmentAmount))
-                ?? String(format: "%.2f", contract.installmentAmount)
+            newInstallmentAmountText = BRLFormatters.currency(contract.installmentAmount)
         }
     }
 
@@ -595,7 +1143,7 @@ public struct AmortizeContractSheet: View {
 
         if newPV <= 0.01 {
             newRemainingInstallments = 1
-            newInstallmentAmountText = "0,00"
+            newInstallmentAmountText = BRLFormatters.currency(0.0)
             return
         }
 
@@ -608,8 +1156,7 @@ public struct AmortizeContractSheet: View {
             } else {
                 newRemainingInstallments = max(1, Int(ceil(newPV / max(prevInst, 1))))
             }
-            newInstallmentAmountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: prevInst))
-                ?? String(format: "%.2f", prevInst)
+            newInstallmentAmountText = BRLFormatters.currency(prevInst)
         case .reduceInstallment:
             newRemainingInstallments = max(prevRem, 1)
             let newInst: Double
@@ -618,8 +1165,7 @@ public struct AmortizeContractSheet: View {
             } else {
                 newInst = newPV / Double(max(prevRem, 1))
             }
-            newInstallmentAmountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: newInst))
-                ?? String(format: "%.2f", newInst)
+            newInstallmentAmountText = BRLFormatters.currency(newInst)
         }
     }
 }
@@ -643,6 +1189,7 @@ public struct SettleContractSheet: View {
     }
 
     public var body: some View {
+        let outstandingBalance = store.currentOutstandingBalance(for: contract)
         let nominalRemaining = store.remainingNominalAmount(for: contract)
         let projectedPayoff = store.projectedPayoffAmount(for: contract)
 
@@ -663,6 +1210,14 @@ public struct SettleContractSheet: View {
                             .fontWeight(.medium)
                     }
                     HStack {
+                        Text("Saldo Devedor Atual:")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(BRLFormatters.currency(outstandingBalance))
+                            .fontWeight(.bold)
+                            .foregroundStyle(Color(hex: "#EF4444"))
+                    }
+                    HStack {
                         Text("Soma Nominal das Parcelas Restantes:")
                             .foregroundStyle(.secondary)
                         Spacer()
@@ -680,21 +1235,23 @@ public struct SettleContractSheet: View {
                 }
 
                 Section("Pagamento da Quitação") {
-                    TextField("Valor Final para Quitar (R$)", text: $finalPayoffAmountText)
-                        .font(.system(size: 15, weight: .bold))
+                    BRLCurrencyTextField(
+                        label: "Valor Final para Quitar (R$)",
+                        text: $finalPayoffAmountText
+                    )
 
                     HStack {
                         Text("Preencher rápido:")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Button("Usar Valor Original/Nominal (\(BRLFormatters.currency(nominalRemaining)))") {
-                            finalPayoffAmountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: nominalRemaining)) ?? ""
+                        Button("Usar Saldo Devedor (\(BRLFormatters.currency(outstandingBalance)))") {
+                            finalPayoffAmountText = BRLFormatters.currency(outstandingBalance)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
 
-                        Button("Usar Projeção c/ Desconto (\(BRLFormatters.currency(projectedPayoff)))") {
-                            finalPayoffAmountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: projectedPayoff)) ?? ""
+                        Button("Usar Projeção (\(BRLFormatters.currency(projectedPayoff)))") {
+                            finalPayoffAmountText = BRLFormatters.currency(projectedPayoff)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
@@ -739,13 +1296,12 @@ public struct SettleContractSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 560, height: 490)
+        .frame(width: 580, height: 520)
         .onAppear {
             selectedAccountId = contract.accountId
             // Vem preenchido inicialmente com o valor original!
             let initialVal = nominalRemaining > 0 ? nominalRemaining : contract.totalContractedAmount
-            finalPayoffAmountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: initialVal))
-                ?? String(format: "%.2f", initialVal)
+            finalPayoffAmountText = BRLFormatters.currency(initialVal)
         }
     }
 }
