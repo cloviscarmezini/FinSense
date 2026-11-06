@@ -188,9 +188,6 @@ public struct FinancialControlApp: App {
             MainContentView(store: store, llmService: llmService)
                 .frame(minWidth: 1120, minHeight: 740)
                 .onAppear {
-                    // Garante que cópias em PDF dos documentos anexos estejam disponíveis na pasta do usuário
-                    _ = SampleItauStatementData.ensureSamplePDFExists(in: store.storageDirectory)
-                    SampleContractDocumentsData.ensureSampleContractPDFsExist(in: store.storageDirectory)
                     NSApplication.shared.activate(ignoringOtherApps: true)
                 }
         }

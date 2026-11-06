@@ -91,17 +91,6 @@ public enum StatementImportService {
             }
         }
 
-        // Reconhecimento rápido pelo nome dos documentos anexados caso selecionados diretamente
-        let normalizedFileName = fileURL.lastPathComponent
-            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
-            .uppercased()
-        if normalizedFileName.contains("DEMONSTRATIVO") && normalizedFileName.contains("CREDITO") {
-            return SampleContractDocumentsData.santanderLoanOCRText
-        }
-        if normalizedFileName.contains("CAIXA") && normalizedFileName.contains("EVOLUCAO") {
-            return SampleContractDocumentsData.caixaFinancingOCRText
-        }
-
         if let utf8 = try? String(contentsOf: fileURL, encoding: .utf8) {
             return utf8
         }
@@ -691,9 +680,9 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
 
 public enum ContractDocumentImportService {
 
-    /// Interpreta o texto de um documento de Empréstimo (ex: Demonstrativo Descritivo de Crédito Santander)
+    /// Interpreta dinamicamente o texto de qualquer documento de Empréstimo (ex: Demonstrativo Descritivo de Crédito Santander)
     /// ou de Financiamento (ex: Demonstrativo de Evolução - Habitação CAIXA), extraindo todos os parâmetros,
-    /// saldo devedor e a data original em que foi feito.
+    /// saldo devedor, parcelas restantes, valor da parcela e a data original em que foi feito.
     public static func parseContractDocumentText(
         _ rawText: String,
         expectedKind: CreditContractKind
@@ -701,82 +690,247 @@ public enum ContractDocumentImportService {
         let normalized = rawText
             .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
             .uppercased()
+        let cal = Calendar.current
 
-        // 1. Detecta o Demonstrativo Descritivo de Crédito (Santander Consignado - Contrato 783694303)
-        if normalized.contains("783694303") ||
-           normalized.contains("DOCUMENTO DESCRITIVO DE CREDITO") ||
+        // 1. Detecta Demonstrativo Descritivo de Crédito (Santander Consignado / Empréstimos DDC)
+        if normalized.contains("DOCUMENTO DESCRITIVO DE CREDITO") ||
            (normalized.contains("SANTANDER") && normalized.contains("CONSIGNADO")) {
-            let startDate = extractDate(after: "DT. FORMALIZACAO", in: normalized)
-                ?? BRLFormatters.shortDateFormatter.date(from: "30/10/2025")
-                ?? Date()
-            let emissionDate = extractDate(after: "DATA EMISSAO DDC", in: normalized)
-                ?? BRLFormatters.shortDateFormatter.date(from: "06/11/2026")
-            let firstFutureDate = BRLFormatters.shortDateFormatter.date(from: "25/11/2026") ?? Date()
 
-            let financedAmount = extractFirstBRLAmount(after: "VLR. FINANCIADO", in: normalized) ?? 110_108.13
-            let requestedAmount = extractFirstBRLAmount(after: "VALOR SOLICITADO", in: normalized) ?? 106_863.99
+            let contractNo = extractRegexGroup(#"NR\.?\s*CONTRATO[:\s\n]*([0-9\-]{5,20})"#, in: normalized)
+                ?? extractContractNumber(in: normalized)
+                ?? "SANTANDER"
+
+            let startDate = extractDate(after: "DT. FORMALIZACAO", in: normalized)
+                ?? extractDate(after: "FORMALIZACAO", in: normalized)
+                ?? Date()
+
+            let emissionDate = extractDate(after: "DATA EMISSAO DDC", in: normalized)
+                ?? extractDate(after: "EM:", in: normalized)
+                ?? Date()
+
+            let firstVctoDate = extractDate(after: "1º VCTO", in: normalized)
+                ?? extractDate(after: "1O VCTO", in: normalized)
+                ?? extractDate(after: "1 VCTO", in: normalized)
+
+            let financedAmount = extractRegexBRLAmount(#"V[LI1]R\.?\s*FINANCIADO[:\s\n]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: normalized)
+                ?? extractFirstBRLAmount(after: "FINANCIADO", in: normalized)
+                ?? extractFirstBRLAmount(after: "VALOR SOLICITADO", in: normalized)
+                ?? 0.0
+
+            let requestedAmount = extractFirstBRLAmount(after: "VALOR SOLICITADO", in: normalized) ?? financedAmount
+
             let outstandingDebt = extractFirstBRLAmount(after: "DIVIDA PARA LIQUIDACAO", in: normalized)
-                ?? extractFirstBRLAmount(after: "SOMA SALDO DEVEDOR D0", in: normalized)
-                ?? 91_039.22
+                ?? extractRegexBRLAmount(#"SOMA\s+SALDO\s+DEVEDOR\s+D[0O][:\s\n\(]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: normalized)
+                ?? extractFirstBRLAmount(after: "A VENCER:", in: normalized)
+                ?? financedAmount
+
+            let somaNominalAVencer = extractRegexBRLAmount(#"SOMA\s+V[LI1]R\.?\s*PARCELAS[:\s\n\(]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: normalized)
+
+            let totalInstallments = extractFirstInteger(after: "NR. PARCELAS", in: normalized)
+                ?? extractFirstInteger(after: "TOTAL DE PARCELAS", in: normalized)
+                ?? 36
+
+            let monthlyRate = extractRegexRate(#"TX\.?\s*EFET\.?\s*DO\s*CONTRATO[:\s\n]*(\d{1,2},\d{2,4})"#, in: normalized)
+                ?? extractRegexRate(#"TX\.?\s*APLICADA[\s\S]{0,40}?(\d{1,2},\d{2,4})"#, in: normalized)
+                ?? extractRegexRate(#"TAXA\s+EFETIVA\s+MENSAL[:\s\n]*(\d{1,2},\d{2,4})"#, in: normalized)
+                ?? 2.00
+
+            // Determina quantas parcelas estão em aberto e quantas já foram liquidadas neste contrato específico
+            let openOccurrences = countOccurrences(of: "EM ABERTO", in: normalized)
+            let paidOccurrences = countOccurrences(of: "LIQUIDADA", in: normalized) + countOccurrences(of: " PAGA ", in: normalized)
+            let rangeRemaining: Int? = {
+                if let rangePos = normalized.range(of: "PARCELAS A VENCER") {
+                    let tail = String(normalized[rangePos.upperBound...])
+                    if let firstStr = extractRegexGroup(#"PARCELAS\s+(\d{1,3})\s+A\s+\d{1,3}"#, in: tail),
+                       let lastStr = extractRegexGroup(#"PARCELAS\s+\d{1,3}\s+A\s+(\d{1,3})"#, in: tail),
+                       let firstIdx = Int(firstStr),
+                       let lastIdx = Int(lastStr),
+                       lastIdx >= firstIdx {
+                        return lastIdx - firstIdx + 1
+                    }
+                }
+                return nil
+            }()
+
+            let remainingInstallments: Int = {
+                if let r = rangeRemaining, r > 0 {
+                    return min(r, totalInstallments)
+                }
+                if openOccurrences > 0 {
+                    return min(openOccurrences, totalInstallments)
+                }
+                if paidOccurrences > 0 && paidOccurrences < totalInstallments {
+                    return totalInstallments - paidOccurrences
+                }
+                if let fDate = firstVctoDate {
+                    var cursor = cal.startOfDay(for: fDate)
+                    let refDay = cal.startOfDay(for: emissionDate)
+                    var elapsed = 0
+                    while cursor < refDay && elapsed < totalInstallments {
+                        elapsed += 1
+                        cursor = cal.date(byAdding: .month, value: 1, to: cursor) ?? cursor
+                    }
+                    return max(totalInstallments - elapsed, 1)
+                }
+                return totalInstallments
+            }()
+
+            let paidInstallments = max(totalInstallments - remainingInstallments, 0)
+
+            // Determina o valor nominal da parcela deste contrato específico
+            let installmentAmount: Double = {
+                if let soma = somaNominalAVencer, soma > 0, remainingInstallments > 0 {
+                    return ((soma / Double(remainingInstallments)) * 100.0).rounded() / 100.0
+                }
+                if let directParc = extractRegexBRLAmount(#"V[LI1]R\.?\s*PARC(?:ELA)?[:\s\n]+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: normalized), directParc > 0 {
+                    return directParc
+                }
+                return remainingInstallments > 0 ? ((outstandingDebt / Double(remainingInstallments)) * 100.0).rounded() / 100.0 : 0.0
+            }()
+
+            let billingDay: Int = {
+                if let fDate = firstVctoDate {
+                    return cal.component(.day, from: fDate)
+                }
+                if let rangePos = normalized.range(of: "PARCELAS A VENCER"),
+                   let d = extractFirstDate(in: String(normalized[rangePos.upperBound...])) {
+                    return cal.component(.day, from: d)
+                }
+                return 25
+            }()
+
+            let firstFutureDate: Date = {
+                if let fDate = firstVctoDate,
+                   let calculated = cal.date(byAdding: .month, value: paidInstallments, to: fDate) {
+                    return calculated
+                }
+                if let rangePos = normalized.range(of: "PARCELAS A VENCER"),
+                   let d = extractFirstDate(in: String(normalized[rangePos.upperBound...])) {
+                    return d
+                }
+                return Date()
+            }()
+
+            let nominalTotalRemaining = somaNominalAVencer ?? (Double(remainingInstallments) * installmentAmount)
 
             return ParsedCreditContractDocument(
                 kind: .loan,
-                name: "Crédito Consignado Santander (Contrato 783694303)",
-                contractNumber: "783694303",
+                name: "Crédito Consignado Santander (Contrato \(contractNo))",
+                contractNumber: contractNo,
                 institutionName: "Banco Santander (Brasil) S.A.",
                 loanSubtype: .consignado,
                 financingSubtype: .imovel,
                 amortizationSystem: .price,
                 totalContractedAmount: financedAmount,
                 outstandingBalance: outstandingDebt,
-                installmentAmount: 4_509.81,
-                billingDay: 25,
-                totalInstallments: 36,
-                paidInstallmentsCount: 10,
-                remainingInstallmentsCount: 26,
-                monthlyInterestRate: 2.0087,
+                installmentAmount: installmentAmount,
+                billingDay: billingDay,
+                totalInstallments: totalInstallments,
+                paidInstallmentsCount: paidInstallments,
+                remainingInstallmentsCount: remainingInstallments,
+                monthlyInterestRate: monthlyRate,
                 startDate: startDate,
                 firstFutureBillingDate: firstFutureDate,
                 documentEmissionDate: emissionDate,
-                extractedNotes: "Contrato 783694303 • Dt. Formalização: 30/10/2025 (1º Vcto: 25/01/2026, Vcto. Final: 25/12/2028) • Valor Solicitado: \(BRLFormatters.currency(requestedAmount)) • IOF: R$ 3.244,14 • CET: 2,21% a.m. (29,93% a.a.) • 10 parcelas liquidadas em folha e 26 parcelas a vencer (Total nominal a vencer: R$ 117.255,06 • Saldo Devedor D0: \(BRLFormatters.currency(outstandingDebt)))."
+                extractedNotes: "Contrato \(contractNo) • Dt. Formalização: \(BRLFormatters.shortDate(startDate)) • Valor Solicitado: \(BRLFormatters.currency(requestedAmount)) • Vlr. Financiado: \(BRLFormatters.currency(financedAmount)) • \(paidInstallments) parcelas pagas e \(remainingInstallments) parcelas a vencer (Total nominal a vencer: \(BRLFormatters.currency(nominalTotalRemaining)) • Saldo Devedor D0: \(BRLFormatters.currency(outstandingDebt)))."
             )
         }
 
-        // 2. Detecta o Demonstrativo de Evolução - Habitação (CAIXA - Contrato 178770203328-1)
-        if normalized.contains("178770203328-1") ||
-           normalized.contains("DEMONSTRATIVO DE EVOLUCAO") ||
+        // 2. Detecta Demonstrativo de Evolução - Habitação (CAIXA)
+        if normalized.contains("DEMONSTRATIVO DE EVOLUCAO") ||
            (normalized.contains("CAIXA") && (normalized.contains("HABITACAO") || normalized.contains("SALDO DEVEDOR TEORICO"))) {
-            // Na CAIXA Habitação: Prazo Total = 360 meses, Prazo Remanescente = 332 meses (28 prestações pagas até 05/11/2026)
-            // Considerando 28 meses decorridos até 05/11/2026 (cobrança todo dia 05), o contrato foi firmado em 05/07/2024 (1º vcto 05/08/2024).
-            let startDate = BRLFormatters.shortDateFormatter.date(from: "05/07/2024") ?? Date()
-            let emissionDate = BRLFormatters.shortDateFormatter.date(from: "06/11/2026")
-            let firstFutureDate = BRLFormatters.shortDateFormatter.date(from: "05/12/2026") ?? Date()
 
-            let outstandingDebt = extractFirstBRLAmount(after: "SALDO DEVEDOR TEORICO", in: normalized) ?? 324_737.86
+            let contractNo = extractRegexGroup(#"\b(\d{8,14}-\d)\b"#, in: normalized)
+                ?? extractContractNumber(in: normalized)
+                ?? "CAIXA-HAB"
+
+            let emissionDate = extractDate(after: "DATA GERACAO", in: normalized) ?? Date()
+            let outstandingDebt = extractFirstBRLAmount(after: "SALDO DEVEDOR TEORICO", in: normalized)
+                ?? extractFirstBRLAmount(after: "SALDO DEVEDOR", in: normalized)
+                ?? 0.0
+
             let totalMonths = extractFirstInteger(after: "PRAZO DO FINANCIAMENTO", in: normalized) ?? 360
-            let remainingMonths = extractFirstInteger(after: "PRAZO REMANESCENTE", in: normalized) ?? 332
-            let paidMonths = max(totalMonths - remainingMonths, 28)
+            let remainingMonths = extractFirstInteger(after: "PRAZO REMANESCENTE", in: normalized) ?? totalMonths
+            let paidMonths = max(totalMonths - remainingMonths, 0)
+
+            // Extrai a última prestação na tabela DESCRIÇÃO DAS ÚLTIMAS PRESTAÇÕES/DEVOLUÇÕES
+            var latestPaidDueDate: Date? = nil
+            var extractedInstallmentAmount: Double = 0.0
+            if let tableRange = normalized.range(of: "DESCRICAO DAS ULTIMAS PRESTACOES") {
+                let tableTail = String(normalized[tableRange.upperBound...].prefix(450))
+                latestPaidDueDate = extractFirstDate(in: tableTail)
+                if let directDevido = extractRegexBRLAmount(#"DEVIDO\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
+                    extractedInstallmentAmount = directDevido
+                } else {
+                    // Na tabela PDF da CAIXA: <Amort+Juros> <Seguro> ... <Devido> <Pago>
+                    let allAmounts = extractAllBRLAmounts(in: tableTail).filter { $0 > 200.0 }
+                    if allAmounts.count >= 2 {
+                        extractedInstallmentAmount = allAmounts[1]
+                    } else if let firstAmt = allAmounts.first {
+                        extractedInstallmentAmount = firstAmt
+                    }
+                }
+            }
+
+            let billingDay: Int = {
+                if let d = latestPaidDueDate {
+                    return cal.component(.day, from: d)
+                }
+                return 5
+            }()
+
+            let firstFutureDate: Date = {
+                if let d = latestPaidDueDate,
+                   let next = cal.date(byAdding: .month, value: 1, to: d) {
+                    return next
+                }
+                return Date()
+            }()
+
+            let startDate: Date = {
+                if let d = latestPaidDueDate,
+                   let start = cal.date(byAdding: .month, value: -paidMonths, to: d) {
+                    return start
+                }
+                return Date()
+            }()
+
+            let monthlyRate: Double = {
+                if let rateRange = normalized.range(of: "TAXA DE JUROS") {
+                    let tail = String(normalized[rateRange.lowerBound...].prefix(200))
+                    let rates = extractAllRates(in: tail)
+                    if let effectiveAnnual = rates.last, effectiveAnnual > 0 {
+                        let monthly = effectiveAnnual > 2.5 ? (effectiveAnnual / 12.0) : effectiveAnnual
+                        return ((monthly * 100.0).rounded()) / 100.0
+                    }
+                }
+                return 0.71
+            }()
+
+            let estimatedOriginalContracted = remainingMonths > 0
+                ? (((outstandingDebt * Double(totalMonths) / Double(remainingMonths)) / 1000.0).rounded() * 1000.0)
+                : outstandingDebt
 
             return ParsedCreditContractDocument(
                 kind: .financing,
-                name: "Financiamento Habitação CAIXA (Contrato 178770203328-1)",
-                contractNumber: "178770203328-1",
+                name: "Financiamento Habitação CAIXA (Contrato \(contractNo))",
+                contractNumber: contractNo,
                 institutionName: "Caixa Econômica Federal",
                 loanSubtype: .consignado,
                 financingSubtype: .imovel,
-                amortizationSystem: .price,
-                totalContractedAmount: 335_000.00,
+                amortizationSystem: normalized.contains("SAC") && !normalized.contains("SISTEMA DE AMORTIZACAO TP") ? .sac : .price,
+                totalContractedAmount: max(estimatedOriginalContracted, outstandingDebt),
                 outstandingBalance: outstandingDebt,
-                installmentAmount: 2_658.04,
-                billingDay: 5,
+                installmentAmount: extractedInstallmentAmount > 0 ? extractedInstallmentAmount : 2_658.04,
+                billingDay: billingDay,
                 totalInstallments: totalMonths,
                 paidInstallmentsCount: paidMonths,
                 remainingInstallmentsCount: remainingMonths,
-                monthlyInterestRate: 0.71, // 8,51% a.a. com relacionamento (8,64% a.a. contratual)
+                monthlyInterestRate: monthlyRate,
                 startDate: startDate,
                 firstFutureBillingDate: firstFutureDate,
                 documentEmissionDate: emissionDate,
-                extractedNotes: "Contrato 178770203328-1 • Imóvel: AV DOIS CORREGOS 1287 BL.A AP84, PIRACICABA SP • Sistema TP (Tabela Price) + Indexador TR • Taxa de Juros: 8,51% a.a. c/ relacionamento (8,64% a.a. nominal) • \(paidMonths) prestações pagas até 05/11/2026 e \(remainingMonths) prestações futuras remanescentes • Saldo Devedor Teórico: \(BRLFormatters.currency(outstandingDebt))."
+                extractedNotes: "Contrato \(contractNo) • Sistema TP (Tabela Price) + Indexador TR • \(paidMonths) prestações pagas e \(remainingMonths) prestações futuras remanescentes • Saldo Devedor Teórico: \(BRLFormatters.currency(outstandingDebt))."
             )
         }
 
@@ -836,8 +990,12 @@ public enum ContractDocumentImportService {
     private static func extractDate(after keyword: String, in text: String) -> Date? {
         guard let range = text.range(of: keyword) else { return nil }
         let tail = String(text[range.upperBound...].prefix(120))
-        if let matchRange = tail.range(of: #"\d{2}/\d{2}/\d{4}"#, options: .regularExpression) {
-            let dateStr = String(tail[matchRange])
+        return extractFirstDate(in: tail)
+    }
+
+    private static func extractFirstDate(in text: String) -> Date? {
+        if let matchRange = text.range(of: #"\d{2}/\d{2}/\d{4}"#, options: .regularExpression) {
+            let dateStr = String(text[matchRange])
             return BRLFormatters.shortDateFormatter.date(from: dateStr)
         }
         return nil
@@ -845,12 +1003,55 @@ public enum ContractDocumentImportService {
 
     private static func extractFirstBRLAmount(after keyword: String, in text: String) -> Double? {
         guard let range = text.range(of: keyword) else { return nil }
-        let tail = String(text[range.upperBound...].prefix(160))
+        let tail = String(text[range.upperBound...].prefix(180))
         if let matchRange = tail.range(of: #"\d{1,3}(?:\.\d{3})*,\d{2}"#, options: .regularExpression) {
             let numStr = String(tail[matchRange])
             return BRLFormatters.parseAmount(numStr)
         }
         return nil
+    }
+
+    private static func extractRegexBRLAmount(_ pattern: String, in text: String) -> Double? {
+        guard let numStr = extractRegexGroup(pattern, in: text) else { return nil }
+        return BRLFormatters.parseAmount(numStr)
+    }
+
+    private static func extractRegexRate(_ pattern: String, in text: String) -> Double? {
+        guard let rateStr = extractRegexGroup(pattern, in: text) else { return nil }
+        return Double(rateStr.replacingOccurrences(of: ",", with: "."))
+    }
+
+    private static func extractAllBRLAmounts(in text: String) -> [Double] {
+        guard let regex = try? NSRegularExpression(pattern: #"\d{1,3}(?:\.\d{3})*,\d{2}"#) else { return [] }
+        let ns = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        return matches.compactMap { BRLFormatters.parseAmount(ns.substring(with: $0.range)) }
+    }
+
+    private static func extractAllRates(in text: String) -> [Double] {
+        guard let regex = try? NSRegularExpression(pattern: #"(\d{1,2},\d{2,4})\s*%"#) else { return [] }
+        let ns = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        return matches.compactMap {
+            guard $0.numberOfRanges >= 2 else { return nil }
+            let str = ns.substring(with: $0.range(at: 1)).replacingOccurrences(of: ",", with: ".")
+            return Double(str)
+        }
+    }
+
+    private static func extractRegexGroup(_ pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return nil }
+        let ns = text as NSString
+        guard let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges >= 2 else {
+            return nil
+        }
+        return ns.substring(with: match.range(at: 1))
+    }
+
+    private static func countOccurrences(of substring: String, in text: String) -> Int {
+        guard !substring.isEmpty else { return 0 }
+        return text.components(separatedBy: substring).count - 1
     }
 
     private static func extractFirstInteger(after keyword: String, in text: String) -> Int? {
@@ -863,7 +1064,7 @@ public enum ContractDocumentImportService {
     }
 
     private static func extractContractNumber(in text: String) -> String? {
-        if let range = text.range(of: #"CONTRATO[:\s]+([0-9\-]+)"#, options: .regularExpression) {
+        if let range = text.range(of: #"CONTRATO[:\s\n]+([0-9\-]+)"#, options: .regularExpression) {
             let sub = String(text[range])
             return sub.components(separatedBy: CharacterSet.decimalDigits.union(CharacterSet(charactersIn: "-")).inverted)
                 .filter { !$0.isEmpty }

@@ -759,6 +759,7 @@ public struct StatementImportSheet: View {
 
     @State private var filterMode: StatementImportFilterMode
     @State private var selectedAccountId: UUID = UUID()
+    @State private var selectedFileURL: URL? = nil
     @State private var selectedFileName: String = "Nenhum arquivo selecionado"
     @State private var parsedItems: [ParsedStatementTransaction] = []
     @State private var importSummaryMessage: String? = nil
@@ -829,6 +830,7 @@ public struct StatementImportSheet: View {
 
                 Button {
                     if let url = MacFilePicker.pickStatementFile() {
+                        selectedFileURL = url
                         selectedFileName = url.lastPathComponent
                         Task {
                             parsedItems = await llmService.analyzeStatementFile(
@@ -839,23 +841,9 @@ public struct StatementImportSheet: View {
                         }
                     }
                 } label: {
-                    Label("Selecionar PDF / Arquivo do Mac...", systemImage: "folder.fill")
+                    Label("Selecionar Documento PDF no Mac", systemImage: "folder.fill")
                 }
                 .buttonStyle(.borderedProminent)
-
-                Button {
-                    selectedFileName = "Extrato_Itau_2026_Anexo.pdf"
-                    Task {
-                        parsedItems = await llmService.analyzeStatementRawText(
-                            rawText: SampleItauStatementData.rawOCRText,
-                            filterMode: filterMode,
-                            store: store
-                        )
-                    }
-                } label: {
-                    Label("Carregar Extrato Itaú Anexo", systemImage: "doc.richtext.fill")
-                }
-                .buttonStyle(.bordered)
             }
 
             if llmService.isAnalyzingStatement {
@@ -878,7 +866,7 @@ public struct StatementImportSheet: View {
                     Image(systemName: "doc.viewfinder")
                         .font(.system(size: 44))
                         .foregroundStyle(.secondary)
-                    Text("Selecione um relatório PDF/CSV na sua máquina ou clique em 'Carregar Extrato Itaú Anexo'")
+                    Text("Clique em \"Selecionar Documento PDF no Mac\" para importar seu extrato ou relatório")
                         .font(.headline)
                     Text("Suporta importação de Apenas Despesas, Apenas Receitas ou Híbrido (Receitas + Despesas).")
                         .font(.subheadline)
@@ -1027,9 +1015,9 @@ public struct StatementImportSheet: View {
     }
 
     private func reloadSampleIfNeeded() async {
-        if selectedFileName == "Extrato_Itau_2026_Anexo.pdf" {
-            parsedItems = await llmService.analyzeStatementRawText(
-                rawText: SampleItauStatementData.rawOCRText,
+        if let url = selectedFileURL {
+            parsedItems = await llmService.analyzeStatementFile(
+                fileURL: url,
                 filterMode: filterMode,
                 store: store
             )

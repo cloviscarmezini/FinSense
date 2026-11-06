@@ -164,7 +164,7 @@ public struct LoansAndFinancingsView: View {
                 contractPendingDeletion = nil
             }
         } message: { contract in
-            Text("Deseja realmente excluir o \(kind.title.lowercased()) \"\(contract.name)\" e remover todas as suas parcelas futuras não pagas? Esta ação não pode ser desfeita.")
+            Text("Deseja realmente excluir o \(kind.title.lowercased()) \"\(contract.name)\" e remover todas as transações vinculadas a ele? Esta ação não pode ser desfeita.")
         }
     }
 
@@ -216,7 +216,7 @@ public struct LoansAndFinancingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
-                .help("Excluir contrato e parcelas futuras não pagas")
+                .help("Excluir contrato e todas as suas transações vinculadas")
             }
 
             // Contract Details Grid (Incluindo o campo "Saldo devedor" no card!)
@@ -677,8 +677,8 @@ public struct ImportCreditContractDocumentSheet: View {
                     }
                     Text(
                         kind == .loan
-                            ? "Selecione o PDF do Demonstrativo Descritivo de Crédito (ou carregue o anexo Santander) para extrair valores, Saldo Devedor e data original."
-                            : "Selecione o PDF de Evolução do Financiamento (ou carregue o anexo CAIXA Habitação) para extrair valores, Saldo Devedor e data original."
+                            ? "Selecione o documento PDF do empréstimo no seu Mac para extrair valores, Saldo Devedor e data original."
+                            : "Selecione o documento PDF do financiamento no seu Mac para extrair valores, Saldo Devedor e data original."
                     )
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -710,37 +710,10 @@ public struct ImportCreditContractDocumentSheet: View {
                         }
                     }
                 } label: {
-                    Label("Selecionar Documento PDF do Mac...", systemImage: "folder.fill")
+                    Label("Selecionar Documento PDF no Mac", systemImage: "folder.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Color(hex: "#6366F1"))
-
-                Button {
-                    let sampleTitle = kind == .loan
-                        ? "DEMONSTRATIVO DESCRITIVO DE CRÉDITO.pdf"
-                        : "CAIXA_Evoluçao_do_Contrato.pdf"
-                    let sampleRaw = kind == .loan
-                        ? SampleContractDocumentsData.santanderLoanOCRText
-                        : SampleContractDocumentsData.caixaFinancingOCRText
-                    selectedFileName = sampleTitle
-                    Task {
-                        if let doc = await llmService.analyzeCreditContractRawText(
-                            rawText: sampleRaw,
-                            expectedKind: kind,
-                            store: store
-                        ) {
-                            applyParsedDocument(doc)
-                        }
-                    }
-                } label: {
-                    Label(
-                        kind == .loan
-                            ? "Carregar Anexo: DEMONSTRATIVO DESCRITIVO DE CRÉDITO.pdf"
-                            : "Carregar Anexo: CAIXA_Evoluçao_do_Contrato.pdf",
-                        systemImage: "doc.richtext.fill"
-                    )
-                }
-                .buttonStyle(.bordered)
 
                 Spacer()
             }
@@ -764,7 +737,7 @@ public struct ImportCreditContractDocumentSheet: View {
                     Image(systemName: "doc.text.viewfinder")
                         .font(.system(size: 46))
                         .foregroundStyle(.secondary)
-                    Text("Selecione um documento PDF ou clique no botão acima para carregar o documento anexo de exemplo")
+                    Text("Clique em \"Selecionar Documento PDF no Mac\" acima para importar o contrato")
                         .font(.headline)
                     Text("A LLM local identificará automaticamente o contrato, data em que foi feito, Saldo Devedor, parcelas pagas e parcelas futuras.")
                         .font(.subheadline)

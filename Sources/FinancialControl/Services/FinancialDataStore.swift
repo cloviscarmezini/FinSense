@@ -1151,36 +1151,56 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Calcula a "Projeção de valor para quitar" trazendo as parcelas futuras a valor presente (desconto proporcional de juros futuros)
-    /// considerando a taxa de juros do contrato, o sistema de amortização (PRICE ou SAC) e o tipo do empréstimo/financiamento.
+    /// considerando o Saldo Devedor atual (quando informado/importado), a taxa de juros do contrato, o sistema de amortização (PRICE ou SAC) e o tipo do contrato.
     public func projectedPayoffAmount(for contract: CreditContract) -> Double {
         guard !contract.isSettled else { return 0.0 }
         let n = remainingInstallmentsCount(for: contract)
         guard n > 0 else { return 0.0 }
 
-        let pmt = contract.installmentAmount
-        let nominalRemaining = Double(n) * pmt
+        let nominalRemaining = remainingNominalAmount(for: contract)
+        let pmt = nominalRemaining / Double(max(n, 1))
         let i = contract.monthlyInterestRate / 100.0
 
+        // Se o contrato possui Saldo Devedor explícito (ex: extraído do demonstrativo/evolução bancária)
+        // que já representa o principal a valor presente (D0, livre de juros futuros e seguros mensais),
+        // a projeção para quitação imediata é o próprio Saldo Devedor atualizado, nunca superior a ele.
+        if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
+            let currentBal = currentOutstandingBalance(for: contract)
+            if currentBal < nominalRemaining - 0.01 {
+                return max(currentBal, 0.0)
+            }
+        }
+
         guard i > 0.0001 else {
+            if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
+                return max(min(currentOutstandingBalance(for: contract), nominalRemaining), 0.0)
+            }
             return max(nominalRemaining, 0)
         }
 
         // Valor Presente pelo sistema PRICE: PV = PMT * (1 - (1 + i)^(-n)) / i
         let pvPrice = pmt * (1.0 - pow(1.0 + i, -Double(n))) / i
 
+        let calculatedPayoff: Double
         switch contract.amortizationSystem {
         case .price:
             if contract.kind == .loan, let subtype = contract.loanSubtype {
                 let discount = max(nominalRemaining - pvPrice, 0) * subtype.discountFactorMultiplier
-                return max(nominalRemaining - discount, 0)
+                calculatedPayoff = max(nominalRemaining - discount, 0)
+            } else {
+                calculatedPayoff = min(pvPrice, nominalRemaining)
             }
-            return min(pvPrice, nominalRemaining)
         case .sac:
             // Em SAC, a amortização mensal de principal é constante e os juros incidem sobre o saldo devedor
             let proportionalPrincipal = contract.totalContractedAmount * (Double(n) / Double(max(contract.totalInstallments, 1)))
             let estimatedPrincipal = min(max(proportionalPrincipal - contract.extraAmortizedTotal, pvPrice * 0.92), nominalRemaining)
-            return max(estimatedPrincipal, 0)
+            calculatedPayoff = max(estimatedPrincipal, 0)
         }
+
+        if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
+            return max(min(calculatedPayoff, currentOutstandingBalance(for: contract)), 0.0)
+        }
+        return calculatedPayoff
     }
 
     /// Amortizar empréstimo/financiamento: registra pagamento na conta escolhida e recalcula parcelas futuras
@@ -1355,7 +1375,7 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     public func deleteContract(_ contractId: UUID) {
-        transactions.removeAll { $0.linkedContractId == contractId && !$0.isPaid }
+        transactions.removeAll { $0.linkedContractId == contractId || $0.seriesGroupId == contractId }
         contracts.removeAll { $0.id == contractId }
         save()
     }

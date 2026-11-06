@@ -409,10 +409,117 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertEqual(contract.contractNumber, "178770203328-1")
         XCTAssertEqual(contract.pastInstallmentsElapsedAtCreation, 28)
         XCTAssertEqual(store.currentOutstandingBalance(for: contract), 324737.86, accuracy: 0.01)
+        // A projeção para quitar nunca pode ultrapassar o Saldo Devedor atual (R$ 324.737,86)
+        XCTAssertEqual(store.projectedPayoffAmount(for: contract), 324737.86, accuracy: 0.01)
+        XCTAssertLessThanOrEqual(store.projectedPayoffAmount(for: contract), store.currentOutstandingBalance(for: contract))
 
         let futureTxs = store.unpaidTransactions(forContract: contract.id)
         XCTAssertEqual(futureTxs.count, 332)
         XCTAssertEqual(BRLFormatters.shortDate(futureTxs.first!.date), "05/12/2026")
+    }
+
+    func testMultipleLoanImportsTotalizersAndCompleteTransactionRemovalOnDelete() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(name: "Santander", bankPresetId: "santander", customImagePath: nil, iconSymbol: "building.columns.fill", colorHex: "#EC0000", initialBalance: 10000.0)
+        let acc = store.accounts.first!
+
+        // 1. Importa o primeiro empréstimo (Santander Contrato 783694303: 26x R$ 4.509,81 = R$ 117.255,06, Saldo Devedor R$ 91.039,22)
+        let parsed1 = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.santanderLoanOCRText,
+            expectedKind: .loan
+        )
+        let loan1 = store.createCreditContract(
+            kind: .loan,
+            name: parsed1.name,
+            contractNumber: parsed1.contractNumber,
+            loanSubtype: parsed1.loanSubtype,
+            amortizationSystem: parsed1.amortizationSystem,
+            totalContractedAmount: parsed1.totalContractedAmount,
+            outstandingBalance: parsed1.outstandingBalance,
+            installmentAmount: parsed1.installmentAmount,
+            billingDay: parsed1.billingDay,
+            totalInstallments: parsed1.totalInstallments,
+            monthlyInterestRate: parsed1.monthlyInterestRate,
+            startDate: parsed1.startDate,
+            accountId: acc.id,
+            overridePastInstallmentsCount: parsed1.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: parsed1.firstFutureBillingDate
+        )
+
+        // 2. Importa um segundo empréstimo com valores distintos no formato DDC Santander
+        let secondLoanOCR = """
+        Santander DOCUMENTO DESCRITIVO DE CRÉDITO
+        Data de Emissão: 05/11/2026
+        Produto: CREDITO CONSIGNADO Número do Contrato: 998877665
+        Data de Início da Operação: 15/05/2026 Quantidade Total de Parcelas: 24
+        Valor Solicitado: R$ 20.000,00 Valor Total Financiado: R$ 21.500,00
+        Taxa Efetiva Mensal: 1,50% Taxa Efetiva Anual: 19,56%
+        Dívida para Liquidação: R$ 16.200,00
+        01 15/06/2026 Paga 1.050,00 1.050,00
+        02 15/07/2026 Paga 1.050,00 1.050,00
+        03 15/08/2026 Paga 1.050,00 1.050,00
+        04 15/09/2026 Paga 1.050,00 1.050,00
+        05 15/10/2026 Paga 1.050,00 1.050,00
+        06 15/11/2026 A Vencer 1.050,00 0,00
+        Soma Vlr. Parcelas: (19.950,00) Soma Saldo Devedor D0: (16.200,00)
+        """
+        let parsed2 = ContractDocumentImportService.parseContractDocumentText(
+            secondLoanOCR,
+            expectedKind: .loan
+        )
+        XCTAssertEqual(parsed2.contractNumber, "998877665")
+        XCTAssertEqual(parsed2.totalInstallments, 24)
+        XCTAssertEqual(parsed2.paidInstallmentsCount, 5)
+        XCTAssertEqual(parsed2.remainingInstallmentsCount, 19)
+        XCTAssertEqual(parsed2.installmentAmount, 1050.0, accuracy: 0.01)
+        XCTAssertEqual(parsed2.outstandingBalance, 16200.0, accuracy: 0.01)
+
+        let loan2 = store.createCreditContract(
+            kind: .loan,
+            name: parsed2.name,
+            contractNumber: parsed2.contractNumber,
+            loanSubtype: parsed2.loanSubtype,
+            amortizationSystem: parsed2.amortizationSystem,
+            totalContractedAmount: parsed2.totalContractedAmount,
+            outstandingBalance: parsed2.outstandingBalance,
+            installmentAmount: parsed2.installmentAmount,
+            billingDay: parsed2.billingDay,
+            totalInstallments: parsed2.totalInstallments,
+            monthlyInterestRate: parsed2.monthlyInterestRate,
+            startDate: parsed2.startDate,
+            accountId: acc.id,
+            overridePastInstallmentsCount: parsed2.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: parsed2.firstFutureBillingDate
+        )
+
+        // Verifica que cada empréstimo tem seu próprio cálculo isolado
+        XCTAssertEqual(store.remainingNominalAmount(for: loan1), 117255.06, accuracy: 0.01)
+        XCTAssertEqual(store.projectedPayoffAmount(for: loan1), 91039.22, accuracy: 0.01)
+
+        XCTAssertEqual(store.remainingNominalAmount(for: loan2), 19950.00, accuracy: 0.01)
+        XCTAssertEqual(store.projectedPayoffAmount(for: loan2), 16200.00, accuracy: 0.01)
+
+        // Marca uma parcela do primeiro empréstimo como paga para garantir que até transações pagas do empréstimo sejam removidas ao excluir o empréstimo
+        if let firstTxLoan1 = store.transactions.first(where: { $0.linkedContractId == loan1.id }) {
+            store.toggleTransactionPaid(firstTxLoan1.id)
+        }
+
+        // 3. Deleta o primeiro empréstimo
+        store.deleteContract(loan1.id)
+
+        // Todas as transações do primeiro empréstimo (pagas ou não) devem ter sido removidas
+        XCTAssertTrue(store.transactions.filter { $0.linkedContractId == loan1.id }.isEmpty)
+        XCTAssertEqual(store.activeContracts(for: .loan).count, 1)
+
+        // Os totalizadores (Soma Nominal, Projeção para Quitar Hoje e Economia) devem refletir exclusivamente o segundo empréstimo
+        let activeLoans = store.activeContracts(for: .loan)
+        let totalNominal = activeLoans.reduce(0.0) { $0 + store.remainingNominalAmount(for: $1) }
+        let totalProjected = activeLoans.reduce(0.0) { $0 + store.projectedPayoffAmount(for: $1) }
+        let totalSavings = max(totalNominal - totalProjected, 0)
+
+        XCTAssertEqual(totalNominal, 19950.00, accuracy: 0.01)
+        XCTAssertEqual(totalProjected, 16200.00, accuracy: 0.01)
+        XCTAssertEqual(totalSavings, 3750.00, accuracy: 0.01)
     }
 
     func testBRLCurrencyMaskAndDigitsOnlyFormatter() {
