@@ -45,7 +45,7 @@ public struct DebtsView: View {
                             showImportDebtsSheet = true
                         }
                     } label: {
-                        Label("Importar Dívidas (IA Local)", systemImage: "doc.viewfinder.fill")
+                        Label("Importar", systemImage: "doc.viewfinder.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Color(hex: "#6366F1"))
@@ -108,7 +108,7 @@ public struct DebtsView: View {
                                     showImportDebtsSheet = true
                                 }
                             } label: {
-                                Label("Importar Dívidas (IA Local)", systemImage: "doc.viewfinder.fill")
+                                Label("Importar", systemImage: "doc.viewfinder.fill")
                             }
                             .buttonStyle(.bordered)
                         }
@@ -321,7 +321,7 @@ public struct DebtEditorSheet: View {
                             showEmbeddedDebtImporter = true
                         }
                     } label: {
-                        Label("Importar Dívidas (IA Local)", systemImage: "sparkles.rectangle.stack.fill")
+                        Label("Importar", systemImage: "sparkles.rectangle.stack.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Color(hex: "#6366F1"))
@@ -614,7 +614,7 @@ public struct DebtImportSheet: View {
     @State private var selectedFileURL: URL? = nil
     @State private var selectedFileName: String = "Nenhum arquivo selecionado"
     @State private var rawTextInput: String = ""
-    @State private var showTextInputBox: Bool = true
+    @AppStorage("import_show_text_input_box") private var showTextInputBox: Bool = false
     @State private var parsedDebts: [ParsedDebtImportItem] = []
     @State private var editingParsedDebt: ParsedDebtImportItem? = nil
     @State private var parsedDebtPendingRemoval: ParsedDebtImportItem? = nil

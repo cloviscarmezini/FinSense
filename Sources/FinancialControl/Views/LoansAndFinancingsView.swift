@@ -47,7 +47,7 @@ public struct LoansAndFinancingsView: View {
                             showImportDocumentSheet = true
                         }
                     } label: {
-                        Label("Importar Documento (IA Local)", systemImage: "doc.text.magnifyingglass")
+                        Label("Importar", systemImage: "doc.text.magnifyingglass")
                     }
                     .buttonStyle(.bordered)
 
@@ -114,7 +114,7 @@ public struct LoansAndFinancingsView: View {
                                     showImportDocumentSheet = true
                                 }
                             } label: {
-                                Label("Importar de Documento PDF (IA Local)", systemImage: "sparkles.rectangle.stack.fill")
+                                Label("Importar", systemImage: "sparkles.rectangle.stack.fill")
                             }
                             .buttonStyle(.bordered)
 
@@ -395,7 +395,7 @@ public struct CreateCreditContractSheet: View {
                         showEmbeddedDocImporter = true
                     }
                 } label: {
-                    Label("Importar Documento (LLM Local)", systemImage: "sparkles.rectangle.stack.fill")
+                    Label("Importar", systemImage: "sparkles.rectangle.stack.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Color(hex: "#6366F1"))
@@ -630,7 +630,7 @@ public struct ImportCreditContractDocumentSheet: View {
 
     @State private var selectedFileName: String = "Nenhum documento selecionado"
     @State private var rawTextInput: String = ""
-    @State private var showTextInputBox: Bool = true
+    @AppStorage("import_show_text_input_box") private var showTextInputBox: Bool = false
     @State private var parsedDoc: ParsedCreditContractDocument? = nil
 
     // Campos editáveis após a leitura pela LLM

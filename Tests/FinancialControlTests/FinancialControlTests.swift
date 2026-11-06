@@ -1012,4 +1012,41 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertEqual(imported.categoryId, healthCat)
         XCTAssertEqual(imported.recurrenceMode, .single)
     }
+
+    func testPreferencesStorageKeysForGroupByDayAndShowTextInputBox() {
+        let defaults = UserDefaults.standard
+        let groupByKey = "transactions_group_by_day"
+        let importTextBoxKey = "import_show_text_input_box"
+
+        let prevGroupByDay = defaults.object(forKey: groupByKey)
+        let prevImportBox = defaults.object(forKey: importTextBoxKey)
+
+        defer {
+            if let prevGroupByDay = prevGroupByDay {
+                defaults.set(prevGroupByDay, forKey: groupByKey)
+            } else {
+                defaults.removeObject(forKey: groupByKey)
+            }
+            if let prevImportBox = prevImportBox {
+                defaults.set(prevImportBox, forKey: importTextBoxKey)
+            } else {
+                defaults.removeObject(forKey: importTextBoxKey)
+            }
+        }
+
+        // Sem valor prévio gravado, o bool(forKey:) do UserDefaults retorna false por padrão
+        defaults.removeObject(forKey: groupByKey)
+        defaults.removeObject(forKey: importTextBoxKey)
+        XCTAssertFalse(defaults.bool(forKey: groupByKey))
+        XCTAssertFalse(defaults.bool(forKey: importTextBoxKey))
+
+        // Gravando a última escolha do usuário
+        defaults.set(true, forKey: groupByKey)
+        defaults.set(true, forKey: importTextBoxKey)
+        XCTAssertTrue(defaults.bool(forKey: groupByKey))
+        XCTAssertTrue(defaults.bool(forKey: importTextBoxKey))
+
+        defaults.set(false, forKey: importTextBoxKey)
+        XCTAssertFalse(defaults.bool(forKey: importTextBoxKey))
+    }
 }

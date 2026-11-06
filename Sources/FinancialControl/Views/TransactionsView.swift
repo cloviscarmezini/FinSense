@@ -11,7 +11,7 @@ public struct TransactionsView: View {
     @State private var selectedCategoryFilter: UUID? = nil
     @State private var onlyPendingFilter: Bool = false
     @State private var sortOrder: TransactionSortOrder = .dateDescending
-    @State private var groupByDay: Bool = false
+    @AppStorage("transactions_group_by_day") private var groupByDay: Bool = false
 
     @State private var showCreateExpenseSheet: Bool = false
     @State private var showCreateIncomeSheet: Bool = false
@@ -229,7 +229,7 @@ public struct TransactionsView: View {
                         showImportSheet = true
                     }
                 } label: {
-                    Label("Importar Relatório / Extrato (IA Local)", systemImage: "doc.text.magnifyingglass")
+                    Label("Importar", systemImage: "doc.text.magnifyingglass")
                 }
                 .buttonStyle(.bordered)
 
@@ -770,7 +770,7 @@ public struct TransactionEditorSheet: View {
                         }
                     } label: {
                         Label(
-                            "Importar Relatório (Extrato c/ LLM Local)",
+                            "Importar",
                             systemImage: "sparkles.rectangle.stack.fill"
                         )
                     }
@@ -1133,7 +1133,7 @@ public struct StatementImportSheet: View {
     @State private var selectedFileURL: URL? = nil
     @State private var selectedFileName: String = "Nenhum arquivo selecionado"
     @State private var rawTextInput: String = ""
-    @State private var showTextInputBox: Bool = true
+    @AppStorage("import_show_text_input_box") private var showTextInputBox: Bool = false
     @State private var parsedItems: [ParsedStatementTransaction] = []
     @State private var editingParsedItem: ParsedStatementTransaction? = nil
     @State private var parsedItemPendingRemoval: ParsedStatementTransaction? = nil

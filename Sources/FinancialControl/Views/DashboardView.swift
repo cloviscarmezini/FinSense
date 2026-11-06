@@ -114,7 +114,7 @@ public struct DashboardView: View {
                             showImportStatementSheet = true
                         }
                     } label: {
-                        Label("Importar Extrato PDF / Relatório (IA Local)", systemImage: "doc.text.magnifyingglass")
+                        Label("Importar", systemImage: "doc.text.magnifyingglass")
                     }
                     .buttonStyle(.bordered)
 
