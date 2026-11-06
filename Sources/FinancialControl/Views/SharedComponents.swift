@@ -294,6 +294,297 @@ public struct MetricCardView: View {
     }
 }
 
+// MARK: - Native AppKit Full-Width Clickable Input with Auto-Hiding Placeholder
+
+public final class FullWidthClickableNSTextField: NSTextField {
+    public override var intrinsicContentSize: NSSize {
+        let superSize = super.intrinsicContentSize
+        return NSSize(width: NSView.noIntrinsicMetric, height: max(superSize.height, 20))
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        if window?.firstResponder !== currentEditor() {
+            window?.makeFirstResponder(self)
+        }
+        super.mouseDown(with: event)
+    }
+}
+
+public final class FullWidthClickableNSSecureTextField: NSSecureTextField {
+    public override var intrinsicContentSize: NSSize {
+        let superSize = super.intrinsicContentSize
+        return NSSize(width: NSView.noIntrinsicMetric, height: max(superSize.height, 20))
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        if window?.firstResponder !== currentEditor() {
+            window?.makeFirstResponder(self)
+        }
+        super.mouseDown(with: event)
+    }
+}
+
+public final class ClickableFieldWrapperNSView: NSView {
+    public let placeholderLabel = NSTextField(labelWithString: "")
+    public let textField = FullWidthClickableNSTextField()
+    public let secureField = FullWidthClickableNSSecureTextField()
+    public var isSecureMode: Bool = false {
+        didSet {
+            textField.isHidden = isSecureMode
+            secureField.isHidden = !isSecureMode
+            updatePlaceholderVisibility()
+        }
+    }
+
+    public var activeField: NSTextField {
+        isSecureMode ? secureField : textField
+    }
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupViews()
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupViews()
+    }
+
+    private func setupViews() {
+        setContentHuggingPriority(.init(1), for: .horizontal)
+        setContentCompressionResistancePriority(.init(1), for: .horizontal)
+
+        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        placeholderLabel.isEditable = false
+        placeholderLabel.isSelectable = false
+        placeholderLabel.isBordered = false
+        placeholderLabel.drawsBackground = false
+        placeholderLabel.textColor = .placeholderTextColor
+        placeholderLabel.alignment = .left
+        placeholderLabel.lineBreakMode = .byTruncatingTail
+        placeholderLabel.setContentHuggingPriority(.init(1), for: .horizontal)
+        placeholderLabel.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+
+        for field in [textField, secureField] {
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.isEditable = true
+            field.isSelectable = true
+            field.isBordered = false
+            field.drawsBackground = false
+            field.focusRingType = .none
+            field.alignment = .left
+            field.lineBreakMode = .byTruncatingTail
+            field.cell?.wraps = false
+            field.cell?.isScrollable = true
+            field.placeholderString = nil
+            field.setContentHuggingPriority(.init(1), for: .horizontal)
+            field.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        }
+
+        secureField.isHidden = true
+
+        addSubview(placeholderLabel)
+        addSubview(textField)
+        addSubview(secureField)
+
+        NSLayoutConstraint.activate([
+            placeholderLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            placeholderLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            placeholderLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            textField.leadingAnchor.constraint(equalTo: leadingAnchor),
+            textField.trailingAnchor.constraint(equalTo: trailingAnchor),
+            textField.topAnchor.constraint(equalTo: topAnchor),
+            textField.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            secureField.leadingAnchor.constraint(equalTo: leadingAnchor),
+            secureField.trailingAnchor.constraint(equalTo: trailingAnchor),
+            secureField.topAnchor.constraint(equalTo: topAnchor),
+            secureField.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+    }
+
+    public override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: 22)
+    }
+
+    public func updatePlaceholderVisibility() {
+        let current = activeField.stringValue
+        placeholderLabel.isHidden = !current.isEmpty
+    }
+
+    public func focusActiveField() {
+        guard let win = window else { return }
+        if win.firstResponder !== activeField.currentEditor() {
+            win.makeFirstResponder(activeField)
+            if let editor = activeField.currentEditor() {
+                let len = activeField.stringValue.utf16.count
+                editor.selectedRange = NSRange(location: len, length: 0)
+            }
+        }
+    }
+
+    public override func hitTest(_ point: NSPoint) -> NSView? {
+        let localPoint = convert(point, from: superview)
+        guard bounds.contains(localPoint) else { return nil }
+        return activeField
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        focusActiveField()
+    }
+}
+
+public struct MacFullWidthTextInput: NSViewRepresentable {
+    @Binding public var text: String
+    public var placeholder: String
+    public var font: NSFont
+    public var isSecure: Bool
+    public var focusTrigger: Int
+    public var formatterTransform: ((String) -> String)?
+    public var onFocusChange: ((Bool) -> Void)?
+    public var onCommit: (() -> Void)?
+
+    public init(
+        text: Binding<String>,
+        placeholder: String,
+        font: NSFont = .systemFont(ofSize: 13.5),
+        isSecure: Bool = false,
+        focusTrigger: Int = 0,
+        formatterTransform: ((String) -> String)? = nil,
+        onFocusChange: ((Bool) -> Void)? = nil,
+        onCommit: (() -> Void)? = nil
+    ) {
+        self._text = text
+        self.placeholder = placeholder
+        self.font = font
+        self.isSecure = isSecure
+        self.focusTrigger = focusTrigger
+        self.formatterTransform = formatterTransform
+        self.onFocusChange = onFocusChange
+        self.onCommit = onCommit
+    }
+
+    public func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    public func makeNSView(context: Context) -> ClickableFieldWrapperNSView {
+        let wrapper = ClickableFieldWrapperNSView()
+        wrapper.placeholderLabel.stringValue = placeholder
+        wrapper.placeholderLabel.font = font
+        wrapper.textField.font = font
+        wrapper.secureField.font = font
+        wrapper.textField.delegate = context.coordinator
+        wrapper.secureField.delegate = context.coordinator
+        wrapper.isSecureMode = isSecure
+        wrapper.textField.stringValue = text
+        wrapper.secureField.stringValue = text
+        wrapper.updatePlaceholderVisibility()
+        return wrapper
+    }
+
+    public func updateNSView(_ nsView: ClickableFieldWrapperNSView, context: Context) {
+        context.coordinator.parent = self
+
+        if nsView.placeholderLabel.stringValue != placeholder {
+            nsView.placeholderLabel.stringValue = placeholder
+        }
+        if nsView.textField.font != font {
+            nsView.placeholderLabel.font = font
+            nsView.textField.font = font
+            nsView.secureField.font = font
+        }
+        if nsView.isSecureMode != isSecure {
+            nsView.isSecureMode = isSecure
+        }
+
+        let currentField = nsView.activeField
+        if currentField.stringValue != text {
+            nsView.textField.stringValue = text
+            nsView.secureField.stringValue = text
+            if let editor = currentField.currentEditor() {
+                editor.string = text
+                let endPos = text.utf16.count
+                editor.selectedRange = NSRange(location: endPos, length: 0)
+            }
+        }
+        nsView.updatePlaceholderVisibility()
+
+        if context.coordinator.lastFocusTrigger != focusTrigger {
+            context.coordinator.lastFocusTrigger = focusTrigger
+            DispatchQueue.main.async {
+                nsView.focusActiveField()
+            }
+        }
+    }
+
+    public final class Coordinator: NSObject, NSTextFieldDelegate {
+        public var parent: MacFullWidthTextInput
+        public var lastFocusTrigger: Int = 0
+
+        public init(_ parent: MacFullWidthTextInput) {
+            self.parent = parent
+            self.lastFocusTrigger = parent.focusTrigger
+        }
+
+        public func controlTextDidBeginEditing(_ obj: Notification) {
+            if let field = obj.object as? NSTextField,
+               let wrapper = field.superview as? ClickableFieldWrapperNSView {
+                wrapper.updatePlaceholderVisibility()
+            }
+            parent.onFocusChange?(true)
+        }
+
+        public func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            let rawValue = field.stringValue
+            let finalValue: String
+            if let transform = parent.formatterTransform {
+                finalValue = transform(rawValue)
+                if field.stringValue != finalValue {
+                    field.stringValue = finalValue
+                    if let editor = field.currentEditor() {
+                        editor.string = finalValue
+                        let endPos = finalValue.utf16.count
+                        editor.selectedRange = NSRange(location: endPos, length: 0)
+                    }
+                }
+            } else {
+                finalValue = rawValue
+            }
+
+            if let wrapper = field.superview as? ClickableFieldWrapperNSView {
+                wrapper.textField.stringValue = finalValue
+                wrapper.secureField.stringValue = finalValue
+                wrapper.updatePlaceholderVisibility()
+            }
+
+            if parent.text != finalValue {
+                parent.text = finalValue
+            }
+        }
+
+        public func controlTextDidEndEditing(_ obj: Notification) {
+            if let field = obj.object as? NSTextField,
+               let wrapper = field.superview as? ClickableFieldWrapperNSView {
+                wrapper.updatePlaceholderVisibility()
+            }
+            parent.onFocusChange?(false)
+        }
+
+        public func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.insertNewline(_:)) {
+                if let onCommit = parent.onCommit {
+                    onCommit()
+                    return true
+                }
+            }
+            return false
+        }
+    }
+}
+
 // MARK: - Visible Bordered Text Input, BRL Currency Masked Input & Editable Integer Stepper
 
 public struct BorderedTextField: View {
@@ -301,17 +592,26 @@ public struct BorderedTextField: View {
     public let placeholder: String
     @Binding public var text: String
     public var suffix: String? = nil
+    public var isSecure: Bool = false
+    public var onCommit: (() -> Void)? = nil
+
+    @State private var focusTrigger: Int = 0
+    @State private var isFocused: Bool = false
 
     public init(
         label: String? = nil,
         placeholder: String,
         text: Binding<String>,
-        suffix: String? = nil
+        suffix: String? = nil,
+        isSecure: Bool = false,
+        onCommit: (() -> Void)? = nil
     ) {
         self.label = label
         self.placeholder = placeholder
         self._text = text
         self.suffix = suffix
+        self.isSecure = isSecure
+        self.onCommit = onCommit
     }
 
     public var body: some View {
@@ -322,9 +622,18 @@ public struct BorderedTextField: View {
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 6) {
-                TextField(placeholder, text: $text)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13.5))
+                MacFullWidthTextInput(
+                    text: $text,
+                    placeholder: placeholder,
+                    font: .systemFont(ofSize: 13.5),
+                    isSecure: isSecure,
+                    focusTrigger: focusTrigger,
+                    onFocusChange: { focused in
+                        isFocused = focused
+                    },
+                    onCommit: onCommit
+                )
+                .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22, alignment: .leading)
 
                 if let suffix, !suffix.isEmpty {
                     Text(suffix)
@@ -333,24 +642,36 @@ public struct BorderedTextField: View {
                 }
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color(nsColor: .textBackgroundColor))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.primary.opacity(0.32), lineWidth: 1.2)
+                    .stroke(
+                        isFocused ? Color.accentColor.opacity(0.85) : Color.primary.opacity(0.32),
+                        lineWidth: isFocused ? 1.6 : 1.2
+                    )
             )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                focusTrigger += 1
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// Input monetário com borda visível, permitindo apenas números e aplicando máscara automática de Real (R$ 1.234,56)
+/// Input monetário com borda visível, clicável em toda a extensão, permitindo apenas números e aplicando máscara de Real (R$ 1.234,56)
 public struct BRLCurrencyTextField: View {
     public let label: String
     @Binding public var text: String
     public var placeholder: String
+
+    @State private var focusTrigger: Int = 0
+    @State private var isFocused: Bool = false
 
     public init(
         label: String,
@@ -380,27 +701,40 @@ public struct BRLCurrencyTextField: View {
                     )
                     .foregroundStyle(Color.accentColor)
 
-                TextField(placeholder, text: $text)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .onChange(of: text) { _, newValue in
-                        let formatted = BRLFormatters.formatCurrencyMaskedInput(newValue)
-                        if formatted != newValue {
-                            text = formatted
-                        }
+                MacFullWidthTextInput(
+                    text: $text,
+                    placeholder: placeholder,
+                    font: .systemFont(ofSize: 14, weight: .semibold),
+                    focusTrigger: focusTrigger,
+                    formatterTransform: { raw in
+                        BRLFormatters.formatCurrencyMaskedInput(raw)
+                    },
+                    onFocusChange: { focused in
+                        isFocused = focused
                     }
+                )
+                .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22, alignment: .leading)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color(nsColor: .textBackgroundColor))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.primary.opacity(0.32), lineWidth: 1.2)
+                    .stroke(
+                        isFocused ? Color.accentColor.opacity(0.85) : Color.primary.opacity(0.32),
+                        lineWidth: isFocused ? 1.6 : 1.2
+                    )
             )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                focusTrigger += 1
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -412,6 +746,8 @@ public struct EditableIntegerStepperField: View {
     public var unitSuffix: String
 
     @State private var textValue: String = ""
+    @State private var focusTrigger: Int = 0
+    @State private var isFocused: Bool = false
 
     public init(
         label: String,
@@ -434,22 +770,37 @@ public struct EditableIntegerStepperField: View {
             }
             HStack(spacing: 8) {
                 HStack(spacing: 6) {
-                    TextField("\(range.lowerBound)", text: $textValue)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                        .frame(minWidth: 46)
-                        .onChange(of: textValue) { _, newValue in
-                            let digits = BRLFormatters.formatDigitsOnly(newValue, maxDigits: 4)
-                            if digits != newValue {
-                                textValue = digits
-                            }
-                            if let parsed = Int(digits) {
-                                let clamped = min(max(parsed, range.lowerBound), range.upperBound)
-                                if value != clamped {
+                    MacFullWidthTextInput(
+                        text: $textValue,
+                        placeholder: "\(range.lowerBound)",
+                        font: .systemFont(ofSize: 14, weight: .bold),
+                        focusTrigger: focusTrigger,
+                        formatterTransform: { raw in
+                            BRLFormatters.formatDigitsOnly(raw, maxDigits: 4)
+                        },
+                        onFocusChange: { focused in
+                            isFocused = focused
+                            if !focused {
+                                // Ao sair do foco, normaliza o texto dentro do limite permitido
+                                if let parsed = Int(textValue) {
+                                    let clamped = min(max(parsed, range.lowerBound), range.upperBound)
                                     value = clamped
+                                    textValue = "\(clamped)"
+                                } else {
+                                    textValue = "\(value)"
                                 }
                             }
                         }
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22, alignment: .leading)
+                    .onChange(of: textValue) { _, newValue in
+                        if let parsed = Int(newValue) {
+                            let clamped = min(max(parsed, range.lowerBound), range.upperBound)
+                            if value != clamped {
+                                value = clamped
+                            }
+                        }
+                    }
 
                     if !unitSuffix.isEmpty {
                         Text(unitSuffix)
@@ -459,14 +810,22 @@ public struct EditableIntegerStepperField: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .fill(Color(nsColor: .textBackgroundColor))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(Color.primary.opacity(0.32), lineWidth: 1.2)
+                        .stroke(
+                            isFocused ? Color.accentColor.opacity(0.85) : Color.primary.opacity(0.32),
+                            lineWidth: isFocused ? 1.6 : 1.2
+                        )
                 )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    focusTrigger += 1
+                }
 
                 Stepper(
                     "",
@@ -483,13 +842,16 @@ public struct EditableIntegerStepperField: View {
                 .labelsHidden()
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             textValue = "\(value)"
         }
         .onChange(of: value) { _, newVal in
-            let str = "\(newVal)"
-            if textValue != str {
-                textValue = str
+            if !isFocused {
+                let str = "\(newVal)"
+                if textValue != str {
+                    textValue = str
+                }
             }
         }
     }

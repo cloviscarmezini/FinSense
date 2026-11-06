@@ -133,14 +133,13 @@ public struct AIChatSheetView: View {
 
             // Input Bar
             HStack(spacing: 10) {
-                TextField(
-                    "Pergunte ex: 'Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro'...",
-                    text: $inputPrompt
+                BorderedTextField(
+                    placeholder: "Pergunte ex: 'Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro'...",
+                    text: $inputPrompt,
+                    onCommit: {
+                        sendQuestion()
+                    }
                 )
-                .textFieldStyle(.roundedBorder)
-                .onSubmit {
-                    sendQuestion()
-                }
 
                 Button {
                     sendQuestion()

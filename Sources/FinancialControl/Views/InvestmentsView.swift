@@ -280,7 +280,7 @@ public struct CreateInvestmentSheet: View {
     @State private var name: String = ""
     @State private var groupName: String = ""
     @State private var investmentAccountId: UUID = UUID()
-    @State private var initialBalanceText: String = "R$ 0,00"
+    @State private var initialBalanceText: String = ""
     @State private var showInConsolidated: Bool = true
     @State private var iconSymbol: String = "chart.line.uptrend.xyaxis"
     @State private var colorHex: String = "#10B981"

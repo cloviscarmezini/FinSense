@@ -343,12 +343,19 @@ public struct LLMInstallRequiredSheet: View {
                 Text("Instalar Modelo Agora via Hugging Face:")
                     .font(.headline)
 
-                SecureField("Token do Hugging Face (Opcional p/ modelos públicos: hf_...)", text: $hfTokenInput)
-                    .textFieldStyle(.roundedBorder)
+                BorderedTextField(
+                    label: "Token do Hugging Face (Opcional p/ modelos públicos)",
+                    placeholder: "hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                    text: $hfTokenInput,
+                    isSecure: true
+                )
 
-                HStack(spacing: 10) {
-                    TextField("Nome do Modelo (Ex: Qwen/Qwen2.5-3B-Instruct-GGUF)", text: $modelNameInput)
-                        .textFieldStyle(.roundedBorder)
+                HStack(alignment: .bottom, spacing: 10) {
+                    BorderedTextField(
+                        label: "Nome do Modelo no Hugging Face",
+                        placeholder: "Ex: Qwen/Qwen2.5-3B-Instruct-GGUF",
+                        text: $modelNameInput
+                    )
 
                     Button {
                         llmService.downloadModel(
@@ -476,13 +483,11 @@ public struct LLMConfigurationSectionView: View {
                         Text("Token do Hugging Face (hf_...)")
                             .font(.subheadline.weight(.semibold))
                         HStack(spacing: 10) {
-                            if showTokenPlain {
-                                TextField("Ex: hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxx", text: $hfTokenInput)
-                                    .textFieldStyle(.roundedBorder)
-                            } else {
-                                SecureField("Ex: hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxx", text: $hfTokenInput)
-                                    .textFieldStyle(.roundedBorder)
-                            }
+                            BorderedTextField(
+                                placeholder: "Ex: hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                                text: $hfTokenInput,
+                                isSecure: !showTokenPlain
+                            )
                             Button {
                                 showTokenPlain.toggle()
                             } label: {
@@ -503,8 +508,10 @@ public struct LLMConfigurationSectionView: View {
                         Text("Nome do Modelo no Hugging Face")
                             .font(.subheadline.weight(.semibold))
                         HStack(spacing: 10) {
-                            TextField("Ex: Qwen/Qwen2.5-3B-Instruct-GGUF", text: $modelNameInput)
-                                .textFieldStyle(.roundedBorder)
+                            BorderedTextField(
+                                placeholder: "Ex: Qwen/Qwen2.5-3B-Instruct-GGUF",
+                                text: $modelNameInput
+                            )
 
                             if llmService.isDownloading {
                                 Button(role: .destructive) {
@@ -838,7 +845,7 @@ public struct AccountEditorSheet: View {
     @State private var customImagePath: String? = nil
     @State private var showRemoveImageConfirmation: Bool = false
     @State private var colorHex: String = "#EC7000"
-    @State private var initialBalanceText: String = "R$ 0,00"
+    @State private var initialBalanceText: String = ""
     @State private var agency: String = ""
     @State private var accountNumber: String = ""
     @State private var errorMsg: String? = nil
@@ -1158,9 +1165,12 @@ public struct CategoryEditorSheet: View {
                 }
             }
 
-            HStack(spacing: 14) {
-                TextField("Nome da Categoria (Ex: Supermercado, Salário, Academia)", text: $name)
-                    .textFieldStyle(.roundedBorder)
+            HStack(alignment: .bottom, spacing: 14) {
+                BorderedTextField(
+                    label: "Nome da Categoria",
+                    placeholder: "Ex: Supermercado, Salário, Academia",
+                    text: $name
+                )
 
                 Picker("Tipo", selection: $type) {
                     ForEach(TransactionType.allCases) { t in
@@ -1192,11 +1202,15 @@ public struct CategoryEditorSheet: View {
             Divider()
 
             // Searchable Complete macOS SF Symbols Picker
-            HStack {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
-                TextField("Buscar ícone do macOS (ex: carro, casa, comida, banco, avião, pet ou nome SF Symbol)...", text: $iconSearchQuery)
-                    .textFieldStyle(.plain)
+                MacFullWidthTextInput(
+                    text: $iconSearchQuery,
+                    placeholder: "Buscar ícone do macOS (ex: carro, casa, comida, banco, avião, pet ou nome SF Symbol)...",
+                    font: .systemFont(ofSize: 13.5)
+                )
+                .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22, alignment: .leading)
                 if !iconSearchQuery.isEmpty {
                     Button {
                         iconSearchQuery = ""
@@ -1207,9 +1221,10 @@ public struct CategoryEditorSheet: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.1), lineWidth: 1))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.32), lineWidth: 1.2))
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {

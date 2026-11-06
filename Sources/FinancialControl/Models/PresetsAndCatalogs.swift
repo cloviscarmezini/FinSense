@@ -635,14 +635,14 @@ public enum BRLFormatters {
     public static func formatCurrencyMaskedInput(_ rawText: String) -> String {
         let digitsOnly = rawText.filter { $0.isNumber }
         guard !digitsOnly.isEmpty else { return "" }
-        // Remove zeros à esquerda em excesso
+        // Remove zeros à esquerda em excesso; se restar vazio (ex: usuário apagou até R$ 0,0), retorna "" para exibir o placeholder
         let trimmedDigits = String(digitsOnly.drop(while: { $0 == "0" }))
         if trimmedDigits.isEmpty {
-            return currency(0.0)
+            return ""
         }
         // Limita a 14 dígitos para evitar overflow (até R$ 999.999.999.999,99)
         let safeDigits = String(trimmedDigits.prefix(14))
-        guard let cents = UInt64(safeDigits) else { return currency(0.0) }
+        guard let cents = UInt64(safeDigits) else { return "" }
         let value = Double(cents) / 100.0
         return currency(value)
     }

@@ -159,9 +159,12 @@ public struct TransactionsView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
-                    TextField("Buscar transação...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .frame(width: 170)
+                    MacFullWidthTextInput(
+                        text: $searchText,
+                        placeholder: "Buscar transação...",
+                        font: .systemFont(ofSize: 13)
+                    )
+                    .frame(width: 175, height: 20)
                     if !searchText.isEmpty {
                         Button {
                             searchText = ""
@@ -174,8 +177,8 @@ public struct TransactionsView: View {
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.1), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.28), lineWidth: 1))
             }
 
             // MARK: - Transactions List

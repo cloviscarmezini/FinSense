@@ -419,7 +419,26 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertEqual(BRLFormatters.formatCurrencyMaskedInput("450981"), "R$ 4.509,81")
         XCTAssertEqual(BRLFormatters.formatCurrencyMaskedInput("abc1250xyz!"), "R$ 12,50")
         XCTAssertEqual(BRLFormatters.formatCurrencyMaskedInput("R$ 91.039,22"), "R$ 91.039,22")
+        XCTAssertEqual(BRLFormatters.formatCurrencyMaskedInput("00"), "")
         XCTAssertEqual(BRLFormatters.parseAmount("R$ 91.039,22") ?? 0, 91039.22, accuracy: 0.001)
         XCTAssertEqual(BRLFormatters.formatDigitsOnly("36x meses"), "36")
+
+        // Verifica que o input nativo é clicável em toda a sua extensão (esquerda, centro, direita)
+        // e que o placeholder some imediatamente quando um valor é inserido
+        let wrapper = ClickableFieldWrapperNSView(frame: NSRect(x: 0, y: 0, width: 320, height: 28))
+        wrapper.placeholderLabel.stringValue = "R$ 0,00"
+        wrapper.textField.stringValue = ""
+        wrapper.updatePlaceholderVisibility()
+        XCTAssertFalse(wrapper.placeholderLabel.isHidden, "Placeholder deve aparecer quando vazio")
+
+        // HitTest na esquerda, meio e direita deve retornar sempre o campo editável ativo
+        XCTAssertTrue(wrapper.hitTest(NSPoint(x: 4, y: 14)) === wrapper.textField)
+        XCTAssertTrue(wrapper.hitTest(NSPoint(x: 160, y: 14)) === wrapper.textField)
+        XCTAssertTrue(wrapper.hitTest(NSPoint(x: 315, y: 14)) === wrapper.textField)
+
+        // Ao inserir qualquer valor, o placeholder deve sumir imediatamente
+        wrapper.textField.stringValue = "R$ 10,00"
+        wrapper.updatePlaceholderVisibility()
+        XCTAssertTrue(wrapper.placeholderLabel.isHidden, "Placeholder deve sumir assim que um valor for inserido")
     }
 }
