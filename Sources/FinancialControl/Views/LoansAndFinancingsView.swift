@@ -7,6 +7,7 @@ public struct LoansAndFinancingsView: View {
     @State private var showCreateSheet: Bool = false
     @State private var contractToAmortize: CreditContract? = nil
     @State private var contractToSettle: CreditContract? = nil
+    @State private var contractPendingDeletion: CreditContract? = nil
 
     public init(store: FinancialDataStore, kind: CreditContractKind) {
         self.store = store
@@ -112,6 +113,24 @@ public struct LoansAndFinancingsView: View {
         .sheet(item: $contractToSettle) { contract in
             SettleContractSheet(store: store, contract: contract)
         }
+        .alert(
+            "Confirmar Exclusão de \(kind.title)",
+            isPresented: Binding(
+                get: { contractPendingDeletion != nil },
+                set: { if !$0 { contractPendingDeletion = nil } }
+            ),
+            presenting: contractPendingDeletion
+        ) { contract in
+            Button("Excluir \(kind.title)", role: .destructive) {
+                store.deleteContract(contract.id)
+                contractPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                contractPendingDeletion = nil
+            }
+        } message: { contract in
+            Text("Deseja realmente excluir o \(kind.title.lowercased()) \"\(contract.name)\" e remover todas as suas parcelas futuras não pagas? Esta ação não pode ser desfeita.")
+        }
     }
 
     @ViewBuilder
@@ -148,7 +167,7 @@ public struct LoansAndFinancingsView: View {
                 Spacer()
 
                 Button(role: .destructive) {
-                    store.deleteContract(contract.id)
+                    contractPendingDeletion = contract
                 } label: {
                     Image(systemName: "trash")
                         .foregroundStyle(.secondary)

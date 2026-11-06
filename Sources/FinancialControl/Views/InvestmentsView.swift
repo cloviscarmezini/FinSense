@@ -6,6 +6,7 @@ public struct InvestmentsView: View {
     @State private var showCreateInvestmentSheet: Bool = false
     @State private var selectedInvestmentForAction: InvestmentItem? = nil
     @State private var showGeneralInvestSheet: Bool = false
+    @State private var investmentPendingDeletion: InvestmentItem? = nil
 
     public init(store: FinancialDataStore) {
         self.store = store
@@ -135,6 +136,24 @@ public struct InvestmentsView: View {
         .sheet(isPresented: $showGeneralInvestSheet) {
             ContributeInvestmentSheet(store: store, preselectedInvestmentId: store.investments.first?.id)
         }
+        .alert(
+            "Confirmar Exclusão de Investimento",
+            isPresented: Binding(
+                get: { investmentPendingDeletion != nil },
+                set: { if !$0 { investmentPendingDeletion = nil } }
+            ),
+            presenting: investmentPendingDeletion
+        ) { item in
+            Button("Excluir Investimento", role: .destructive) {
+                store.deleteInvestment(item.id)
+                investmentPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                investmentPendingDeletion = nil
+            }
+        } message: { item in
+            Text("Deseja realmente excluir o investimento \"\(item.name)\" do grupo \"\(item.groupName)\" (Saldo acumulado: \(BRLFormatters.currency(item.balance)))? Esta ação não pode ser desfeita.")
+        }
     }
 
     @ViewBuilder
@@ -163,7 +182,7 @@ public struct InvestmentsView: View {
                 Spacer()
 
                 Button(role: .destructive) {
-                    store.deleteInvestment(item.id)
+                    investmentPendingDeletion = item
                 } label: {
                     Image(systemName: "trash")
                         .font(.caption)

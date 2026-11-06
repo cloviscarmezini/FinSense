@@ -7,6 +7,7 @@ public struct DebtsView: View {
     @State private var showCreateDebtSheet: Bool = false
     @State private var editingDebt: DebtItem? = nil
     @State private var payingDebt: DebtItem? = nil
+    @State private var debtPendingDeletion: DebtItem? = nil
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -111,6 +112,24 @@ public struct DebtsView: View {
         .sheet(item: $payingDebt) { debt in
             PayDebtNegotiationSheet(store: store, debt: debt)
         }
+        .alert(
+            "Confirmar Exclusão de Dívida",
+            isPresented: Binding(
+                get: { debtPendingDeletion != nil },
+                set: { if !$0 { debtPendingDeletion = nil } }
+            ),
+            presenting: debtPendingDeletion
+        ) { debt in
+            Button("Excluir Dívida", role: .destructive) {
+                store.deleteDebt(debt.id)
+                debtPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                debtPendingDeletion = nil
+            }
+        } message: { debt in
+            Text("Deseja realmente excluir a dívida \"\(debt.name)\" no valor de \(BRLFormatters.currency(debt.originalAmount))? Esta ação não pode ser desfeita.")
+        }
     }
 
     @ViewBuilder
@@ -201,7 +220,7 @@ public struct DebtsView: View {
                 .buttonStyle(.bordered)
 
                 Button(role: .destructive) {
-                    store.deleteDebt(debt.id)
+                    debtPendingDeletion = debt
                 } label: {
                     Label("Excluir", systemImage: "trash")
                 }
@@ -247,6 +266,7 @@ public struct DebtEditorSheet: View {
     @State private var selectedBankPresetId: String? = "mercadopago"
     @State private var customImagePath: String? = nil
     @State private var customImageName: String? = nil
+    @State private var showRemoveImageConfirmation: Bool = false
     @State private var colorHex: String = "#EF4444"
     @State private var notes: String = ""
     @State private var errorMsg: String? = nil
@@ -295,8 +315,7 @@ public struct DebtEditorSheet: View {
 
                             if customImagePath != nil {
                                 Button("Remover imagem anexada") {
-                                    customImagePath = nil
-                                    customImageName = nil
+                                    showRemoveImageConfirmation = true
                                 }
                                 .buttonStyle(.link)
                                 .font(.caption)
@@ -385,6 +404,15 @@ public struct DebtEditorSheet: View {
                 colorHex = existing.colorHex
                 notes = existing.notes
             }
+        }
+        .alert("Confirmar Remoção de Imagem", isPresented: $showRemoveImageConfirmation) {
+            Button("Remover Imagem", role: .destructive) {
+                customImagePath = nil
+                customImageName = nil
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Deseja realmente remover a imagem personalizada anexada a esta dívida?")
         }
     }
 }

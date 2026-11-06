@@ -15,6 +15,7 @@ public struct TransactionsView: View {
     @State private var showCreateIncomeSheet: Bool = false
     @State private var showImportSheet: Bool = false
     @State private var editingTransaction: FinancialTransaction? = nil
+    @State private var transactionPendingDeletion: FinancialTransaction? = nil
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -237,6 +238,24 @@ public struct TransactionsView: View {
                 existingTransaction: txToEdit
             )
         }
+        .alert(
+            "Confirmar Exclusão de Transação",
+            isPresented: Binding(
+                get: { transactionPendingDeletion != nil },
+                set: { if !$0 { transactionPendingDeletion = nil } }
+            ),
+            presenting: transactionPendingDeletion
+        ) { tx in
+            Button("Excluir Transação", role: .destructive) {
+                store.deleteTransaction(tx.id)
+                transactionPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                transactionPendingDeletion = nil
+            }
+        } message: { tx in
+            Text("Deseja realmente excluir a transação \"\(tx.name)\" no valor de \(BRLFormatters.currency(tx.amount)) (\(BRLFormatters.shortDate(tx.date)))? Esta ação não pode ser desfeita.")
+        }
     }
 
     @ViewBuilder
@@ -365,7 +384,7 @@ public struct TransactionsView: View {
                 .help("Editar transação")
 
                 Button(role: .destructive) {
-                    store.deleteTransaction(tx.id)
+                    transactionPendingDeletion = tx
                 } label: {
                     Image(systemName: "trash")
                         .foregroundStyle(.red)
@@ -418,6 +437,7 @@ public struct TransactionEditorSheet: View {
     @State private var installmentsOrMonthsCount: Int = 2
 
     @State private var showEmbeddedStatementImporter: Bool = false
+    @State private var showRemoveAttachmentConfirmation: Bool = false
     @State private var validationError: String? = nil
 
     public init(
@@ -585,8 +605,7 @@ public struct TransactionEditorSheet: View {
                                     .font(.caption)
                                     .lineLimit(1)
                                 Button("Remover") {
-                                    attachmentPath = nil
-                                    attachmentName = nil
+                                    showRemoveAttachmentConfirmation = true
                                 }
                                 .buttonStyle(.link)
                             }
@@ -657,6 +676,15 @@ public struct TransactionEditorSheet: View {
                     dismiss()
                 }
             )
+        }
+        .alert("Confirmar Remoção de Anexo", isPresented: $showRemoveAttachmentConfirmation) {
+            Button("Remover Anexo", role: .destructive) {
+                attachmentPath = nil
+                attachmentName = nil
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Deseja realmente remover o anexo \"\(attachmentName ?? "")\" desta transação?")
         }
     }
 

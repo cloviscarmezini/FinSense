@@ -6,6 +6,7 @@ public struct AIChatSheetView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var inputPrompt: String = ""
+    @State private var showClearHistoryConfirmation: Bool = false
 
     private let suggestedPrompts: [String] = [
         "Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro",
@@ -58,13 +59,7 @@ public struct AIChatSheetView: View {
                 }
 
                 Button("Limpar Histórico") {
-                    store.chatHistory = [
-                        ChatMessage(
-                            role: .assistant,
-                            content: "Histórico limpo. Faça uma pergunta sobre suas finanças, projeções de débito ou quitação de dívidas!"
-                        )
-                    ]
-                    store.save()
+                    showClearHistoryConfirmation = true
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -160,6 +155,20 @@ public struct AIChatSheetView: View {
         }
         .padding(22)
         .frame(width: 820, height: 640)
+        .alert("Confirmar Limpeza do Histórico", isPresented: $showClearHistoryConfirmation) {
+            Button("Limpar Histórico", role: .destructive) {
+                store.chatHistory = [
+                    ChatMessage(
+                        role: .assistant,
+                        content: "Histórico limpo. Faça uma pergunta sobre suas finanças, projeções de débito ou quitação de dívidas!"
+                    )
+                ]
+                store.save()
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Deseja realmente remover todas as mensagens do histórico de conversas com a IA local?")
+        }
     }
 
     private func sendQuestion() {

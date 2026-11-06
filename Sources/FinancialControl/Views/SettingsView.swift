@@ -452,6 +452,7 @@ public struct LLMConfigurationSectionView: View {
     @State private var hfTokenInput: String = ""
     @State private var modelNameInput: String = "Qwen/Qwen2.5-3B-Instruct-GGUF"
     @State private var showTokenPlain: Bool = false
+    @State private var modelPendingDeletion: LocalLLMModelInfo? = nil
 
     public var body: some View {
         ScrollView {
@@ -652,7 +653,7 @@ public struct LLMConfigurationSectionView: View {
                                 }
 
                                 Button(role: .destructive) {
-                                    llmService.deleteModel(model.id, from: store)
+                                    modelPendingDeletion = model
                                 } label: {
                                     Label("Deletar Modelo Local", systemImage: "trash")
                                 }
@@ -678,6 +679,24 @@ public struct LLMConfigurationSectionView: View {
         .onAppear {
             hfTokenInput = store.llmConfig.huggingFaceToken
         }
+        .alert(
+            "Confirmar Exclusão de Modelo Local",
+            isPresented: Binding(
+                get: { modelPendingDeletion != nil },
+                set: { if !$0 { modelPendingDeletion = nil } }
+            ),
+            presenting: modelPendingDeletion
+        ) { model in
+            Button("Deletar Modelo", role: .destructive) {
+                llmService.deleteModel(model.id, from: store)
+                modelPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                modelPendingDeletion = nil
+            }
+        } message: { model in
+            Text("Deseja realmente deletar o modelo local \"\(model.id)\" (\(model.formattedSize)) do seu Mac? Para utilizá-lo novamente no futuro, será necessário baixá-lo outra vez.")
+        }
     }
 }
 
@@ -688,6 +707,7 @@ public struct AccountsManagementSectionView: View {
 
     @State private var showCreateAccountSheet: Bool = false
     @State private var editingAccount: BankAccount? = nil
+    @State private var accountPendingDeletion: BankAccount? = nil
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -763,7 +783,7 @@ public struct AccountsManagementSectionView: View {
                                         .controlSize(.small)
 
                                         Button(role: .destructive) {
-                                            store.deleteAccount(account.id)
+                                            accountPendingDeletion = account
                                         } label: {
                                             Image(systemName: "trash")
                                         }
@@ -786,6 +806,24 @@ public struct AccountsManagementSectionView: View {
         .sheet(item: $editingAccount) { acc in
             AccountEditorSheet(store: store, existingAccount: acc)
         }
+        .alert(
+            "Confirmar Exclusão de Conta",
+            isPresented: Binding(
+                get: { accountPendingDeletion != nil },
+                set: { if !$0 { accountPendingDeletion = nil } }
+            ),
+            presenting: accountPendingDeletion
+        ) { account in
+            Button("Excluir Conta", role: .destructive) {
+                store.deleteAccount(account.id)
+                accountPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                accountPendingDeletion = nil
+            }
+        } message: { account in
+            Text("Deseja realmente excluir a conta \"\(account.name)\"? Esta ação não pode ser desfeita.")
+        }
     }
 }
 
@@ -798,6 +836,7 @@ public struct AccountEditorSheet: View {
     @State private var name: String = ""
     @State private var selectedPresetId: String? = "itau"
     @State private var customImagePath: String? = nil
+    @State private var showRemoveImageConfirmation: Bool = false
     @State private var colorHex: String = "#EC7000"
     @State private var initialBalanceText: String = "0,00"
     @State private var agency: String = ""
@@ -841,7 +880,7 @@ public struct AccountEditorSheet: View {
 
                             if customImagePath != nil {
                                 Button("Remover imagem anexada e usar ícone do banco") {
-                                    customImagePath = nil
+                                    showRemoveImageConfirmation = true
                                 }
                                 .buttonStyle(.link)
                                 .font(.caption)
@@ -954,6 +993,14 @@ public struct AccountEditorSheet: View {
                 accountNumber = existing.accountNumber
             }
         }
+        .alert("Confirmar Remoção de Imagem", isPresented: $showRemoveImageConfirmation) {
+            Button("Remover Imagem", role: .destructive) {
+                customImagePath = nil
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Deseja realmente remover a imagem anexada da sua máquina e voltar a utilizar o ícone padrão do banco?")
+        }
     }
 }
 
@@ -965,6 +1012,7 @@ public struct CategoriesManagementSectionView: View {
     @State private var selectedTypeTab: TransactionType = .expense
     @State private var showCreateCategorySheet: Bool = false
     @State private var editingCategory: CategoryItem? = nil
+    @State private var categoryPendingDeletion: CategoryItem? = nil
 
     public var body: some View {
         let filteredCategories = store.categories(for: selectedTypeTab)
@@ -1015,7 +1063,7 @@ public struct CategoriesManagementSectionView: View {
                             .buttonStyle(.borderless)
 
                             Button(role: .destructive) {
-                                store.deleteCategory(cat.id)
+                                categoryPendingDeletion = cat
                             } label: {
                                 Image(systemName: "trash")
                                     .foregroundStyle(.red)
@@ -1034,6 +1082,24 @@ public struct CategoriesManagementSectionView: View {
         }
         .sheet(item: $editingCategory) { cat in
             CategoryEditorSheet(store: store, initialType: cat.type, existingCategory: cat)
+        }
+        .alert(
+            "Confirmar Exclusão de Categoria",
+            isPresented: Binding(
+                get: { categoryPendingDeletion != nil },
+                set: { if !$0 { categoryPendingDeletion = nil } }
+            ),
+            presenting: categoryPendingDeletion
+        ) { cat in
+            Button("Excluir Categoria", role: .destructive) {
+                store.deleteCategory(cat.id)
+                categoryPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                categoryPendingDeletion = nil
+            }
+        } message: { cat in
+            Text("Deseja realmente excluir a categoria de \(cat.type.title.lowercased()) \"\(cat.name)\"? Esta ação não pode ser desfeita.")
         }
     }
 }
