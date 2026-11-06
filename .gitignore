@@ -1,0 +1,7 @@
+requirements.md
+.DS_Store
+/.build
+/.swiftpm
+/DerivedData
+/*.xcodeproj
+/FinancialControl.app
