@@ -9,8 +9,83 @@ final class FinancialControlTests: XCTestCase {
         return FinancialDataStore(customDirectory: tempDir, seedStatementOnFirstLaunch: seedStatement)
     }
 
+    func testCleanInstallStartsWithOnlyDefaultCategoriesAndZeroAccountsOrExpenses() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("CleanInstallTest_\(UUID().uuidString)")
+        let store = FinancialDataStore(customDirectory: tempDir)
+
+        // O app deve ser instalado zerado, apenas com as categorias padrões, sem despesas ou contas
+        XCTAssertTrue(store.accounts.isEmpty)
+        XCTAssertTrue(store.transactions.isEmpty)
+        XCTAssertTrue(store.investments.isEmpty)
+        XCTAssertTrue(store.debts.isEmpty)
+        XCTAssertTrue(store.contracts.isEmpty)
+        XCTAssertFalse(store.categories.isEmpty)
+        XCTAssertFalse(store.hasInstalledLLMModel)
+    }
+
+    func testMandatoryLLMInstallationCheck() {
+        let store = makeIsolatedStore(seedStatement: false)
+        var actionExecuted = false
+
+        // Sem modelo instalado, qualquer recurso de IA deve solicitar a instalação e bloquear a ação imediata
+        let allowedWithoutModel = store.requireInstalledLLM(forFeature: "Chat IA Local") {
+            actionExecuted = true
+        }
+        XCTAssertFalse(allowedWithoutModel)
+        XCTAssertFalse(actionExecuted)
+        XCTAssertTrue(store.isLLMInstallAlertPresented)
+        XCTAssertEqual(store.pendingAIFeatureName, "Chat IA Local")
+
+        // Após instalar um modelo local, a ação é permitida
+        let installedModel = LocalLLMModelInfo(
+            id: "Qwen/Qwen2.5-3B-Instruct-GGUF",
+            displayName: "Qwen2.5-3B",
+            fileName: "model.gguf",
+            localPath: "/tmp/model.gguf",
+            sizeBytes: 1_900_000_000
+        )
+        store.llmConfig.downloadedModels = [installedModel]
+        store.llmConfig.selectedModelId = installedModel.id
+
+        let allowedWithModel = store.requireInstalledLLM(forFeature: "Chat IA Local") {
+            actionExecuted = true
+        }
+        XCTAssertTrue(allowedWithModel)
+        XCTAssertTrue(actionExecuted)
+    }
+
+    func testResetFromScratchSelectiveAndComplete() {
+        let store = makeIsolatedStore(seedStatement: true)
+        XCTAssertFalse(store.accounts.isEmpty)
+        XCTAssertFalse(store.transactions.isEmpty)
+        XCTAssertFalse(store.debts.isEmpty)
+        XCTAssertFalse(store.categories.isEmpty)
+
+        // 1. Deleta apenas dívidas e transações manualmente
+        store.resetSelectedData([.debts, .transactions])
+        XCTAssertTrue(store.debts.isEmpty)
+        XCTAssertTrue(store.transactions.isEmpty)
+        XCTAssertFalse(store.accounts.isEmpty)
+        XCTAssertFalse(store.categories.isEmpty)
+
+        // 2. Deleta todos os itens (padrão quando todos estão selecionados)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+        XCTAssertTrue(store.accounts.isEmpty)
+        XCTAssertTrue(store.categories.isEmpty)
+        XCTAssertTrue(store.investments.isEmpty)
+        XCTAssertTrue(store.contracts.isEmpty)
+    }
+
     func testItauStatementParsingAndDeduplication() {
         let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Itaú Unibanco",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 0.0
+        )
         let itauAccount = store.accounts.first!
 
         // 1. Testa filtro Apenas Despesas
@@ -51,6 +126,14 @@ final class FinancialControlTests: XCTestCase {
 
     func testInstallmentRepeatedAndIgnoreInConsolidatedTransactions() {
         let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Itaú",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 1000.0
+        )
         let acc = store.accounts.first!
         let expCat = store.categories(for: .expense).first!
 
@@ -105,6 +188,8 @@ final class FinancialControlTests: XCTestCase {
 
     func testInvestmentsContributionAndConsolidatedToggle() {
         let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(name: "Itaú", bankPresetId: "itau", customImagePath: nil, iconSymbol: "building.columns.fill", colorHex: "#EC7000", initialBalance: 500.0)
+        store.addAccount(name: "Santander", bankPresetId: "santander", customImagePath: nil, iconSymbol: "flame.fill", colorHex: "#EC0000", initialBalance: 0.0)
         let itau = store.accounts[0]
         let santander = store.accounts[1]
 
@@ -138,6 +223,16 @@ final class FinancialControlTests: XCTestCase {
 
     func testDebtNegotiationPaymentRemovesCardAndCreatesTransaction() {
         let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(name: "Itaú", bankPresetId: "itau", customImagePath: nil, iconSymbol: "building.columns.fill", colorHex: "#EC7000", initialBalance: 2000.0)
+        store.addDebt(
+            name: "Cartão Mercado Pago",
+            customImagePath: nil,
+            bankPresetId: "mercadopago",
+            iconSymbol: "creditcard",
+            colorHex: "#009EE3",
+            originalAmount: 1850.0,
+            contractedDate: nil
+        )
         let acc = store.accounts.first!
         let debt = store.activeDebts.first!
         let originalCount = store.activeDebts.count
@@ -155,6 +250,7 @@ final class FinancialControlTests: XCTestCase {
 
     func testLoanWithPastStartDateCreatesOnlyFutureTransactionsAndCalculatesPayoff() {
         let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(name: "Itaú", bankPresetId: "itau", customImagePath: nil, iconSymbol: "building.columns.fill", colorHex: "#EC7000", initialBalance: 0.0)
         let acc = store.accounts.first!
         let cal = Calendar.current
         let now = BRLFormatters.shortDateFormatter.date(from: "06/11/2026")!
