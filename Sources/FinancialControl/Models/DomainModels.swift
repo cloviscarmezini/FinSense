@@ -302,6 +302,22 @@ public enum SeriesEditScope: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+public enum SeriesDeleteScope: String, CaseIterable, Identifiable, Hashable {
+    case allInSeries
+    case onlyThis
+    case thisAndPending
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .allInSeries: return "Remover todas"
+        case .onlyThis: return "Remover somente esta"
+        case .thisAndPending: return "Remover esta e as pendentes"
+        }
+    }
+}
+
 public enum StatementImportFilterMode: String, Codable, CaseIterable, Identifiable, Hashable {
     case hybrid
     case expensesOnly

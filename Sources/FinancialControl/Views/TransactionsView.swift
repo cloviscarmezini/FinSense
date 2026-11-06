@@ -343,22 +343,46 @@ public struct TransactionsView: View {
             )
         }
         .alert(
-            "Confirmar Exclusão de Transação",
+            transactionPendingDeletion?.isPartOfSeries == true
+                ? "Como deseja remover este lançamento?"
+                : "Confirmar Exclusão de Transação",
             isPresented: Binding(
                 get: { transactionPendingDeletion != nil },
                 set: { if !$0 { transactionPendingDeletion = nil } }
             ),
             presenting: transactionPendingDeletion
         ) { tx in
-            Button("Excluir Transação", role: .destructive) {
-                store.deleteTransaction(tx.id)
-                transactionPendingDeletion = nil
-            }
-            Button("Cancelar", role: .cancel) {
-                transactionPendingDeletion = nil
+            if tx.isPartOfSeries {
+                Button("Remover todas", role: .destructive) {
+                    store.deleteTransaction(tx.id, scope: .allInSeries)
+                    transactionPendingDeletion = nil
+                }
+                Button("Remover somente esta", role: .destructive) {
+                    store.deleteTransaction(tx.id, scope: .onlyThis)
+                    transactionPendingDeletion = nil
+                }
+                Button("Remover esta e as pendentes", role: .destructive) {
+                    store.deleteTransaction(tx.id, scope: .thisAndPending)
+                    transactionPendingDeletion = nil
+                }
+                Button("Cancelar", role: .cancel) {
+                    transactionPendingDeletion = nil
+                }
+            } else {
+                Button("Excluir Transação", role: .destructive) {
+                    store.deleteTransaction(tx.id, scope: .onlyThis)
+                    transactionPendingDeletion = nil
+                }
+                Button("Cancelar", role: .cancel) {
+                    transactionPendingDeletion = nil
+                }
             }
         } message: { tx in
-            Text("Deseja realmente excluir a transação \"\(tx.name)\" no valor de \(BRLFormatters.currency(tx.amount)) (\(BRLFormatters.shortDate(tx.date)))? Esta ação não pode ser desfeita.")
+            if tx.isPartOfSeries {
+                Text("O lançamento \"\(tx.name)\" (\(BRLFormatters.currency(tx.amount))) faz parte de uma série (\(tx.recurrenceMode.title.lowercased())). Escolha como deseja excluir:")
+            } else {
+                Text("Deseja realmente excluir a transação \"\(tx.name)\" no valor de \(BRLFormatters.currency(tx.amount)) (\(BRLFormatters.shortDate(tx.date)))? Esta ação não pode ser desfeita.")
+            }
         }
         .alert(
             "Cancelar Recorrência / Assinatura",
@@ -1002,6 +1026,8 @@ public struct StatementImportSheet: View {
     @State private var selectedAccountId: UUID = UUID()
     @State private var selectedFileURL: URL? = nil
     @State private var selectedFileName: String = "Nenhum arquivo selecionado"
+    @State private var rawTextInput: String = ""
+    @State private var showTextInputBox: Bool = true
     @State private var parsedItems: [ParsedStatementTransaction] = []
     @State private var hasAttemptedLoad: Bool = false
     @State private var importSummaryMessage: String? = nil
@@ -1071,6 +1097,16 @@ public struct StatementImportSheet: View {
                 Spacer()
 
                 Button {
+                    showTextInputBox.toggle()
+                } label: {
+                    Label(
+                        showTextInputBox ? "Ocultar Caixa de Texto" : "Digitar / Colar Texto",
+                        systemImage: "text.alignleft"
+                    )
+                }
+                .buttonStyle(.bordered)
+
+                Button {
                     if let url = MacFilePicker.pickStatementFile() {
                         selectedFileURL = url
                         selectedFileName = url.lastPathComponent
@@ -1082,12 +1118,68 @@ public struct StatementImportSheet: View {
                                 store: store
                             )
                             hasAttemptedLoad = true
+                            if !parsedItems.isEmpty {
+                                showTextInputBox = false
+                            }
                         }
                     }
                 } label: {
                     Label("Selecionar Documento PDF no Mac", systemImage: "folder.fill")
                 }
                 .buttonStyle(.borderedProminent)
+            }
+
+            if showTextInputBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    BorderedMultilineTextEditor(
+                        label: "Ou cole / digite o relatório de transações diretamente na caixa de texto abaixo:",
+                        placeholder: """
+                        Despesas
+                        Faculdade FIAP - dia 05 - 996 - 7 parcelas - a partir de dezembro (Educação)
+                        Cabeleleiro - dia 15 - 190 - fixo a partir de dezembro (Cuidado pessoal)
+
+                        Receitas
+                        Salario Vivo - dia 2 - 14.400,00 - fixo a partir de dezembro (salario)
+                        """,
+                        text: $rawTextInput,
+                        minHeight: parsedItems.isEmpty ? 135 : 95
+                    )
+
+                    HStack {
+                        Text("Dica: Você pode colar extratos bancários (dd/MM/aaaa ...) ou listas de despesas e receitas.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if !rawTextInput.isEmpty {
+                            Button("Limpar Texto") {
+                                rawTextInput = ""
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        Button {
+                            selectedFileURL = nil
+                            selectedFileName = "Texto digitado / colado"
+                            importSummaryMessage = nil
+                            Task {
+                                parsedItems = await llmService.analyzeStatementRawText(
+                                    rawText: rawTextInput,
+                                    filterMode: filterMode,
+                                    store: store
+                                )
+                                hasAttemptedLoad = true
+                            }
+                        } label: {
+                            Label("Analisar Texto com LLM Local", systemImage: "sparkles")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#6366F1"))
+                        .controlSize(.small)
+                        .disabled(rawTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
             }
 
             if llmService.isAnalyzingStatement {
@@ -1271,6 +1363,12 @@ public struct StatementImportSheet: View {
         if let url = selectedFileURL {
             parsedItems = await llmService.analyzeStatementFile(
                 fileURL: url,
+                filterMode: filterMode,
+                store: store
+            )
+        } else if !rawTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parsedItems = await llmService.analyzeStatementRawText(
+                rawText: rawTextInput,
                 filterMode: filterMode,
                 store: store
             )

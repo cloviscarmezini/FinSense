@@ -613,6 +613,8 @@ public struct DebtImportSheet: View {
 
     @State private var selectedFileURL: URL? = nil
     @State private var selectedFileName: String = "Nenhum arquivo selecionado"
+    @State private var rawTextInput: String = ""
+    @State private var showTextInputBox: Bool = true
     @State private var parsedDebts: [ParsedDebtImportItem] = []
     @State private var hasAttemptedLoad: Bool = false
     @State private var importSummaryMessage: String? = nil
@@ -655,12 +657,22 @@ public struct DebtImportSheet: View {
             }
 
             HStack(spacing: 12) {
-                Text("Arquivo selecionado: \(selectedFileName)")
+                Text("Origem: \(selectedFileName)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
 
                 Spacer()
+
+                Button {
+                    showTextInputBox.toggle()
+                } label: {
+                    Label(
+                        showTextInputBox ? "Ocultar Caixa de Texto" : "Digitar / Colar Texto",
+                        systemImage: "text.alignleft"
+                    )
+                }
+                .buttonStyle(.bordered)
 
                 Button {
                     if let url = MacFilePicker.pickStatementFile() {
@@ -673,12 +685,67 @@ public struct DebtImportSheet: View {
                                 store: store
                             )
                             hasAttemptedLoad = true
+                            if !parsedDebts.isEmpty {
+                                showTextInputBox = false
+                            }
                         }
                     }
                 } label: {
                     Label("Selecionar Documento PDF no Mac", systemImage: "folder.fill")
                 }
                 .buttonStyle(.borderedProminent)
+            }
+
+            if showTextInputBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    BorderedMultilineTextEditor(
+                        label: "Ou cole / digite a listagem de dívidas diretamente na caixa de texto abaixo:",
+                        placeholder: """
+                        Cartão de crédito Carrefour: 6196
+                        Cartão de crédito inter - 6220
+                        Cartão de crédito Sam’s - 1681
+                        Cartão de crédito Nubank - 7242
+                        Cartão de crédito Mercado pago - 5951
+                        Cartão de crédito Santander - 29414,8
+                        """,
+                        text: $rawTextInput,
+                        minHeight: parsedDebts.isEmpty ? 135 : 95
+                    )
+
+                    HStack {
+                        Text("Dica: Cole suas dívidas no formato \"Nome da dívida: valor\" ou \"Nome - valor\".")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if !rawTextInput.isEmpty {
+                            Button("Limpar Texto") {
+                                rawTextInput = ""
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        Button {
+                            selectedFileURL = nil
+                            selectedFileName = "Texto digitado / colado"
+                            importSummaryMessage = nil
+                            Task {
+                                parsedDebts = await llmService.analyzeDebtsRawText(
+                                    rawText: rawTextInput,
+                                    store: store
+                                )
+                                hasAttemptedLoad = true
+                            }
+                        } label: {
+                            Label("Analisar Texto com LLM Local", systemImage: "sparkles")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#6366F1"))
+                        .controlSize(.small)
+                        .disabled(rawTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
             }
 
             if llmService.isAnalyzingStatement {

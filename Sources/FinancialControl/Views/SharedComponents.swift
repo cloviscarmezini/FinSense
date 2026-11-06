@@ -923,3 +923,206 @@ public struct EditableIntegerStepperField: View {
         }
     }
 }
+
+// MARK: - Native AppKit Full-Area Multiline Text Editor with Auto-Hiding Placeholder & Border
+
+public final class ClickableMultilineScrollView: NSScrollView {
+    public let placeholderLabel = NSTextField(wrappingLabelWithString: "")
+
+    public func updatePlaceholderVisibility(currentText: String) {
+        placeholderLabel.isHidden = !currentText.isEmpty
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        if let docView = documentView {
+            window?.makeFirstResponder(docView)
+        }
+        super.mouseDown(with: event)
+    }
+}
+
+public struct MacMultilineTextInput: NSViewRepresentable {
+    @Binding public var text: String
+    public var placeholder: String
+    public var font: NSFont
+    public var focusTrigger: Int
+    public var onFocusChange: ((Bool) -> Void)?
+
+    public init(
+        text: Binding<String>,
+        placeholder: String,
+        font: NSFont = .monospacedSystemFont(ofSize: 12.5, weight: .regular),
+        focusTrigger: Int = 0,
+        onFocusChange: ((Bool) -> Void)? = nil
+    ) {
+        self._text = text
+        self.placeholder = placeholder
+        self.font = font
+        self.focusTrigger = focusTrigger
+        self.onFocusChange = onFocusChange
+    }
+
+    public func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    public func makeNSView(context: Context) -> ClickableMultilineScrollView {
+        let scrollView = ClickableMultilineScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+
+        let textView = NSTextView()
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.font = font
+        textView.textColor = .labelColor
+        textView.textContainerInset = NSSize(width: 4, height: 6)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.delegate = context.coordinator
+        textView.string = text
+
+        scrollView.documentView = textView
+
+        let placeholderField = scrollView.placeholderLabel
+        placeholderField.translatesAutoresizingMaskIntoConstraints = false
+        placeholderField.isEditable = false
+        placeholderField.isSelectable = false
+        placeholderField.isBordered = false
+        placeholderField.drawsBackground = false
+        placeholderField.textColor = .placeholderTextColor
+        placeholderField.font = font
+        placeholderField.stringValue = placeholder
+        placeholderField.maximumNumberOfLines = 6
+
+        scrollView.addSubview(placeholderField)
+        NSLayoutConstraint.activate([
+            placeholderField.leadingAnchor.constraint(equalTo: scrollView.leadingAnchor, constant: 8),
+            placeholderField.trailingAnchor.constraint(equalTo: scrollView.trailingAnchor, constant: -8),
+            placeholderField.topAnchor.constraint(equalTo: scrollView.topAnchor, constant: 6)
+        ])
+
+        scrollView.updatePlaceholderVisibility(currentText: text)
+        return scrollView
+    }
+
+    public func updateNSView(_ nsView: ClickableMultilineScrollView, context: Context) {
+        context.coordinator.parent = self
+        if nsView.placeholderLabel.stringValue != placeholder {
+            nsView.placeholderLabel.stringValue = placeholder
+        }
+        if let textView = nsView.documentView as? NSTextView {
+            if textView.string != text {
+                textView.string = text
+            }
+            if textView.font != font {
+                textView.font = font
+                nsView.placeholderLabel.font = font
+            }
+            if context.coordinator.lastFocusTrigger != focusTrigger {
+                context.coordinator.lastFocusTrigger = focusTrigger
+                DispatchQueue.main.async {
+                    nsView.window?.makeFirstResponder(textView)
+                }
+            }
+        }
+        nsView.updatePlaceholderVisibility(currentText: text)
+    }
+
+    public final class Coordinator: NSObject, NSTextViewDelegate {
+        public var parent: MacMultilineTextInput
+        public var lastFocusTrigger: Int = 0
+
+        public init(_ parent: MacMultilineTextInput) {
+            self.parent = parent
+            self.lastFocusTrigger = parent.focusTrigger
+        }
+
+        public func textDidBeginEditing(_ notification: Notification) {
+            parent.onFocusChange?(true)
+        }
+
+        public func textDidEndEditing(_ notification: Notification) {
+            parent.onFocusChange?(false)
+        }
+
+        public func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            let newStr = textView.string
+            if let scrollView = textView.enclosingScrollView as? ClickableMultilineScrollView {
+                scrollView.updatePlaceholderVisibility(currentText: newStr)
+            }
+            if parent.text != newStr {
+                parent.text = newStr
+            }
+        }
+    }
+}
+
+public struct BorderedMultilineTextEditor: View {
+    public let label: String
+    public let placeholder: String
+    @Binding public var text: String
+    public var minHeight: CGFloat = 120
+
+    @State private var focusTrigger: Int = 0
+    @State private var isFocused: Bool = false
+
+    public init(
+        label: String = "",
+        placeholder: String,
+        text: Binding<String>,
+        minHeight: CGFloat = 120
+    ) {
+        self.label = label
+        self.placeholder = placeholder
+        self._text = text
+        self.minHeight = minHeight
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if !label.isEmpty {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            MacMultilineTextInput(
+                text: $text,
+                placeholder: placeholder,
+                focusTrigger: focusTrigger,
+                onFocusChange: { focused in
+                    isFocused = focused
+                }
+            )
+            .frame(maxWidth: .infinity, minHeight: minHeight, maxHeight: minHeight + 40)
+            .padding(6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(
+                        isFocused ? Color.accentColor.opacity(0.85) : Color.primary.opacity(0.32),
+                        lineWidth: isFocused ? 1.6 : 1.2
+                    )
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                focusTrigger += 1
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}

@@ -923,8 +923,52 @@ public final class FinancialDataStore: ObservableObject {
         }
     }
 
-    public func deleteTransaction(_ id: UUID) {
-        transactions.removeAll(where: { $0.id == id })
+    public func deleteTransaction(_ id: UUID, scope: SeriesDeleteScope = .onlyThis) {
+        guard let targetTx = transactions.first(where: { $0.id == id }) else { return }
+
+        if scope == .onlyThis || !targetTx.isPartOfSeries || targetTx.seriesGroupId == nil {
+            transactions.removeAll(where: { $0.id == id })
+            save()
+            return
+        }
+
+        guard let groupId = targetTx.seriesGroupId else {
+            transactions.removeAll(where: { $0.id == id })
+            save()
+            return
+        }
+
+        switch scope {
+        case .onlyThis:
+            transactions.removeAll(where: { $0.id == id })
+
+        case .allInSeries:
+            transactions.removeAll(where: { $0.seriesGroupId == groupId })
+
+        case .thisAndPending:
+            let referenceDate = calendar.startOfDay(for: targetTx.date)
+            let referenceInstallmentIdx = targetTx.installmentIndex
+
+            transactions.removeAll { tx in
+                guard tx.seriesGroupId == groupId else { return false }
+                if tx.id == targetTx.id { return true }
+                guard !tx.isPaid else { return false }
+
+                if let refInst = referenceInstallmentIdx, let otherInst = tx.installmentIndex {
+                    return otherInst >= refInst
+                } else {
+                    return calendar.startOfDay(for: tx.date) >= referenceDate
+                }
+            }
+
+            // Se for uma série recorrente contínua, encerra a geração futura para que não recrie as pendentes removidas
+            if targetTx.recurrenceMode == .recurring {
+                for idx in transactions.indices where transactions[idx].seriesGroupId == groupId {
+                    transactions[idx].isCanceledRecurringSeries = true
+                }
+            }
+        }
+
         save()
     }
 

@@ -862,4 +862,87 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertEqual(secondDebtImportSummary.addedCount, 0)
         XCTAssertEqual(secondDebtImportSummary.skippedDuplicatesCount, 6)
     }
+
+    func testSeriesDeleteScopesForInstallmentRepeatedAndRecurring() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Itaú",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 0.0
+        )
+        let acc = store.accounts.first!
+        let expCat = store.fallbackCategoryId(for: .expense)
+        let refNow = BRLFormatters.shortDateFormatter.date(from: "06/11/2026")!
+
+        // 1. Parcelado (6 parcelas): testa "Remover somente esta", "Remover esta e as pendentes" e "Remover todas"
+        let installments = store.createTransaction(
+            name: "Curso Especialização",
+            amount: 6000.0,
+            date: refNow,
+            type: .expense,
+            isPaid: true,
+            categoryId: expCat,
+            accountId: acc.id,
+            recurrenceMode: .installment,
+            installmentsOrMonthsCount: 6,
+            referenceNow: refNow
+        )
+        XCTAssertEqual(installments.count, 6)
+        let instGroupId = installments.first!.seriesGroupId!
+
+        // 1a. "Remover somente esta" na parcela 2/6
+        let secondInst = installments[1]
+        store.deleteTransaction(secondInst.id, scope: .onlyThis)
+        let remainingAfterOnlyThis = store.transactions
+            .filter { $0.seriesGroupId == instGroupId }
+            .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
+        XCTAssertEqual(remainingAfterOnlyThis.map { $0.installmentIndex ?? 0 }, [1, 3, 4, 5, 6])
+
+        // 1b. "Remover esta e as pendentes" na parcela 4/6 -> remove 4, 5 e 6, mantendo 1 (paga) e 3 (anterior a 4)
+        let fourthInst = remainingAfterOnlyThis.first(where: { $0.installmentIndex == 4 })!
+        store.deleteTransaction(fourthInst.id, scope: .thisAndPending)
+        let remainingAfterThisAndPending = store.transactions
+            .filter { $0.seriesGroupId == instGroupId }
+            .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
+        XCTAssertEqual(remainingAfterThisAndPending.map { $0.installmentIndex ?? 0 }, [1, 3])
+
+        // 1c. "Remover todas" -> remove todas as parcelas restantes da série
+        let firstInst = remainingAfterThisAndPending.first!
+        store.deleteTransaction(firstInst.id, scope: .allInSeries)
+        XCTAssertTrue(store.transactions.filter { $0.seriesGroupId == instGroupId }.isEmpty)
+
+        // 2. Recorrente: "Remover esta e as pendentes" remove a selecionada + futuras pendentes e encerra a recorrência
+        let recurringSeries = store.createTransaction(
+            name: "Wellhub Mensal",
+            amount: 129.90,
+            date: refNow,
+            type: .expense,
+            isPaid: true,
+            categoryId: expCat,
+            accountId: acc.id,
+            recurrenceMode: .recurring,
+            recurrenceFrequency: .monthly,
+            referenceNow: refNow
+        )
+        let recGroupId = recurringSeries.first!.seriesGroupId!
+        let sortedRecurring = store.transactions
+            .filter { $0.seriesGroupId == recGroupId }
+            .sorted { $0.date < $1.date }
+        XCTAssertGreaterThanOrEqual(sortedRecurring.count, 12)
+
+        // Deleta a partir da 3ª ocorrência com "Remover esta e as pendentes"
+        store.deleteTransaction(sortedRecurring[2].id, scope: .thisAndPending)
+        let recRemaining = store.transactions
+            .filter { $0.seriesGroupId == recGroupId }
+            .sorted { $0.date < $1.date }
+        XCTAssertEqual(recRemaining.count, 2)
+        XCTAssertTrue(recRemaining.allSatisfy { $0.isCanceledRecurringSeries == true })
+
+        // Navegar para anos futuros não deve recriar a série recorrente encerrada
+        store.changeYear(by: 2)
+        XCTAssertEqual(store.transactions.filter { $0.seriesGroupId == recGroupId }.count, 2)
+    }
 }

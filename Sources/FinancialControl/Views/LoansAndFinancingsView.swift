@@ -629,6 +629,8 @@ public struct ImportCreditContractDocumentSheet: View {
     public var onCompleteImport: (() -> Void)? = nil
 
     @State private var selectedFileName: String = "Nenhum documento selecionado"
+    @State private var rawTextInput: String = ""
+    @State private var showTextInputBox: Bool = true
     @State private var parsedDoc: ParsedCreditContractDocument? = nil
 
     // Campos editáveis após a leitura pela LLM
@@ -706,6 +708,7 @@ public struct ImportCreditContractDocumentSheet: View {
                                 store: store
                             ) {
                                 applyParsedDocument(doc)
+                                showTextInputBox = false
                             }
                         }
                     }
@@ -715,7 +718,65 @@ public struct ImportCreditContractDocumentSheet: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Color(hex: "#6366F1"))
 
+                Button {
+                    showTextInputBox.toggle()
+                } label: {
+                    Label(
+                        showTextInputBox ? "Ocultar Caixa de Texto" : "Digitar / Colar Texto",
+                        systemImage: "text.alignleft"
+                    )
+                }
+                .buttonStyle(.bordered)
+
                 Spacer()
+            }
+
+            if showTextInputBox {
+                VStack(alignment: .leading, spacing: 8) {
+                    BorderedMultilineTextEditor(
+                        label: "Ou cole / digite o texto do demonstrativo de \(kind.title.lowercased()) abaixo:",
+                        placeholder: kind == .loan
+                            ? "Ex: Nr. Contrato: 783694303 Dt. Formalização: 30/10/2025 Vlr. Financiado: 110.108,13 Dívida para Liquidação: 91.039,22 Nr. Parcelas: 36 Tx. Efet. do contrato: 2,0087 % a.m."
+                            : "Ex: Contrato: 178770203328-1 Saldo Devedor Teórico Valor R$ 324.737,86 Prazo do Financiamento: 360 meses Prazo Remanescente: 332 meses Taxa de Juros: 8,51% Devido 2.658,04",
+                        text: $rawTextInput,
+                        minHeight: parsedDoc == nil ? 120 : 85
+                    )
+
+                    HStack {
+                        Text("Dica: Cole o conteúdo textual do contrato/demonstrativo para interpretação pela LLM local.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if !rawTextInput.isEmpty {
+                            Button("Limpar Texto") {
+                                rawTextInput = ""
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        Button {
+                            selectedFileName = "Texto digitado / colado"
+                            Task {
+                                if let doc = await llmService.analyzeCreditContractRawText(
+                                    rawText: rawTextInput,
+                                    expectedKind: kind,
+                                    store: store
+                                ) {
+                                    applyParsedDocument(doc)
+                                    showTextInputBox = false
+                                }
+                            }
+                        } label: {
+                            Label("Analisar Texto com LLM Local", systemImage: "sparkles")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#6366F1"))
+                        .controlSize(.small)
+                        .disabled(rawTextInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
             }
 
             if llmService.isAnalyzingStatement {
