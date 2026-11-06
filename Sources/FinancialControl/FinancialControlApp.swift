@@ -15,19 +15,28 @@ public struct MainContentView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // App Brand Header
                 HStack(spacing: 10) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color(hex: "#EC7000"), Color(hex: "#6366F1")],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
+                    if let appIcon = FinancialControlApp.loadAppIcon() {
+                        Image(nsImage: appIcon)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 36, height: 36)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
+                    } else {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color(hex: "#EC7000"), Color(hex: "#6366F1")],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
                                 )
-                            )
-                            .frame(width: 34, height: 34)
-                        Image(systemName: "brazilianrealsign.circle.fill")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
+                            Image(systemName: "brazilianrealsign.circle.fill")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 1) {
@@ -236,6 +245,38 @@ public struct FinancialControlApp: App {
 
     public init() {
         NSApplication.shared.setActivationPolicy(.regular)
+        Self.configureApplicationIcon()
+    }
+
+    public static func configureApplicationIcon() {
+        if let iconImage = loadAppIcon() {
+            NSApplication.shared.applicationIconImage = iconImage
+        }
+    }
+
+    public static func loadAppIcon() -> NSImage? {
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
+           let img = NSImage(contentsOf: url) {
+            return img
+        }
+        if let url = Bundle.main.url(forResource: "AppIcon", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            return img
+        }
+        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            return img
+        }
+        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+           let img = NSImage(contentsOf: url) {
+            return img
+        }
+        let fallbackPath = "Sources/FinancialControl/Resources/AppIcon.png"
+        if FileManager.default.fileExists(atPath: fallbackPath),
+           let img = NSImage(contentsOfFile: fallbackPath) {
+            return img
+        }
+        return nil
     }
 
     public var body: some Scene {
