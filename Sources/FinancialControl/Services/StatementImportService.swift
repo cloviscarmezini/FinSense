@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import PDFKit
 
 public struct ParsedStatementTransaction: Identifiable, Hashable, Codable {
@@ -570,4 +571,16 @@ public enum SampleItauStatementData {
     15/09/2026 SALDO DO DIA 0,02
     05/09/2026 SALDO DO DIA 450,00
     """
+
+    public static func ensureSamplePDFExists(in directory: URL) -> URL {
+        let pdfURL = directory.appendingPathComponent("Extrato_Itau_2026_Anexo.pdf")
+        if !FileManager.default.fileExists(atPath: pdfURL.path) {
+            let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 595, height: 2400))
+            textView.string = rawOCRText
+            textView.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+            let pdfData = textView.dataWithPDF(inside: textView.bounds)
+            try? pdfData.write(to: pdfURL)
+        }
+        return pdfURL
+    }
 }
