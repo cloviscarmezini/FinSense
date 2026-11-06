@@ -5,3 +5,6 @@ requirements.md
 /DerivedData
 /*.xcodeproj
 /FinancialControl.app
+/dist
+*.dmg
+*.zip

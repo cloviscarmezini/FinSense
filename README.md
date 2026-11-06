@@ -173,6 +173,39 @@ Agora você pode abrir o **Controle Financeiro** diretamente pelo **Spotlight** 
 
 ---
 
+## 🚀 Como Distribuir para Outros Computadores (DMG / ZIP)
+
+Para compartilhar o aplicativo com outras pessoas ou instalar em outros Macs sem precisar de código-fonte:
+
+### 1. Gerar o Instalador de Distribuição
+Execute o script dedicado de distribuição:
+
+```bash
+zsh scripts/distribute.sh
+```
+
+Este script compila a versão release, assina o app, gera os ícones e cria automaticamente na pasta `dist/`:
+- **`dist/FinancialControl.dmg`**: Imagem de disco padrão do macOS com instalador amigável (arraste para a pasta *Aplicativos*).
+- **`dist/FinancialControl.zip`**: Arquivo comprimido leve e portátil preservando todas as permissões nativas.
+
+### 2. Abrindo em Outro Mac (Gatekeeper do macOS)
+Se você distribuir o app sem um certificado pago da Apple Developer Program (usando a assinatura ad-hoc padrão), o macOS exibirá na primeira abertura que o app é de um *desenvolvedor não identificado*. Para abrir normalmente no outro Mac, basta usar qualquer uma das opções:
+
+- **Opção 1 (Mais fácil)**: Clique com o **botão direito** no aplicativo em `/Applications` e selecione **"Abrir"**. Na janela de diálogo que surgir, clique em **"Abrir"**. O macOS lembrará dessa autorização permanentemente.
+- **Opção 2**: Vá em **Ajustes do Sistema > Privacidade e Segurança**, role até o fim e clique em **"Abrir Mesmo Assim"**.
+- **Opção 3 (Terminal)**: Se baixado via internet/zip, execute no Terminal do Mac de destino:
+  ```bash
+  xattr -cr /Applications/FinancialControl.app
+  ```
+
+*(Opcional) Se você possuir uma conta de desenvolvedor Apple paga, basta exportar sua identidade antes de rodar o script:*
+```bash
+export DEVELOPER_ID="Developer ID Application: Seu Nome (XXXXXXXXXX)"
+zsh scripts/distribute.sh
+```
+
+---
+
 ## 🔒 Privacidade e Segurança
 
 - 🚫 **Sem telemetria**: Nenhuma métrica ou dado de uso é enviado para servidores externos.
