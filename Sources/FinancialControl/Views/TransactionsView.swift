@@ -1,0 +1,969 @@
+import SwiftUI
+import AppKit
+
+public struct TransactionsView: View {
+    @ObservedObject public var store: FinancialDataStore
+    @ObservedObject public var llmService: LocalLLMService
+
+    @State private var searchText: String = ""
+    @State private var selectedTypeFilter: TransactionType? = nil
+    @State private var selectedAccountFilter: UUID? = nil
+    @State private var selectedCategoryFilter: UUID? = nil
+    @State private var onlyPendingFilter: Bool = false
+
+    @State private var showCreateExpenseSheet: Bool = false
+    @State private var showCreateIncomeSheet: Bool = false
+    @State private var showImportSheet: Bool = false
+    @State private var editingTransaction: FinancialTransaction? = nil
+
+    public init(store: FinancialDataStore, llmService: LocalLLMService) {
+        self.store = store
+        self.llmService = llmService
+    }
+
+    private var filteredMonthTransactions: [FinancialTransaction] {
+        store.transactionsForMonth(store.selectedMonth).filter { tx in
+            if let typeFilter = selectedTypeFilter, tx.type != typeFilter {
+                return false
+            }
+            if let accFilter = selectedAccountFilter, tx.accountId != accFilter {
+                return false
+            }
+            if let catFilter = selectedCategoryFilter, tx.categoryId != catFilter {
+                return false
+            }
+            if onlyPendingFilter && tx.isPaid {
+                return false
+            }
+            let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !q.isEmpty {
+                let catName = store.category(for: tx.categoryId)?.name ?? ""
+                let accName = store.account(for: tx.accountId)?.name ?? ""
+                let matches = tx.name.localizedCaseInsensitiveContains(q) ||
+                              tx.details.localizedCaseInsensitiveContains(q) ||
+                              catName.localizedCaseInsensitiveContains(q) ||
+                              accName.localizedCaseInsensitiveContains(q)
+                if !matches { return false }
+            }
+            return true
+        }
+    }
+
+    public var body: some View {
+        let monthIncome = store.monthlyIncome(for: store.selectedMonth)
+        let monthExpense = store.monthlyExpense(for: store.selectedMonth)
+        let monthBalance = monthIncome - monthExpense
+        let accumulatedBalance = store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
+
+        VStack(alignment: .leading, spacing: 18) {
+            // MARK: - Header & Month Navigation
+            HStack(alignment: .center, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Transações por Mês")
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                    Text("Gerencie despesas, receitas, parcelamentos, recorrências e importação via IA Local")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                MonthNavigatorBar(store: store)
+            }
+
+            // MARK: - Monthly Balance & Accumulated Summary Cards
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                MetricCardView(
+                    title: "Receitas no Mês",
+                    value: BRLFormatters.currency(monthIncome),
+                    subtitle: BRLFormatters.monthYear(store.selectedMonth),
+                    icon: "arrow.down.left.circle.fill",
+                    tint: Color(hex: "#10B981")
+                )
+
+                MetricCardView(
+                    title: "Despesas no Mês",
+                    value: BRLFormatters.currency(monthExpense),
+                    subtitle: BRLFormatters.monthYear(store.selectedMonth),
+                    icon: "arrow.up.right.circle.fill",
+                    tint: Color(hex: "#EF4444")
+                )
+
+                MetricCardView(
+                    title: "Balanço do Mês",
+                    value: BRLFormatters.currency(monthBalance),
+                    subtitle: monthBalance >= 0 ? "Superávit no período" : "Déficit no período",
+                    icon: "equal.circle.fill",
+                    tint: monthBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                )
+
+                MetricCardView(
+                    title: "Acumulado até o Mês",
+                    value: BRLFormatters.currency(accumulatedBalance),
+                    subtitle: "Saldo + Invest. Consolidados",
+                    icon: "chart.line.uptrend.xyaxis.circle.fill",
+                    tint: Color(hex: "#3B82F6")
+                )
+            }
+
+            // MARK: - Action & Filter Bar
+            HStack(spacing: 10) {
+                Button {
+                    showCreateExpenseSheet = true
+                } label: {
+                    Label("Nova Despesa", systemImage: "minus.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#EF4444"))
+
+                Button {
+                    showCreateIncomeSheet = true
+                } label: {
+                    Label("Nova Receita", systemImage: "plus.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#10B981"))
+
+                Button {
+                    showImportSheet = true
+                } label: {
+                    Label("Importar Relatório / Extrato (IA Local)", systemImage: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.bordered)
+
+                Divider().frame(height: 22)
+
+                Picker("Tipo", selection: $selectedTypeFilter) {
+                    Text("Todos os Tipos").tag(TransactionType?.none)
+                    Text("Apenas Despesas").tag(TransactionType?.some(.expense))
+                    Text("Apenas Receitas").tag(TransactionType?.some(.income))
+                }
+                .frame(width: 165)
+
+                Picker("Conta", selection: $selectedAccountFilter) {
+                    Text("Todas as Contas").tag(UUID?.none)
+                    ForEach(store.accounts) { acc in
+                        Text(acc.name).tag(UUID?.some(acc.id))
+                    }
+                }
+                .frame(width: 165)
+
+                Toggle("Só Pendentes", isOn: $onlyPendingFilter)
+                    .toggleStyle(.checkbox)
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Buscar transação...", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .frame(width: 170)
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.1), lineWidth: 1))
+            }
+
+            // MARK: - Transactions List
+            if filteredMonthTransactions.isEmpty {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 42))
+                        .foregroundStyle(.secondary)
+                    Text("Nenhuma transação encontrada para \(BRLFormatters.monthYear(store.selectedMonth))")
+                        .font(.headline)
+                    Text("Adicione uma nova despesa/receita, navegue entre os meses ou importe um extrato PDF com a LLM local.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(filteredMonthTransactions) { tx in
+                            transactionRow(tx)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .padding(24)
+        .sheet(isPresented: $showCreateExpenseSheet) {
+            TransactionEditorSheet(
+                store: store,
+                llmService: llmService,
+                initialType: .expense
+            )
+        }
+        .sheet(isPresented: $showCreateIncomeSheet) {
+            TransactionEditorSheet(
+                store: store,
+                llmService: llmService,
+                initialType: .income
+            )
+        }
+        .sheet(isPresented: $showImportSheet) {
+            StatementImportSheet(
+                store: store,
+                llmService: llmService,
+                initialFilterMode: .hybrid
+            )
+        }
+        .sheet(item: $editingTransaction) { txToEdit in
+            TransactionEditorSheet(
+                store: store,
+                llmService: llmService,
+                initialType: txToEdit.type,
+                existingTransaction: txToEdit
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func transactionRow(_ tx: FinancialTransaction) -> some View {
+        let cat = store.category(for: tx.categoryId)
+        let acc = store.account(for: tx.accountId)
+
+        HStack(spacing: 14) {
+            CategoryBadgeView(category: cat, size: 40)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(tx.name)
+                        .font(.system(size: 14, weight: .semibold))
+                        .strikethrough(tx.ignoreInConsolidated, color: .secondary)
+
+                    if let badge = tx.installmentBadge {
+                        Text(badge)
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.blue.opacity(0.15)))
+                            .foregroundStyle(.blue)
+                    }
+
+                    if tx.recurrenceMode == .repeated {
+                        Label("Mensal", systemImage: "repeat")
+                            .font(.caption2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.purple.opacity(0.15)))
+                            .foregroundStyle(.purple)
+                    }
+
+                    if tx.ignoreInConsolidated {
+                        Text("Ignorado no Consolidado")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.orange.opacity(0.16)))
+                            .foregroundStyle(.orange)
+                    }
+
+                    if let attName = tx.attachmentName, let attPath = tx.attachmentPath {
+                        Button {
+                            NSWorkspace.shared.open(URL(fileURLWithPath: attPath))
+                        } label: {
+                            Label(attName, systemImage: "paperclip")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Abrir anexo: \(attName)")
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Text(BRLFormatters.shortDate(tx.date))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    if let cat {
+                        Text("• \(cat.name)")
+                            .font(.caption)
+                            .foregroundStyle(Color(hex: cat.colorHex))
+                    }
+
+                    if let acc {
+                        Text("• \(acc.name)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if !tx.details.isEmpty {
+                        Text("• \(tx.details)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Paid / Received Status Toggle
+            Button {
+                store.toggleTransactionPaid(tx.id)
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: tx.isPaid ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
+                    Text(tx.isPaid ? (tx.type == .expense ? "Pago" : "Recebido") : (tx.type == .expense ? "Não Pago" : "Não Recebido"))
+                        .font(.caption.weight(.semibold))
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(
+                    Capsule()
+                        .fill(tx.isPaid ? Color.green.opacity(0.14) : Color.amberWarning.opacity(0.16))
+                )
+                .foregroundStyle(tx.isPaid ? Color.green : Color.amberWarning)
+            }
+            .buttonStyle(.plain)
+            .help("Alternar status de Pago / Recebido")
+
+            // Amount
+            Text((tx.type == .expense ? "- " : "+ ") + BRLFormatters.currency(tx.amount))
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundStyle(
+                    tx.ignoreInConsolidated
+                        ? Color.secondary
+                        : (tx.type == .expense ? Color(hex: "#EF4444") : Color(hex: "#10B981"))
+                )
+                .frame(minWidth: 115, alignment: .trailing)
+
+            // Context actions
+            HStack(spacing: 4) {
+                Button {
+                    editingTransaction = tx
+                } label: {
+                    Image(systemName: "pencil")
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.borderless)
+                .help("Editar transação")
+
+                Button(role: .destructive) {
+                    store.deleteTransaction(tx.id)
+                } label: {
+                    Image(systemName: "trash")
+                        .foregroundStyle(.red)
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.borderless)
+                .help("Excluir transação")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
+extension Color {
+    static let amberWarning = Color(hex: "#D97706")
+}
+
+// MARK: - Transaction Editor Sheet (Create Expense / Create Income / Edit + Statement Import Trigger)
+
+public struct TransactionEditorSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    @ObservedObject public var llmService: LocalLLMService
+    @Environment(\.dismiss) private var dismiss
+
+    public let existingTransaction: FinancialTransaction?
+
+    @State private var type: TransactionType
+    @State private var name: String = ""
+    @State private var details: String = ""
+    @State private var amountText: String = ""
+    @State private var date: Date = Date()
+    @State private var isPaid: Bool = true // Marcado por default!
+    @State private var categoryId: UUID = UUID()
+    @State private var accountId: UUID = UUID()
+    @State private var ignoreInConsolidated: Bool = false
+    @State private var attachmentPath: String? = nil
+    @State private var attachmentName: String? = nil
+
+    // Recorrência para Despesas (Parcelada / Repetida)
+    @State private var recurrenceMode: TransactionRecurrenceMode = .single
+    @State private var installmentsOrMonthsCount: Int = 2
+
+    @State private var showEmbeddedStatementImporter: Bool = false
+    @State private var validationError: String? = nil
+
+    public init(
+        store: FinancialDataStore,
+        llmService: LocalLLMService,
+        initialType: TransactionType,
+        existingTransaction: FinancialTransaction? = nil
+    ) {
+        self.store = store
+        self.llmService = llmService
+        self.existingTransaction = existingTransaction
+        _type = State(initialValue: existingTransaction?.type ?? initialType)
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            // Top bar
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(existingTransaction == nil ? "Criar \(type.title)" : "Editar \(type.title)")
+                        .font(.title2.bold())
+                    Text("Preencha os dados manualmente ou importe um relatório/extrato com análise via LLM local")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+
+                if existingTransaction == nil {
+                    Button {
+                        showEmbeddedStatementImporter = true
+                    } label: {
+                        Label(
+                            "Importar Relatório (Extrato c/ LLM Local)",
+                            systemImage: "sparkles.rectangle.stack.fill"
+                        )
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#6366F1"))
+                }
+            }
+
+            Divider()
+
+            // Type selector
+            Picker("Tipo de Lançamento", selection: $type) {
+                ForEach(TransactionType.allCases) { t in
+                    Text(t.title).tag(t)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: type) { _, newType in
+                if let firstCat = store.categories(for: newType).first {
+                    categoryId = firstCat.id
+                }
+                if newType == .income {
+                    recurrenceMode = .single
+                }
+            }
+
+            Form {
+                Section("Dados Principais") {
+                    TextField("Nome (Ex: Supermercado Delta, Salário, Condomínio)", text: $name)
+
+                    HStack(spacing: 14) {
+                        TextField(
+                            type == .expense && recurrenceMode == .installment
+                                ? "Valor Cheio Total (R$)"
+                                : "Valor (R$)",
+                            text: $amountText
+                        )
+
+                        DatePicker("Data", selection: $date, displayedComponents: [.date])
+                    }
+
+                    TextField("Detalhes / Observações (Opcional)", text: $details)
+                }
+
+                Section("Classificação e Conta") {
+                    Picker("Categoria", selection: $categoryId) {
+                        ForEach(store.categories(for: type)) { cat in
+                            Label(cat.name, systemImage: cat.iconSymbol)
+                                .tag(cat.id)
+                        }
+                    }
+
+                    Picker("Conta Bancária", selection: $accountId) {
+                        ForEach(store.accounts) { acc in
+                            Text(acc.name).tag(acc.id)
+                        }
+                    }
+                }
+
+                if type == .expense && existingTransaction == nil {
+                    Section("Parcelamento ou Repetição Mensal (Despesas)") {
+                        Picker("Modalidade", selection: $recurrenceMode) {
+                            ForEach(TransactionRecurrenceMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+
+                        if recurrenceMode == .installment {
+                            Stepper(
+                                "Número de Parcelas: \(installmentsOrMonthsCount)x",
+                                value: $installmentsOrMonthsCount,
+                                in: 2...72
+                            )
+                            if let totalVal = BRLFormatters.parseAmount(amountText), totalVal > 0 {
+                                let perInstallment = totalVal / Double(installmentsOrMonthsCount)
+                                Text("Serão criadas \(installmentsOrMonthsCount) parcelas mensais de \(BRLFormatters.currency(perInstallment)) somando o valor cheio de \(BRLFormatters.currency(totalVal)).")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if recurrenceMode == .repeated {
+                            Stepper(
+                                "Repetir por \(installmentsOrMonthsCount) meses",
+                                value: $installmentsOrMonthsCount,
+                                in: 2...60
+                            )
+                            if let monthlyVal = BRLFormatters.parseAmount(amountText), monthlyVal > 0 {
+                                Text("O mesmo valor de \(BRLFormatters.currency(monthlyVal)) será repetido por \(installmentsOrMonthsCount) meses consecutivos.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
+                Section("Status, Consolidação e Anexo") {
+                    Toggle(
+                        type == .expense ? "Pago (Desmarque para despesa não paga atual ou futura)" : "Recebido (Desmarque para receita futura/pendente)",
+                        isOn: $isPaid
+                    )
+
+                    Toggle(
+                        "Ignorar no consolidado (Apenas registro, não soma/desconta no saldo)",
+                        isOn: $ignoreInConsolidated
+                    )
+
+                    HStack {
+                        Text("Anexo (Opcional):")
+                        Spacer()
+                        if let attName = attachmentName {
+                            HStack(spacing: 6) {
+                                Image(systemName: "paperclip")
+                                Text(attName)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                Button("Remover") {
+                                    attachmentPath = nil
+                                    attachmentName = nil
+                                }
+                                .buttonStyle(.link)
+                            }
+                        } else {
+                            Button {
+                                if let url = MacFilePicker.pickAttachmentFile(),
+                                   let saved = store.copyAttachmentToStorage(from: url) {
+                                    attachmentPath = saved.path
+                                    attachmentName = saved.fileName
+                                }
+                            } label: {
+                                Label("Anexar Arquivo do Mac...", systemImage: "paperclip")
+                            }
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            if let validationError {
+                Text(validationError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("Cancelar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button(existingTransaction == nil ? "Salvar \(type.title)" : "Atualizar \(type.title)") {
+                    saveAction()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(type == .expense ? Color(hex: "#EF4444") : Color(hex: "#10B981"))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 600, height: 610)
+        .onAppear {
+            if let existing = existingTransaction {
+                type = existing.type
+                name = existing.name
+                details = existing.details
+                amountText = BRLFormatters.decimalFormatter.string(from: NSNumber(value: existing.amount)) ?? String(format: "%.2f", existing.amount)
+                date = existing.date
+                isPaid = existing.isPaid
+                categoryId = existing.categoryId
+                accountId = existing.accountId
+                ignoreInConsolidated = existing.ignoreInConsolidated
+                attachmentPath = existing.attachmentPath
+                attachmentName = existing.attachmentName
+            } else {
+                categoryId = store.categories(for: type).first?.id ?? store.categories.first!.id
+                accountId = store.accounts.first?.id ?? UUID()
+            }
+        }
+        .sheet(isPresented: $showEmbeddedStatementImporter) {
+            StatementImportSheet(
+                store: store,
+                llmService: llmService,
+                initialFilterMode: type == .expense ? .expensesOnly : .incomesOnly,
+                onCompleteImport: {
+                    dismiss()
+                }
+            )
+        }
+    }
+
+    private func saveAction() {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            validationError = "Informe o nome da transação."
+            return
+        }
+        guard let parsedAmount = BRLFormatters.parseAmount(amountText), parsedAmount > 0 else {
+            validationError = "Informe um valor válido maior que zero."
+            return
+        }
+
+        if var existing = existingTransaction {
+            existing.name = trimmedName
+            existing.details = details.trimmingCharacters(in: .whitespacesAndNewlines)
+            existing.amount = parsedAmount
+            existing.date = date
+            existing.type = type
+            existing.isPaid = isPaid
+            existing.categoryId = categoryId
+            existing.accountId = accountId
+            existing.ignoreInConsolidated = ignoreInConsolidated
+            existing.attachmentPath = attachmentPath
+            existing.attachmentName = attachmentName
+            store.updateTransaction(existing)
+        } else {
+            store.createTransaction(
+                name: trimmedName,
+                details: details.trimmingCharacters(in: .whitespacesAndNewlines),
+                amount: parsedAmount,
+                date: date,
+                type: type,
+                isPaid: isPaid,
+                categoryId: categoryId,
+                accountId: accountId,
+                attachmentPath: attachmentPath,
+                attachmentName: attachmentName,
+                ignoreInConsolidated: ignoreInConsolidated,
+                recurrenceMode: type == .expense ? recurrenceMode : .single,
+                installmentsOrMonthsCount: installmentsOrMonthsCount
+            )
+        }
+        dismiss()
+    }
+}
+
+// MARK: - Statement Import Sheet (LLM Local Categorization + Deduplication)
+
+public struct StatementImportSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    @ObservedObject public var llmService: LocalLLMService
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var filterMode: StatementImportFilterMode
+    @State private var selectedAccountId: UUID = UUID()
+    @State private var selectedFileName: String = "Nenhum arquivo selecionado"
+    @State private var parsedItems: [ParsedStatementTransaction] = []
+    @State private var importSummaryMessage: String? = nil
+
+    public var onCompleteImport: (() -> Void)? = nil
+
+    public init(
+        store: FinancialDataStore,
+        llmService: LocalLLMService,
+        initialFilterMode: StatementImportFilterMode = .hybrid,
+        onCompleteImport: (() -> Void)? = nil
+    ) {
+        self.store = store
+        self.llmService = llmService
+        _filterMode = State(initialValue: initialFilterMode)
+        self.onCompleteImport = onCompleteImport
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "cpu.fill")
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                        Text("Importar Relatório / Extrato Bancário com LLM Local")
+                            .font(.title2.bold())
+                    }
+                    Text("Analisa extratos PDF/CSV/TXT usando a LLM local, separa por categoria com máximo de detalhes e evita transações duplicadas.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let activeModel = store.llmConfig.selectedModel {
+                    Label(activeModel.displayName, systemImage: "checkmark.seal.fill")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color.green.opacity(0.15)))
+                        .foregroundStyle(.green)
+                }
+            }
+
+            // Controls bar
+            HStack(spacing: 12) {
+                Picker("Modo de Importação", selection: $filterMode) {
+                    ForEach(StatementImportFilterMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .frame(width: 290)
+                .onChange(of: filterMode) { _, _ in
+                    if !parsedItems.isEmpty {
+                        Task {
+                            await reloadSampleIfNeeded()
+                        }
+                    }
+                }
+
+                Picker("Conta Destino", selection: $selectedAccountId) {
+                    ForEach(store.accounts) { acc in
+                        Text(acc.name).tag(acc.id)
+                    }
+                }
+                .frame(width: 220)
+
+                Spacer()
+
+                Button {
+                    if let url = MacFilePicker.pickStatementFile() {
+                        selectedFileName = url.lastPathComponent
+                        Task {
+                            parsedItems = await llmService.analyzeStatementFile(
+                                fileURL: url,
+                                filterMode: filterMode,
+                                store: store
+                            )
+                        }
+                    }
+                } label: {
+                    Label("Selecionar PDF / Arquivo do Mac...", systemImage: "folder.fill")
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button {
+                    selectedFileName = "Extrato_Itau_2026_Anexo.pdf"
+                    Task {
+                        parsedItems = await llmService.analyzeStatementRawText(
+                            rawText: SampleItauStatementData.rawOCRText,
+                            filterMode: filterMode,
+                            store: store
+                        )
+                    }
+                } label: {
+                    Label("Carregar Extrato Itaú Anexo", systemImage: "doc.richtext.fill")
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if llmService.isAnalyzingStatement {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("A LLM local está analisando os lançamentos, identificando estabelecimentos e classificando categorias...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.indigo.opacity(0.1)))
+            }
+
+            // Preview Table
+            if parsedItems.isEmpty && !llmService.isAnalyzingStatement {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Image(systemName: "doc.viewfinder")
+                        .font(.system(size: 44))
+                        .foregroundStyle(.secondary)
+                    Text("Selecione um relatório PDF/CSV na sua máquina ou clique em 'Carregar Extrato Itaú Anexo'")
+                        .font(.headline)
+                    Text("Suporta importação de Apenas Despesas, Apenas Receitas ou Híbrido (Receitas + Despesas).")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            } else {
+                let duplicateCount = parsedItems.filter { store.transactionAlreadyExists($0, inAccountId: selectedAccountId) }.count
+                let newCount = parsedItems.count - duplicateCount
+
+                HStack {
+                    Text("Arquivo: \(selectedFileName) • \(parsedItems.count) itens identificados pela LLM")
+                        .font(.subheadline.bold())
+                    Spacer()
+                    Text("\(newCount) novas para adicionar")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.green.opacity(0.15)))
+                        .foregroundStyle(.green)
+
+                    if duplicateCount > 0 {
+                        Text("\(duplicateCount) já existentes (serão ignoradas)")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.orange.opacity(0.15)))
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach($parsedItems) { $item in
+                            let alreadyExists = store.transactionAlreadyExists(item, inAccountId: selectedAccountId)
+                            HStack(spacing: 12) {
+                                Text(BRLFormatters.shortDate(item.date))
+                                    .font(.caption.monospacedDigit())
+                                    .frame(width: 75, alignment: .leading)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    HStack(spacing: 6) {
+                                        Text(item.cleanTitle)
+                                            .font(.subheadline.weight(.semibold))
+                                        Text(item.paymentMethod)
+                                            .font(.caption2)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 1)
+                                            .background(Capsule().fill(Color.primary.opacity(0.07)))
+                                    }
+                                    Text(item.extractedDetails)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer()
+
+                                Picker("", selection: Binding(
+                                    get: { item.suggestedCategoryId ?? store.categories(for: item.type).first!.id },
+                                    set: { newCatId in
+                                        item.suggestedCategoryId = newCatId
+                                        if let cat = store.category(for: newCatId) {
+                                            item.suggestedCategoryName = cat.name
+                                        }
+                                    }
+                                )) {
+                                    ForEach(store.categories(for: item.type)) { cat in
+                                        Text(cat.name).tag(cat.id)
+                                    }
+                                }
+                                .frame(width: 195)
+
+                                Text((item.type == .expense ? "- " : "+ ") + BRLFormatters.currency(item.amount))
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(item.type == .expense ? Color(hex: "#EF4444") : Color(hex: "#10B981"))
+                                    .frame(width: 105, alignment: .trailing)
+
+                                Text(alreadyExists ? "Já Existe" : "Nova")
+                                    .font(.caption2.bold())
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Capsule().fill(alreadyExists ? Color.orange.opacity(0.16) : Color.green.opacity(0.16)))
+                                    .foregroundStyle(alreadyExists ? .orange : .green)
+                                    .frame(width: 72)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                        }
+                    }
+                }
+            }
+
+            if let summaryMsg = importSummaryMessage {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text(summaryMsg)
+                        .font(.subheadline.weight(.medium))
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.12)))
+            }
+
+            HStack {
+                Button("Fechar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    let summary = store.importParsedTransactions(
+                        parsedItems,
+                        intoAccountId: selectedAccountId,
+                        filterMode: filterMode
+                    )
+                    importSummaryMessage = "Importação concluída: \(summary.addedCount) novas transações adicionadas (\(summary.addedExpenses) despesas, \(summary.addedIncomes) receitas) e \(summary.skippedDuplicatesCount) duplicadas ignoradas."
+                    if let firstDate = parsedItems.first?.date {
+                        store.selectedMonth = firstDate
+                    }
+                    onCompleteImport?()
+                } label: {
+                    Label("Confirmar e Adicionar Transações Não Duplicadas", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#10B981"))
+                .disabled(parsedItems.isEmpty)
+            }
+        }
+        .padding(22)
+        .frame(width: 900, height: 620)
+        .onAppear {
+            selectedAccountId = store.accounts.first(where: { $0.bankPresetId == "itau" })?.id
+                ?? store.accounts.first?.id
+                ?? UUID()
+        }
+    }
+
+    private func reloadSampleIfNeeded() async {
+        if selectedFileName == "Extrato_Itau_2026_Anexo.pdf" {
+            parsedItems = await llmService.analyzeStatementRawText(
+                rawText: SampleItauStatementData.rawOCRText,
+                filterMode: filterMode,
+                store: store
+            )
+        }
+    }
+}
