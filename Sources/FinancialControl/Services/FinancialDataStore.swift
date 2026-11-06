@@ -637,15 +637,19 @@ public final class FinancialDataStore: ObservableObject {
     ) -> [FinancialTransaction] {
         var created: [FinancialTransaction] = []
         let cleanAmount = abs(amount)
-        // Regra: não é possível pagar/receber uma conta com data no futuro
-        let firstOccurrencePaid = isDateInFuture(date, referenceNow: referenceNow) ? false : isPaid
+        var finalDate = date
+        var firstOccurrencePaid = isPaid
+        if isPaid && isDateInFuture(date, referenceNow: referenceNow) {
+            finalDate = referenceNow
+            firstOccurrencePaid = true
+        }
 
         if recurrenceMode == .single || (recurrenceMode != .recurring && installmentsOrMonthsCount <= 1) {
             let tx = FinancialTransaction(
                 name: name,
                 details: details,
                 amount: cleanAmount,
-                date: date,
+                date: finalDate,
                 type: type,
                 isPaid: firstOccurrencePaid,
                 categoryId: categoryId,
@@ -843,9 +847,8 @@ public final class FinancialDataStore: ObservableObject {
 
         var cleanUpdated = updated
         cleanUpdated.amount = abs(updated.amount)
-        // Regra: não é possível pagar uma conta com data no futuro
-        if isDateInFuture(cleanUpdated.date, referenceNow: referenceNow) {
-            cleanUpdated.isPaid = false
+        if cleanUpdated.isPaid && isDateInFuture(cleanUpdated.date, referenceNow: referenceNow) {
+            cleanUpdated.date = referenceNow
         }
 
         let baseCleanName = Self.stripInstallmentSuffix(from: cleanUpdated.name)
@@ -904,14 +907,23 @@ public final class FinancialDataStore: ObservableObject {
         return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Alterna o status de pago/recebido. Retorna `false` caso o usuário tente marcar como paga uma transação com data no futuro.
+    /// Alterna o status de pago/recebido.
+    /// Regra: caso o usuário pague uma transação com data no futuro, permite o pagamento e move a data da transação para a data atual (`referenceNow`).
+    /// Ao desfazer o pagamento, a transação volta para não paga.
     @discardableResult
     public func toggleTransactionPaid(_ id: UUID, referenceNow: Date = Date()) -> Bool {
         guard let idx = transactions.firstIndex(where: { $0.id == id }) else { return false }
-        if !transactions[idx].isPaid && isDateInFuture(transactions[idx].date, referenceNow: referenceNow) {
-            return false
+        if !transactions[idx].isPaid {
+            // Pagando: se a data estiver no futuro, move para a data atual
+            if isDateInFuture(transactions[idx].date, referenceNow: referenceNow) {
+                transactions[idx].date = referenceNow
+            }
+            transactions[idx].isPaid = true
+        } else {
+            // Desfazendo pagamento
+            transactions[idx].isPaid = false
         }
-        transactions[idx].isPaid.toggle()
+        sortTransactions()
         save()
         return true
     }

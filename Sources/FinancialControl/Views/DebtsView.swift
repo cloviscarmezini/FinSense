@@ -616,6 +616,8 @@ public struct DebtImportSheet: View {
     @State private var rawTextInput: String = ""
     @State private var showTextInputBox: Bool = true
     @State private var parsedDebts: [ParsedDebtImportItem] = []
+    @State private var editingParsedDebt: ParsedDebtImportItem? = nil
+    @State private var parsedDebtPendingRemoval: ParsedDebtImportItem? = nil
     @State private var hasAttemptedLoad: Bool = false
     @State private var importSummaryMessage: String? = nil
 
@@ -847,6 +849,25 @@ public struct DebtImportSheet: View {
                                     .background(Capsule().fill(alreadyExists ? Color.orange.opacity(0.16) : Color.green.opacity(0.16)))
                                     .foregroundStyle(alreadyExists ? .orange : .green)
                                     .frame(width: 72)
+
+                                Button {
+                                    editingParsedDebt = item
+                                } label: {
+                                    Image(systemName: "pencil")
+                                        .frame(width: 24, height: 24)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Editar esta dívida antes de importar")
+
+                                Button {
+                                    parsedDebtPendingRemoval = item
+                                } label: {
+                                    Image(systemName: "xmark.circle")
+                                        .foregroundStyle(.red)
+                                        .frame(width: 24, height: 24)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Remover esta dívida da importação")
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
@@ -889,5 +910,30 @@ public struct DebtImportSheet: View {
         }
         .padding(22)
         .frame(width: 780, height: 560)
+        .sheet(item: $editingParsedDebt) { debtToEdit in
+            ParsedDebtItemEditorSheet(item: debtToEdit) { updated in
+                if let idx = parsedDebts.firstIndex(where: { $0.id == updated.id }) {
+                    parsedDebts[idx] = updated
+                }
+            }
+        }
+        .alert(
+            "Remover Dívida da Importação",
+            isPresented: Binding(
+                get: { parsedDebtPendingRemoval != nil },
+                set: { if !$0 { parsedDebtPendingRemoval = nil } }
+            ),
+            presenting: parsedDebtPendingRemoval
+        ) { item in
+            Button("Remover Item", role: .destructive) {
+                parsedDebts.removeAll { $0.id == item.id }
+                parsedDebtPendingRemoval = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                parsedDebtPendingRemoval = nil
+            }
+        } message: { item in
+            Text("Deseja remover \"\(item.name)\" (\(BRLFormatters.currency(item.originalAmount))) da lista de importação?")
+        }
     }
 }

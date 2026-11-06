@@ -567,21 +567,48 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertTrue(store.isInMonth(defaultDateInFilteredMonth, monthReference: march2027))
         XCTAssertEqual(BRLFormatters.shortDate(defaultDateInFilteredMonth), "06/03/2027")
 
-        // 2. Verifica que não é possível pagar uma conta com data no futuro
+        // 2. Pagar uma conta com data no futuro é permitido, mas a transação é movida para a data atual
         let futureTxCreated = store.createTransaction(
             name: "Conta no Futuro",
             amount: 250.0,
             date: defaultDateInFilteredMonth,
             type: .expense,
-            isPaid: true, // Mesmo tentando criar como paga no futuro, deve ficar não paga
+            isPaid: false,
             categoryId: expCat,
             accountId: acc1.id,
             recurrenceMode: .single,
             referenceNow: refToday
         ).first!
-        XCTAssertFalse(futureTxCreated.isPaid, "Transação com data futura não pode ser marcada como paga")
-        XCTAssertFalse(store.toggleTransactionPaid(futureTxCreated.id, referenceNow: refToday), "Não deve permitir pagar conta com data no futuro")
+        XCTAssertFalse(futureTxCreated.isPaid)
+        XCTAssertEqual(BRLFormatters.shortDate(futureTxCreated.date), "06/03/2027")
+
+        XCTAssertTrue(store.toggleTransactionPaid(futureTxCreated.id, referenceNow: refToday))
+        let paidNow = store.transactions.first(where: { $0.id == futureTxCreated.id })!
+        XCTAssertTrue(paidNow.isPaid)
+        XCTAssertEqual(BRLFormatters.shortDate(paidNow.date), "06/11/2026", "Ao pagar no futuro, a transação deve ser movida para hoje")
+
+        // Desfazer pagamento volta para não paga (mantendo a data atual)
+        XCTAssertTrue(store.toggleTransactionPaid(futureTxCreated.id, referenceNow: refToday))
         XCTAssertFalse(store.transactions.first(where: { $0.id == futureTxCreated.id })!.isPaid)
+
+        // Criar já marcada como paga com data futura também move para hoje
+        let createdPaidFuture = store.createTransaction(
+            name: "Conta Paga Antecipada",
+            amount: 80.0,
+            date: defaultDateInFilteredMonth,
+            type: .expense,
+            isPaid: true,
+            categoryId: expCat,
+            accountId: acc1.id,
+            recurrenceMode: .single,
+            referenceNow: refToday
+        ).first!
+        XCTAssertTrue(createdPaidFuture.isPaid)
+        XCTAssertEqual(BRLFormatters.shortDate(createdPaidFuture.date), "06/11/2026")
+
+        // Remove os lançamentos auxiliares para não interferir nas projeções abaixo
+        store.deleteTransaction(futureTxCreated.id)
+        store.deleteTransaction(createdPaidFuture.id)
 
         // 3. Cria pagamento recorrente mensal (Netflix) e anual (Prime Video) + recebimento recorrente mensal (Salário)
         let netflixSeries = store.createTransaction(
@@ -944,5 +971,45 @@ final class FinancialControlTests: XCTestCase {
         // Navegar para anos futuros não deve recriar a série recorrente encerrada
         store.changeYear(by: 2)
         XCTAssertEqual(store.transactions.filter { $0.seriesGroupId == recGroupId }.count, 2)
+    }
+
+    func testTransactionSortOrdersAndEditedImportItems() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(name: "Itaú", bankPresetId: "itau", customImagePath: nil, iconSymbol: "building.columns.fill", colorHex: "#EC7000", initialBalance: 0.0)
+        let acc = store.accounts.first!
+        let expCat = store.fallbackCategoryId(for: .expense)
+        let refNow = BRLFormatters.shortDateFormatter.date(from: "06/11/2026")!
+
+        let a = store.createTransaction(name: "A", amount: 300, date: BRLFormatters.shortDateFormatter.date(from: "01/11/2026")!, type: .expense, isPaid: true, categoryId: expCat, accountId: acc.id, referenceNow: refNow).first!
+        let b = store.createTransaction(name: "B", amount: 100, date: BRLFormatters.shortDateFormatter.date(from: "03/11/2026")!, type: .expense, isPaid: true, categoryId: expCat, accountId: acc.id, referenceNow: refNow).first!
+        let c = store.createTransaction(name: "C", amount: 200, date: BRLFormatters.shortDateFormatter.date(from: "02/11/2026")!, type: .expense, isPaid: true, categoryId: expCat, accountId: acc.id, referenceNow: refNow).first!
+        let all = store.transactions
+
+        XCTAssertEqual(TransactionSortOrder.dateAscending.sort(all).map(\.id), [a.id, c.id, b.id])
+        XCTAssertEqual(TransactionSortOrder.dateDescending.sort(all).map(\.id), [b.id, c.id, a.id])
+        XCTAssertEqual(TransactionSortOrder.amountAscending.sort(all).map(\.id), [b.id, c.id, a.id])
+        XCTAssertEqual(TransactionSortOrder.amountDescending.sort(all).map(\.id), [a.id, c.id, b.id])
+
+        // Item editado antes da importação: categoria manual prevalece sobre a categoria explícita do texto
+        var parsed = StatementImportService.parseStatementText(
+            "Despesas\nCabeleleiro - dia 15 - 190 - fixo a partir de dezembro (Cuidado pessoal)",
+            categories: store.categories,
+            filterMode: .hybrid,
+            referenceDate: refNow
+        )
+        XCTAssertEqual(parsed.count, 1)
+        let healthCat = store.fallbackCategoryId(for: .expense, matchingSubstring: "Saúde")
+        parsed[0].cleanTitle = "Barbearia"
+        parsed[0].amount = 210
+        parsed[0].suggestedCategoryId = healthCat
+        parsed[0].explicitCategoryName = nil
+        parsed[0].recurrenceMode = .single
+
+        let summary = store.importParsedTransactions(parsed, intoAccountId: acc.id, filterMode: .hybrid)
+        XCTAssertEqual(summary.addedCount, 1)
+        let imported = store.transactions.first(where: { $0.name == "Barbearia" })!
+        XCTAssertEqual(imported.amount, 210, accuracy: 0.01)
+        XCTAssertEqual(imported.categoryId, healthCat)
+        XCTAssertEqual(imported.recurrenceMode, .single)
     }
 }

@@ -10,6 +10,8 @@ public struct TransactionsView: View {
     @State private var selectedAccountFilter: UUID? = nil
     @State private var selectedCategoryFilter: UUID? = nil
     @State private var onlyPendingFilter: Bool = false
+    @State private var sortOrder: TransactionSortOrder = .dateDescending
+    @State private var groupByDay: Bool = false
 
     @State private var showCreateExpenseSheet: Bool = false
     @State private var showCreateIncomeSheet: Bool = false
@@ -17,7 +19,7 @@ public struct TransactionsView: View {
     @State private var editingTransaction: FinancialTransaction? = nil
     @State private var transactionPendingDeletion: FinancialTransaction? = nil
     @State private var recurringTransactionPendingCancellation: FinancialTransaction? = nil
-    @State private var showFuturePaidBlockedAlert: Bool = false
+    @State private var transactionPendingPaymentToggle: FinancialTransaction? = nil
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -36,7 +38,7 @@ public struct TransactionsView: View {
     }
 
     private var filteredMonthTransactions: [FinancialTransaction] {
-        store.transactionsForMonth(store.selectedMonth).filter { tx in
+        let filtered = store.transactionsForMonth(store.selectedMonth).filter { tx in
             if let typeFilter = enforcedTypeFromSubmenu, tx.type != typeFilter {
                 return false
             }
@@ -61,6 +63,18 @@ public struct TransactionsView: View {
             }
             return true
         }
+        return sortOrder.sort(filtered)
+    }
+
+    /// Agrupa as transações filtradas por dia, respeitando a ordenação de datas selecionada
+    /// (para ordenações por valor, os dias seguem a ordem decrescente e os itens de cada dia seguem a ordenação por valor).
+    private var transactionsGroupedByDay: [(day: Date, items: [FinancialTransaction])] {
+        let cal = Calendar.current
+        let grouped = Dictionary(grouping: filteredMonthTransactions) { cal.startOfDay(for: $0.date) }
+        let sortedDays = grouped.keys.sorted { a, b in
+            sortOrder == .dateAscending ? a < b : a > b
+        }
+        return sortedDays.map { day in (day: day, items: sortOrder.sort(grouped[day] ?? [])) }
     }
 
     private var headerTitle: String {
@@ -277,6 +291,25 @@ public struct TransactionsView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.28), lineWidth: 1))
             }
 
+            // MARK: - Sort & Grouping Bar
+            HStack(spacing: 12) {
+                Picker("Ordenar por", selection: $sortOrder) {
+                    ForEach(TransactionSortOrder.allCases) { order in
+                        Text(order.title).tag(order)
+                    }
+                }
+                .frame(width: 260)
+
+                Toggle("Agrupar por dia", isOn: $groupByDay)
+                    .toggleStyle(.checkbox)
+
+                Spacer()
+
+                Text("\(filteredMonthTransactions.count) lançamento(s)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             // MARK: - Transactions List
             if filteredMonthTransactions.isEmpty {
                 VStack(spacing: 12) {
@@ -299,8 +332,17 @@ public struct TransactionsView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(filteredMonthTransactions) { tx in
-                            transactionRow(tx)
+                        if groupByDay {
+                            ForEach(transactionsGroupedByDay, id: \.day) { group in
+                                dayGroupHeader(day: group.day, items: group.items)
+                                ForEach(group.items) { tx in
+                                    transactionRow(tx)
+                                }
+                            }
+                        } else {
+                            ForEach(filteredMonthTransactions) { tx in
+                                transactionRow(tx)
+                            }
                         }
                     }
                     .padding(.vertical, 4)
@@ -406,11 +448,77 @@ public struct TransactionsView: View {
         } message: { tx in
             Text("Deseja encerrar a recorrência de \"\(tx.name)\" a partir de \(BRLFormatters.shortDate(tx.date))? As ocorrências futuras em aberto serão removidas.")
         }
-        .alert("Não Permitido para Data no Futuro", isPresented: $showFuturePaidBlockedAlert) {
-            Button("Entendi", role: .cancel) {}
-        } message: {
-            Text("Não é possível marcar como paga ou recebida uma conta com data no futuro. Aguarde a data do lançamento ou altere a data para hoje ou uma data passada.")
+        .alert(
+            transactionPendingPaymentToggle.map { paymentAlertTitle(for: $0) } ?? "",
+            isPresented: Binding(
+                get: { transactionPendingPaymentToggle != nil },
+                set: { if !$0 { transactionPendingPaymentToggle = nil } }
+            ),
+            presenting: transactionPendingPaymentToggle
+        ) { tx in
+            Button(tx.isPaid ? "Desfazer" : (tx.type == .expense ? "Confirmar Pagamento" : "Confirmar Recebimento")) {
+                _ = store.toggleTransactionPaid(tx.id)
+                transactionPendingPaymentToggle = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                transactionPendingPaymentToggle = nil
+            }
+        } message: { tx in
+            Text(paymentAlertMessage(for: tx))
         }
+    }
+
+    private func paymentAlertTitle(for tx: FinancialTransaction) -> String {
+        if tx.isPaid {
+            return tx.type == .expense ? "Desfazer Pagamento?" : "Desfazer Recebimento?"
+        }
+        return tx.type == .expense ? "Confirmar Pagamento?" : "Confirmar Recebimento?"
+    }
+
+    private func paymentAlertMessage(for tx: FinancialTransaction) -> String {
+        let base = "\"\(tx.name)\" • \(BRLFormatters.currency(tx.amount)) • \(BRLFormatters.shortDate(tx.date))"
+        if tx.isPaid {
+            return "\(base)\n\nA transação voltará a ficar como \(tx.type == .expense ? "não paga" : "não recebida")."
+        }
+        if store.isDateInFuture(tx.date) {
+            return "\(base)\n\nEsta transação está agendada para o futuro. Ao confirmar, ela será marcada como \(tx.type == .expense ? "paga" : "recebida") e movida para a data de hoje (\(BRLFormatters.shortDate(Date())))."
+        }
+        return "\(base)\n\nDeseja marcar como \(tx.type == .expense ? "paga" : "recebida")?"
+    }
+
+    @ViewBuilder
+    private func dayGroupHeader(day: Date, items: [FinancialTransaction]) -> some View {
+        let dayIncome = items.filter { $0.type == .income && !$0.ignoreInConsolidated }.reduce(0.0) { $0 + $1.amount }
+        let dayExpense = items.filter { $0.type == .expense && !$0.ignoreInConsolidated }.reduce(0.0) { $0 + $1.amount }
+        let dayNet = dayIncome - dayExpense
+        let isToday = Calendar.current.isDateInToday(day)
+
+        HStack(spacing: 10) {
+            Image(systemName: "calendar")
+                .foregroundStyle(isToday ? Color.accentColor : .secondary)
+            Text(BRLFormatters.dayGroupHeader(day) + (isToday ? " • Hoje" : ""))
+                .font(.subheadline.weight(.bold))
+            Text("\(items.count) item(ns)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if dayIncome > 0 {
+                Text("+ \(BRLFormatters.currency(dayIncome))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color(hex: "#10B981"))
+            }
+            if dayExpense > 0 {
+                Text("- \(BRLFormatters.currency(dayExpense))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color(hex: "#EF4444"))
+            }
+            Text("Saldo do dia: \(BRLFormatters.currency(dayNet))")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(dayNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 10)
+        .padding(.bottom, 2)
     }
 
     @ViewBuilder
@@ -512,13 +620,9 @@ public struct TransactionsView: View {
 
             Spacer()
 
-            // Paid / Received Status Toggle (Bloqueado se data for futura)
+            // Paid / Received Status Toggle (com confirmação; pagar no futuro move para hoje)
             Button {
-                if !tx.isPaid && isFuture {
-                    showFuturePaidBlockedAlert = true
-                } else {
-                    _ = store.toggleTransactionPaid(tx.id)
-                }
+                transactionPendingPaymentToggle = tx
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: tx.isPaid ? "checkmark.circle.fill" : (isFuture ? "calendar.badge.clock" : "clock.badge.exclamationmark"))
@@ -534,7 +638,7 @@ public struct TransactionsView: View {
                 .foregroundStyle(tx.isPaid ? Color.green : Color.amberWarning)
             }
             .buttonStyle(.plain)
-            .help(isFuture && !tx.isPaid ? "Não é possível pagar uma conta com data no futuro" : "Alternar status de Pago / Recebido")
+            .help(isFuture && !tx.isPaid ? "Pagar agora (a transação será movida para a data de hoje)" : "Alternar status de Pago / Recebido")
 
             // Amount
             Text((tx.type == .expense ? "- " : "+ ") + BRLFormatters.currency(tx.amount))
@@ -712,8 +816,9 @@ public struct TransactionEditorSheet: View {
                         )
 
                         DatePicker("Data", selection: $date, displayedComponents: [.date])
-                            .onChange(of: date) { _, newDate in
-                                if store.isDateInFuture(newDate) {
+                            .onChange(of: date) { oldDate, newDate in
+                                // Sugere "não pago" ao mover uma data de hoje/passado para o futuro (o usuário ainda pode marcar como pago)
+                                if store.isDateInFuture(newDate) && !store.isDateInFuture(oldDate) {
                                     isPaid = false
                                 }
                             }
@@ -815,10 +920,9 @@ public struct TransactionEditorSheet: View {
                         type == .expense ? "Pago (Desmarque para despesa não paga)" : "Recebido (Desmarque para receita pendente)",
                         isOn: $isPaid
                     )
-                    .disabled(isSelectedDateInFuture)
 
-                    if isSelectedDateInFuture {
-                        Text("Não é possível marcar como \(type == .expense ? "paga" : "recebida") uma conta com data no futuro (\(BRLFormatters.shortDate(date))).")
+                    if isSelectedDateInFuture && isPaid {
+                        Text("Data no futuro (\(BRLFormatters.shortDate(date))): ao salvar como \(type == .expense ? "paga" : "recebida"), a transação será movida para a data de hoje (\(BRLFormatters.shortDate(Date()))).")
                             .font(.caption2)
                             .foregroundStyle(.orange)
                     }
@@ -889,7 +993,7 @@ public struct TransactionEditorSheet: View {
                 details = existing.details
                 amountText = BRLFormatters.currency(existing.amount)
                 date = existing.date
-                isPaid = store.isDateInFuture(existing.date) ? false : existing.isPaid
+                isPaid = existing.isPaid
                 categoryId = existing.categoryId
                 accountId = existing.accountId
                 ignoreInConsolidated = existing.ignoreInConsolidated
@@ -971,13 +1075,15 @@ public struct TransactionEditorSheet: View {
             return
         }
 
-        let effectivePaid = store.isDateInFuture(date) ? false : isPaid
+        // Regra: é permitido pagar/receber com data no futuro, mas a transação é movida para a data atual
+        let effectivePaid = isPaid
+        let effectiveDate = (isPaid && store.isDateInFuture(date)) ? Date() : date
 
         if var existing = existingTransaction {
             existing.name = trimmedName
             existing.details = details.trimmingCharacters(in: .whitespacesAndNewlines)
             existing.amount = parsedAmount
-            existing.date = date
+            existing.date = effectiveDate
             existing.type = type
             existing.isPaid = effectivePaid
             existing.categoryId = categoryId
@@ -998,7 +1104,7 @@ public struct TransactionEditorSheet: View {
                 name: trimmedName,
                 details: details.trimmingCharacters(in: .whitespacesAndNewlines),
                 amount: parsedAmount,
-                date: date,
+                date: effectiveDate,
                 type: type,
                 isPaid: effectivePaid,
                 categoryId: categoryId,
@@ -1029,6 +1135,8 @@ public struct StatementImportSheet: View {
     @State private var rawTextInput: String = ""
     @State private var showTextInputBox: Bool = true
     @State private var parsedItems: [ParsedStatementTransaction] = []
+    @State private var editingParsedItem: ParsedStatementTransaction? = nil
+    @State private var parsedItemPendingRemoval: ParsedStatementTransaction? = nil
     @State private var hasAttemptedLoad: Bool = false
     @State private var importSummaryMessage: String? = nil
 
@@ -1276,6 +1384,8 @@ public struct StatementImportSheet: View {
                                     get: { item.suggestedCategoryId ?? store.fallbackCategoryId(for: item.type) },
                                     set: { newCatId in
                                         item.suggestedCategoryId = newCatId
+                                        // A escolha manual do usuário tem prioridade sobre a categoria explícita extraída do texto
+                                        item.explicitCategoryName = nil
                                         if let cat = store.category(for: newCatId) {
                                             item.suggestedCategoryName = cat.name
                                         }
@@ -1299,6 +1409,25 @@ public struct StatementImportSheet: View {
                                     .background(Capsule().fill(alreadyExists ? Color.orange.opacity(0.16) : Color.green.opacity(0.16)))
                                     .foregroundStyle(alreadyExists ? .orange : .green)
                                     .frame(width: 72)
+
+                                Button {
+                                    editingParsedItem = item
+                                } label: {
+                                    Image(systemName: "pencil")
+                                        .frame(width: 24, height: 24)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Editar este item antes de importar")
+
+                                Button {
+                                    parsedItemPendingRemoval = item
+                                } label: {
+                                    Image(systemName: "xmark.circle")
+                                        .foregroundStyle(.red)
+                                        .frame(width: 24, height: 24)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Remover este item da importação")
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
@@ -1356,6 +1485,35 @@ public struct StatementImportSheet: View {
             selectedAccountId = store.accounts.first(where: { $0.bankPresetId == "itau" })?.id
                 ?? store.accounts.first?.id
                 ?? UUID()
+        }
+        .sheet(item: $editingParsedItem) { itemToEdit in
+            ParsedTransactionItemEditorSheet(
+                store: store,
+                item: itemToEdit,
+                onSave: { updated in
+                    if let idx = parsedItems.firstIndex(where: { $0.id == updated.id }) {
+                        parsedItems[idx] = updated
+                    }
+                }
+            )
+        }
+        .alert(
+            "Remover Item da Importação",
+            isPresented: Binding(
+                get: { parsedItemPendingRemoval != nil },
+                set: { if !$0 { parsedItemPendingRemoval = nil } }
+            ),
+            presenting: parsedItemPendingRemoval
+        ) { item in
+            Button("Remover Item", role: .destructive) {
+                parsedItems.removeAll { $0.id == item.id }
+                parsedItemPendingRemoval = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                parsedItemPendingRemoval = nil
+            }
+        } message: { item in
+            Text("Deseja remover \"\(item.cleanTitle)\" (\(BRLFormatters.currency(item.amount))) da lista de importação? O item não será adicionado.")
         }
     }
 

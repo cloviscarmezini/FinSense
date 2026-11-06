@@ -318,6 +318,43 @@ public enum SeriesDeleteScope: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+public enum TransactionSortOrder: String, Codable, CaseIterable, Identifiable, Hashable {
+    case dateAscending
+    case dateDescending
+    case amountAscending
+    case amountDescending
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .dateAscending: return "Data Crescente"
+        case .dateDescending: return "Data Decrescente"
+        case .amountAscending: return "Valor Crescente"
+        case .amountDescending: return "Valor Decrescente"
+        }
+    }
+
+    public func sort(_ transactions: [FinancialTransaction]) -> [FinancialTransaction] {
+        transactions.sorted { a, b in
+            switch self {
+            case .dateAscending:
+                if a.date == b.date { return a.createdAt < b.createdAt }
+                return a.date < b.date
+            case .dateDescending:
+                if a.date == b.date { return a.createdAt > b.createdAt }
+                return a.date > b.date
+            case .amountAscending:
+                if abs(a.amount - b.amount) < 0.001 { return a.date < b.date }
+                return a.amount < b.amount
+            case .amountDescending:
+                if abs(a.amount - b.amount) < 0.001 { return a.date > b.date }
+                return a.amount > b.amount
+            }
+        }
+    }
+}
+
 public enum StatementImportFilterMode: String, Codable, CaseIterable, Identifiable, Hashable {
     case hybrid
     case expensesOnly
