@@ -273,6 +273,15 @@ public enum DefaultCategoriesCatalog {
                 isSystemDefault: true
             ),
             CategoryItem(
+                id: UUID(uuidString: "10000000-0000-0000-0000-000000000018")!,
+                name: "Cuidado Pessoal & Estética",
+                type: .expense,
+                iconSymbol: "scissors",
+                colorHex: "#EC4899",
+                keywords: ["CABELELEIRO", "CABELEIREIRO", "BARBEARIA", "SALAO", "ESTETICA", "CUIDADO PESSOAL", "BELEZA", "MANICURE", "COSMETICO"],
+                isSystemDefault: true
+            ),
+            CategoryItem(
                 id: UUID(uuidString: "10000000-0000-0000-0000-000000000012")!,
                 name: "Cartão de Crédito & Boletos",
                 type: .expense,
@@ -630,6 +639,9 @@ public enum BRLFormatters {
             return Double(normalized)
         } else if cleaned.contains(",") {
             let normalized = cleaned.replacingOccurrences(of: ",", with: ".")
+            return Double(normalized)
+        } else if cleaned.range(of: #"^-?\d{1,3}(?:\.\d{3})+$"#, options: .regularExpression) != nil {
+            let normalized = cleaned.replacingOccurrences(of: ".", with: "")
             return Double(normalized)
         } else {
             return Double(cleaned)

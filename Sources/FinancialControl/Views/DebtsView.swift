@@ -5,6 +5,7 @@ public struct DebtsView: View {
     @ObservedObject public var llmService: LocalLLMService
 
     @State private var showCreateDebtSheet: Bool = false
+    @State private var showImportDebtsSheet: Bool = false
     @State private var editingDebt: DebtItem? = nil
     @State private var payingDebt: DebtItem? = nil
     @State private var debtPendingDeletion: DebtItem? = nil
@@ -38,6 +39,16 @@ public struct DebtsView: View {
                         Label("Perguntar à IA Local", systemImage: "sparkles.bubble.fill")
                     }
                     .buttonStyle(.bordered)
+
+                    Button {
+                        store.requireInstalledLLM(forFeature: "Importar Dívidas com LLM Local") {
+                            showImportDebtsSheet = true
+                        }
+                    } label: {
+                        Label("Importar Dívidas (IA Local)", systemImage: "doc.viewfinder.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#6366F1"))
 
                     Button {
                         showCreateDebtSheet = true
@@ -86,10 +97,21 @@ public struct DebtsView: View {
                         Text("Adicione uma dívida caso deseje acompanhar acordos futuros e analisar prazos de quitação com a IA local.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
-                        Button("Adicionar Dívida") {
-                            showCreateDebtSheet = true
+                        HStack(spacing: 12) {
+                            Button("Adicionar Dívida") {
+                                showCreateDebtSheet = true
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button {
+                                store.requireInstalledLLM(forFeature: "Importar Dívidas com LLM Local") {
+                                    showImportDebtsSheet = true
+                                }
+                            } label: {
+                                Label("Importar Dívidas (IA Local)", systemImage: "doc.viewfinder.fill")
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.borderedProminent)
                     }
                     .frame(maxWidth: .infinity, minHeight: 280)
                     .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
@@ -104,10 +126,13 @@ public struct DebtsView: View {
             .padding(24)
         }
         .sheet(isPresented: $showCreateDebtSheet) {
-            DebtEditorSheet(store: store, existingDebt: nil)
+            DebtEditorSheet(store: store, llmService: llmService, existingDebt: nil)
+        }
+        .sheet(isPresented: $showImportDebtsSheet) {
+            DebtImportSheet(store: store, llmService: llmService)
         }
         .sheet(item: $editingDebt) { debt in
-            DebtEditorSheet(store: store, existingDebt: debt)
+            DebtEditorSheet(store: store, llmService: llmService, existingDebt: debt)
         }
         .sheet(item: $payingDebt) { debt in
             PayDebtNegotiationSheet(store: store, debt: debt)
@@ -255,6 +280,7 @@ public struct DebtsView: View {
 
 public struct DebtEditorSheet: View {
     @ObservedObject public var store: FinancialDataStore
+    @ObservedObject public var llmService: LocalLLMService
     @Environment(\.dismiss) private var dismiss
 
     public let existingDebt: DebtItem?
@@ -267,19 +293,40 @@ public struct DebtEditorSheet: View {
     @State private var customImagePath: String? = nil
     @State private var customImageName: String? = nil
     @State private var showRemoveImageConfirmation: Bool = false
+    @State private var showEmbeddedDebtImporter: Bool = false
     @State private var colorHex: String = "#EF4444"
     @State private var notes: String = ""
     @State private var errorMsg: String? = nil
 
-    public init(store: FinancialDataStore, existingDebt: DebtItem?) {
+    public init(store: FinancialDataStore, llmService: LocalLLMService, existingDebt: DebtItem?) {
         self.store = store
+        self.llmService = llmService
         self.existingDebt = existingDebt
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(existingDebt == nil ? "Adicionar Dívida" : "Editar Dívida")
-                .font(.title2.bold())
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(existingDebt == nil ? "Adicionar Dívida" : "Editar Dívida")
+                        .font(.title2.bold())
+                    Text("Preencha manualmente ou importe um arquivo de dívidas com análise via LLM local")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if existingDebt == nil {
+                    Button {
+                        store.requireInstalledLLM(forFeature: "Importar Dívidas com LLM Local") {
+                            showEmbeddedDebtImporter = true
+                        }
+                    } label: {
+                        Label("Importar Dívidas (IA Local)", systemImage: "sparkles.rectangle.stack.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#6366F1"))
+                }
+            }
 
             Form {
                 Section("Identificação e Valor") {
@@ -425,6 +472,15 @@ public struct DebtEditorSheet: View {
         } message: {
             Text("Deseja realmente remover a imagem personalizada anexada a esta dívida?")
         }
+        .sheet(isPresented: $showEmbeddedDebtImporter) {
+            DebtImportSheet(
+                store: store,
+                llmService: llmService,
+                onCompleteImport: {
+                    dismiss()
+                }
+            )
+        }
     }
 }
 
@@ -545,5 +601,226 @@ public struct PayDebtNegotiationSheet: View {
             // Vem preenchido inicialmente com o valor original!
             negotiatedAmountText = BRLFormatters.currency(debt.originalAmount)
         }
+    }
+}
+
+// MARK: - Debt Import Sheet (Importação Inteligente de Dívidas via LLM Local)
+
+public struct DebtImportSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    @ObservedObject public var llmService: LocalLLMService
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var selectedFileURL: URL? = nil
+    @State private var selectedFileName: String = "Nenhum arquivo selecionado"
+    @State private var parsedDebts: [ParsedDebtImportItem] = []
+    @State private var hasAttemptedLoad: Bool = false
+    @State private var importSummaryMessage: String? = nil
+
+    public var onCompleteImport: (() -> Void)? = nil
+
+    public init(
+        store: FinancialDataStore,
+        llmService: LocalLLMService,
+        onCompleteImport: (() -> Void)? = nil
+    ) {
+        self.store = store
+        self.llmService = llmService
+        self.onCompleteImport = onCompleteImport
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "cpu.fill")
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                        Text("Importar Dívidas com LLM Local")
+                            .font(.title2.bold())
+                    }
+                    Text("A importação em Dívidas aceita apenas dívidas. Caso o arquivo contenha também despesas ou receitas, elas serão ignoradas automaticamente.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let activeModel = store.llmConfig.selectedModel {
+                    Label(activeModel.displayName, systemImage: "checkmark.seal.fill")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(Capsule().fill(Color.green.opacity(0.15)))
+                        .foregroundStyle(.green)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Text("Arquivo selecionado: \(selectedFileName)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer()
+
+                Button {
+                    if let url = MacFilePicker.pickStatementFile() {
+                        selectedFileURL = url
+                        selectedFileName = url.lastPathComponent
+                        importSummaryMessage = nil
+                        Task {
+                            parsedDebts = await llmService.analyzeDebtsFile(
+                                fileURL: url,
+                                store: store
+                            )
+                            hasAttemptedLoad = true
+                        }
+                    }
+                } label: {
+                    Label("Selecionar Documento PDF no Mac", systemImage: "folder.fill")
+                }
+                .buttonStyle(.borderedProminent)
+            }
+
+            if llmService.isAnalyzingStatement {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("A LLM local está lendo o arquivo, identificando credores/cartões e extraindo apenas as dívidas...")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.indigo.opacity(0.1)))
+            }
+
+            if parsedDebts.isEmpty && !llmService.isAnalyzingStatement {
+                VStack(spacing: 12) {
+                    Spacer()
+                    Image(systemName: hasAttemptedLoad ? "exclamationmark.triangle.fill" : "doc.viewfinder")
+                        .font(.system(size: 44))
+                        .foregroundStyle(hasAttemptedLoad ? Color.orange : Color.secondary)
+                    Text(
+                        hasAttemptedLoad
+                            ? "Nenhuma dívida encontrada no arquivo \"\(selectedFileName)\""
+                            : "Clique em \"Selecionar Documento PDF no Mac\" para importar seu arquivo de dívidas"
+                    )
+                    .font(.headline)
+                    Text(
+                        hasAttemptedLoad
+                            ? "A importação em Dívidas aceita apenas dívidas (ex: \"Cartão de crédito Carrefour: 6196\"). Linhas de transações são ignoradas."
+                            : "Suporta arquivos TXT, PDF e CSV contendo listagens de dívidas (ex: \"Cartão de crédito Nubank - 7242\")."
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+            } else {
+                let duplicateCount = parsedDebts.filter { store.debtAlreadyExists($0) }.count
+                let newCount = parsedDebts.count - duplicateCount
+                let totalParsedValue = parsedDebts.reduce(0.0) { $0 + $1.originalAmount }
+
+                HStack {
+                    Text("\(parsedDebts.count) dívida(s) identificada(s) • Total: \(BRLFormatters.currency(totalParsedValue))")
+                        .font(.subheadline.bold())
+                    Spacer()
+                    Text("\(newCount) novas para adicionar")
+                        .font(.caption.bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.green.opacity(0.15)))
+                        .foregroundStyle(.green)
+
+                    if duplicateCount > 0 {
+                        Text("\(duplicateCount) já existentes (serão ignoradas)")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.orange.opacity(0.15)))
+                            .foregroundStyle(.orange)
+                    }
+                }
+
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach($parsedDebts) { $item in
+                            let alreadyExists = store.debtAlreadyExists(item)
+                            HStack(spacing: 12) {
+                                AccountAvatarView(
+                                    customImagePath: nil,
+                                    bankPresetId: item.bankPresetId,
+                                    fallbackSymbol: item.iconSymbol,
+                                    colorHex: item.colorHex,
+                                    size: 36
+                                )
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.name)
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(item.notes)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+
+                                Spacer()
+
+                                Text(BRLFormatters.currency(item.originalAmount))
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                    .frame(width: 130, alignment: .trailing)
+
+                                Text(alreadyExists ? "Já Existe" : "Nova")
+                                    .font(.caption2.bold())
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Capsule().fill(alreadyExists ? Color.orange.opacity(0.16) : Color.green.opacity(0.16)))
+                                    .foregroundStyle(alreadyExists ? .orange : .green)
+                                    .frame(width: 72)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                        }
+                    }
+                }
+            }
+
+            if let summaryMsg = importSummaryMessage {
+                HStack {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Text(summaryMsg)
+                        .font(.subheadline.weight(.medium))
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.12)))
+            }
+
+            HStack {
+                Button("Fechar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    let summary = store.importParsedDebts(parsedDebts)
+                    importSummaryMessage = "Importação concluída: \(summary.addedCount) nova(s) dívida(s) adicionada(s) e \(summary.skippedDuplicatesCount) duplicada(s) ignorada(s)."
+                    onCompleteImport?()
+                } label: {
+                    Label("Confirmar e Importar Dívidas Não Duplicadas", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#10B981"))
+                .disabled(parsedDebts.isEmpty)
+            }
+        }
+        .padding(22)
+        .frame(width: 780, height: 560)
     }
 }

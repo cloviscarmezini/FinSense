@@ -1003,6 +1003,7 @@ public struct StatementImportSheet: View {
     @State private var selectedFileURL: URL? = nil
     @State private var selectedFileName: String = "Nenhum arquivo selecionado"
     @State private var parsedItems: [ParsedStatementTransaction] = []
+    @State private var hasAttemptedLoad: Bool = false
     @State private var importSummaryMessage: String? = nil
 
     public var onCompleteImport: (() -> Void)? = nil
@@ -1029,7 +1030,7 @@ public struct StatementImportSheet: View {
                         Text("Importar Relatório / Extrato Bancário com LLM Local")
                             .font(.title2.bold())
                     }
-                    Text("Analisa extratos PDF/CSV/TXT usando a LLM local, separa por categoria com máximo de detalhes e evita transações duplicadas.")
+                    Text("Aceita apenas transações (Despesas e Receitas), ignorando seções de Dívidas. Analisa PDF/CSV/TXT via LLM local com suporte a parcelas, recorrências fixas, dias e categorias.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1073,12 +1074,14 @@ public struct StatementImportSheet: View {
                     if let url = MacFilePicker.pickStatementFile() {
                         selectedFileURL = url
                         selectedFileName = url.lastPathComponent
+                        importSummaryMessage = nil
                         Task {
                             parsedItems = await llmService.analyzeStatementFile(
                                 fileURL: url,
                                 filterMode: filterMode,
                                 store: store
                             )
+                            hasAttemptedLoad = true
                         }
                     }
                 } label: {
@@ -1104,14 +1107,23 @@ public struct StatementImportSheet: View {
             if parsedItems.isEmpty && !llmService.isAnalyzingStatement {
                 VStack(spacing: 12) {
                     Spacer()
-                    Image(systemName: "doc.viewfinder")
+                    Image(systemName: hasAttemptedLoad ? "exclamationmark.triangle.fill" : "doc.viewfinder")
                         .font(.system(size: 44))
-                        .foregroundStyle(.secondary)
-                    Text("Clique em \"Selecionar Documento PDF no Mac\" para importar seu extrato ou relatório")
-                        .font(.headline)
-                    Text("Suporta importação de Apenas Despesas, Apenas Receitas ou Híbrido (Receitas + Despesas).")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(hasAttemptedLoad ? Color.orange : Color.secondary)
+                    Text(
+                        hasAttemptedLoad
+                            ? "Nenhuma transação encontrada no arquivo \"\(selectedFileName)\""
+                            : "Clique em \"Selecionar Documento PDF no Mac\" para importar seu extrato ou relatório"
+                    )
+                    .font(.headline)
+                    Text(
+                        hasAttemptedLoad
+                            ? "A importação em Transações e Dashboard aceita apenas transações (Despesas e Receitas). Para importar dívidas, utilize a aba Dívidas."
+                            : "Suporta importação de Apenas Despesas, Apenas Receitas ou Híbrido (Receitas + Despesas)."
+                    )
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -14,6 +14,10 @@ public struct ParsedStatementTransaction: Identifiable, Hashable, Codable {
     public var type: TransactionType
     public var suggestedCategoryId: UUID?
     public var suggestedCategoryName: String
+    public var explicitCategoryName: String?
+    public var recurrenceMode: TransactionRecurrenceMode
+    public var installmentsCount: Int
+    public var recurrenceFrequency: RecurrenceFrequency
     public var rawLine: String
     public var occurrenceIndex: Int
 
@@ -28,6 +32,10 @@ public struct ParsedStatementTransaction: Identifiable, Hashable, Codable {
         type: TransactionType,
         suggestedCategoryId: UUID?,
         suggestedCategoryName: String,
+        explicitCategoryName: String? = nil,
+        recurrenceMode: TransactionRecurrenceMode = .single,
+        installmentsCount: Int = 1,
+        recurrenceFrequency: RecurrenceFrequency = .monthly,
         rawLine: String,
         occurrenceIndex: Int
     ) {
@@ -41,8 +49,59 @@ public struct ParsedStatementTransaction: Identifiable, Hashable, Codable {
         self.type = type
         self.suggestedCategoryId = suggestedCategoryId
         self.suggestedCategoryName = suggestedCategoryName
+        self.explicitCategoryName = explicitCategoryName
+        self.recurrenceMode = recurrenceMode
+        self.installmentsCount = max(installmentsCount, 1)
+        self.recurrenceFrequency = recurrenceFrequency
         self.rawLine = rawLine
         self.occurrenceIndex = occurrenceIndex
+    }
+
+    public var recurrenceSummaryBadge: String {
+        switch recurrenceMode {
+        case .single:
+            return "Único"
+        case .installment:
+            return "\(max(installmentsCount, 2)) parcelas"
+        case .repeated:
+            return "Repetir \(max(installmentsCount, 2))m"
+        case .recurring:
+            return "Fixo • \(recurrenceFrequency.shortTitle)"
+        }
+    }
+}
+
+public struct ParsedDebtImportItem: Identifiable, Hashable, Codable {
+    public var id: UUID
+    public var name: String
+    public var originalAmount: Double
+    public var bankPresetId: String?
+    public var iconSymbol: String
+    public var colorHex: String
+    public var contractedDate: Date?
+    public var notes: String
+    public var rawLine: String
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        originalAmount: Double,
+        bankPresetId: String? = nil,
+        iconSymbol: String = "creditcard.trianglebadge.exclamationmark",
+        colorHex: String = "#EF4444",
+        contractedDate: Date? = nil,
+        notes: String = "",
+        rawLine: String = ""
+    ) {
+        self.id = id
+        self.name = name
+        self.originalAmount = abs(originalAmount)
+        self.bankPresetId = bankPresetId
+        self.iconSymbol = iconSymbol
+        self.colorHex = colorHex
+        self.contractedDate = contractedDate
+        self.notes = notes
+        self.rawLine = rawLine.isEmpty ? "\(name): \(originalAmount)" : rawLine
     }
 }
 
@@ -100,12 +159,59 @@ public enum StatementImportService {
         return ""
     }
 
-    /// Analisa o texto bruto do extrato (no formato do anexo Itaú ou CSV/TXT) e separa transações
-    /// por tipo (receita / despesa), categoria e máximo de detalhes sobre cada item.
+    fileprivate enum ImportDocumentSection {
+        case none
+        case debts
+        case expenses
+        case incomes
+    }
+
+    fileprivate static func detectSectionHeader(_ line: String) -> ImportDocumentSection? {
+        let folded = line
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ":-;•*#"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+
+        let debtHeaders: Set<String> = [
+            "DIVIDAS", "DIVIDA", "DIVIDAS EM ABERTO", "MINHAS DIVIDAS", "RELACAO DE DIVIDAS"
+        ]
+        if debtHeaders.contains(folded) {
+            return .debts
+        }
+
+        let expenseHeaders: Set<String> = [
+            "DESPESAS", "DESPESA", "GASTOS", "GASTO", "SAIDAS", "CONTAS A PAGAR", "DESPESAS MENSAIS"
+        ]
+        if expenseHeaders.contains(folded) {
+            return .expenses
+        }
+
+        let incomeHeaders: Set<String> = [
+            "RECEITAS", "RECEITA", "ENTRADAS", "ENTRADA", "GANHOS", "RENDIMENTOS", "RECEBIMENTOS"
+        ]
+        if incomeHeaders.contains(folded) {
+            return .incomes
+        }
+
+        return nil
+    }
+
+    fileprivate static func isDividerLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        return trimmed.allSatisfy { $0 == "-" || $0 == "=" || $0 == "_" || $0 == "*" }
+    }
+
+    /// Analisa o texto bruto do extrato (no formato do anexo Itaú, CSV ou texto natural de despesas/receitas)
+    /// e separa APENAS transações por tipo (receita / despesa), categoria, recorrência/parcelas e máximo de detalhes.
+    /// Linhas ou seções de Dívidas são estritamente ignoradas aqui.
     public static func parseStatementText(
         _ rawText: String,
         categories: [CategoryItem],
-        filterMode: StatementImportFilterMode = .hybrid
+        filterMode: StatementImportFilterMode = .hybrid,
+        referenceDate: Date = Date()
     ) -> [ParsedStatementTransaction] {
         let lines = rawText
             .components(separatedBy: .newlines)
@@ -118,8 +224,23 @@ public enum StatementImportService {
 
         var occurrenceCounter: [String: Int] = [:]
         var results: [ParsedStatementTransaction] = []
+        var currentSection: ImportDocumentSection = .none
 
         for line in lines {
+            if isDividerLine(line) {
+                continue
+            }
+
+            if let headerSection = detectSectionHeader(line) {
+                currentSection = headerSection
+                continue
+            }
+
+            // Regra estrita: A importação em transações e dashboard deve aceitar APENAS transações (ignora seção Dívidas)
+            if currentSection == .debts {
+                continue
+            }
+
             let upper = line.uppercased()
 
             // Ignora linhas de saldo diário ou cabeçalhos
@@ -141,6 +262,20 @@ public enum StatementImportService {
                 if let csvParsed = parseCSVLine(line, categories: categories, occurrenceCounter: &occurrenceCounter) {
                     if matchesFilter(csvParsed.type, filterMode: filterMode) {
                         results.append(csvParsed)
+                    }
+                    continue
+                }
+
+                // Tenta leitura inteligente de transação em linguagem natural (ex: "Faculdade FIAP - dia 05 - 996 - 7 parcelas - a partir de dezembro (Educação)")
+                if let naturalParsed = parseNaturalTransactionLine(
+                    line,
+                    section: currentSection,
+                    categories: categories,
+                    referenceDate: referenceDate,
+                    occurrenceCounter: &occurrenceCounter
+                ) {
+                    if matchesFilter(naturalParsed.type, filterMode: filterMode) {
+                        results.append(naturalParsed)
                     }
                 }
                 continue
@@ -195,6 +330,372 @@ public enum StatementImportService {
         }
 
         return results
+    }
+
+    /// Analisa linhas inteligentes de despesas e receitas como:
+    /// - "Faculdade FIAP - dia 05 - 996 - 7 parcelas - a partir de dezembro (Educação)"
+    /// - "MBA FIAP - dia 05 - 840 - 22 parcelas a partir de dezembro (Educação)"
+    /// - "Cabeleleiro - dia 15 - 190 - fixo a partir de dezembro (Cuidado pessoal)"
+    /// - "Ração de cachorro - dia 25 - 260 - fixo a partir de dezembro (Pets)"
+    /// - "Salario Vivo - dia 2 - 14.400,00 - fixo a partir de dezembro (salario)"
+    private static func parseNaturalTransactionLine(
+        _ rawLine: String,
+        section: ImportDocumentSection,
+        categories: [CategoryItem],
+        referenceDate: Date,
+        occurrenceCounter: inout [String: Int]
+    ) -> ParsedStatementTransaction? {
+        var workingLine = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !workingLine.isEmpty else { return nil }
+
+        let foldedFull = workingLine
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+
+        // Se não estiver explicitamente dentro de uma seção "Despesas" ou "Receitas",
+        // exige marcadores inequívocos de transação (dia X, parcelas, fixo, recorrente, a partir de, data dd/MM)
+        // para NUNCA importar linhas puras de dívidas (ex: "Cartão de crédito Carrefour: 6196") como transações!
+        let hasTransactionMarkers =
+            foldedFull.range(of: #"\bdia\s*\d{1,2}\b"#, options: .regularExpression) != nil ||
+            foldedFull.range(of: #"\b\d{1,3}\s*(?:parcelas?|vezes)\b"#, options: .regularExpression) != nil ||
+            foldedFull.range(of: #"\b(?:fixo|fixa|recorrente|mensal|anual|semanal|quinzenal|bimestral|trimestral|semestral)\b"#, options: .regularExpression) != nil ||
+            foldedFull.range(of: #"\ba\s+partir\s+de\b"#, options: .regularExpression) != nil ||
+            foldedFull.range(of: #"\b\d{2}/\d{2}(?:/\d{2,4})?\b"#, options: .regularExpression) != nil
+
+        if section == .none && !hasTransactionMarkers {
+            return nil
+        }
+
+        // Mesmo que esteja sem cabeçalho de dívidas, se for uma linha de cartão de crédito sem marcadores de transação, ignora
+        if !hasTransactionMarkers && (foldedFull.hasPrefix("cartao de credito") || foldedFull.hasPrefix("divida ")) {
+            return nil
+        }
+
+        // 1. Extrai categoria explícita entre parênteses no final da linha, ex: "(Educação)", "(Cuidado pessoal)", "(Pets)", "(salario)"
+        var explicitCategoryName: String? = nil
+        if let catRegex = try? NSRegularExpression(pattern: #"\(([^()]+)\)\s*$"#),
+           let match = catRegex.firstMatch(in: workingLine, range: NSRange(workingLine.startIndex..<workingLine.endIndex, in: workingLine)),
+           let innerRange = Range(match.range(at: 1), in: workingLine),
+           let fullMatchRange = Range(match.range(at: 0), in: workingLine) {
+            let candidateCat = String(workingLine[innerRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if candidateCat.contains(where: { $0.isLetter }) {
+                explicitCategoryName = candidateCat
+                workingLine.removeSubrange(fullMatchRange)
+                workingLine = workingLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+
+        let foldedWorking = workingLine
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+
+        // 2. Determina o tipo (Despesa vs Receita)
+        let txType: TransactionType = {
+            if section == .incomes { return .income }
+            if section == .expenses { return .expense }
+            let catFolded = (explicitCategoryName ?? "")
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                .lowercased()
+            let incomeHints = ["salario", "remuneracao", "receita", "freela", "dividendo", "rendimento", "pro-labore", "aluguel recebido"]
+            if incomeHints.contains(where: { foldedWorking.contains($0) || catFolded.contains($0) }) {
+                return .income
+            }
+            return .expense
+        }()
+
+        // 3. Detecta modalidade de recorrência (parcelado, repetido, recorrente/fixo ou único)
+        var recurrenceMode: TransactionRecurrenceMode = .single
+        var installmentsCount: Int = 1
+        var recurrenceFrequency: RecurrenceFrequency = .monthly
+
+        if let instRegex = try? NSRegularExpression(pattern: #"\b(\d{1,3})\s*(?:parcelas?|vezes|x)\b"#, options: [.caseInsensitive]),
+           let match = instRegex.firstMatch(in: foldedWorking, range: NSRange(foldedWorking.startIndex..<foldedWorking.endIndex, in: foldedWorking)),
+           let r1 = Range(match.range(at: 1), in: foldedWorking),
+           let count = Int(foldedWorking[r1]), count >= 2 {
+            recurrenceMode = txType == .expense ? .installment : .repeated
+            installmentsCount = count
+        } else if let repRegex = try? NSRegularExpression(pattern: #"\b(\d{1,3})\s*meses\b"#, options: [.caseInsensitive]),
+                  let match = repRegex.firstMatch(in: foldedWorking, range: NSRange(foldedWorking.startIndex..<foldedWorking.endIndex, in: foldedWorking)),
+                  let r1 = Range(match.range(at: 1), in: foldedWorking),
+                  let count = Int(foldedWorking[r1]), count >= 2 {
+            recurrenceMode = .repeated
+            installmentsCount = count
+        } else if foldedWorking.range(of: #"\b(?:fixo|fixa|recorrente|mensal|anual|semanal|quinzenal|bimestral|trimestral|semestral|assinatura)\b"#, options: .regularExpression) != nil {
+            recurrenceMode = .recurring
+            if foldedWorking.contains("anual") {
+                recurrenceFrequency = .annual
+            } else if foldedWorking.contains("semestral") {
+                recurrenceFrequency = .semiannual
+            } else if foldedWorking.contains("trimestral") {
+                recurrenceFrequency = .quarterly
+            } else if foldedWorking.contains("bimestral") {
+                recurrenceFrequency = .bimonthly
+            } else if foldedWorking.contains("quinzenal") {
+                recurrenceFrequency = .biweekly
+            } else if foldedWorking.contains("semanal") {
+                recurrenceFrequency = .weekly
+            } else {
+                recurrenceFrequency = .monthly
+            }
+        }
+
+        // 4. Extrai data (dd/MM/yyyy ou "dia X" + "a partir de <mês>")
+        let cal = Calendar(identifier: .gregorian)
+        let refYear = cal.component(.year, from: referenceDate)
+        let refMonth = cal.component(.month, from: referenceDate)
+        let refDay = cal.component(.day, from: referenceDate)
+
+        var resolvedDate: Date? = nil
+        if let fullDateRegex = try? NSRegularExpression(pattern: #"\b(\d{2}/\d{2}/\d{4})\b"#),
+           let match = fullDateRegex.firstMatch(in: workingLine, range: NSRange(workingLine.startIndex..<workingLine.endIndex, in: workingLine)),
+           let r1 = Range(match.range(at: 1), in: workingLine) {
+            resolvedDate = BRLFormatters.shortDateFormatter.date(from: String(workingLine[r1]))
+        }
+
+        var extractedDay: Int? = nil
+        if let dayRegex = try? NSRegularExpression(pattern: #"\bdia\s*(\d{1,2})\b"#, options: [.caseInsensitive]),
+           let match = dayRegex.firstMatch(in: foldedWorking, range: NSRange(foldedWorking.startIndex..<foldedWorking.endIndex, in: foldedWorking)),
+           let r1 = Range(match.range(at: 1), in: foldedWorking),
+           let d = Int(foldedWorking[r1]), (1...31).contains(d) {
+            extractedDay = d
+        }
+
+        let monthMap: [(names: [String], number: Int)] = [
+            (["janeiro", "jan"], 1),
+            (["fevereiro", "fev"], 2),
+            (["marco", "mar"], 3),
+            (["abril", "abr"], 4),
+            (["maio", "mai"], 5),
+            (["junho", "jun"], 6),
+            (["julho", "jul"], 7),
+            (["agosto", "ago"], 8),
+            (["setembro", "set"], 9),
+            (["outubro", "out"], 10),
+            (["novembro", "nov"], 11),
+            (["dezembro", "dez"], 12)
+        ]
+
+        var extractedMonth: Int? = nil
+        var extractedYear: Int? = nil
+        for entry in monthMap {
+            for token in entry.names {
+                let pattern = #"\b"# + token + #"(?:\s*(?:de|\/|-)\s*(\d{4}))?\b"#
+                if let mRegex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                   let match = mRegex.firstMatch(in: foldedWorking, range: NSRange(foldedWorking.startIndex..<foldedWorking.endIndex, in: foldedWorking)) {
+                    extractedMonth = entry.number
+                    if match.numberOfRanges > 1,
+                       let yRange = Range(match.range(at: 1), in: foldedWorking),
+                       let y = Int(foldedWorking[yRange]) {
+                        extractedYear = y
+                    }
+                    break
+                }
+            }
+            if extractedMonth != nil { break }
+        }
+
+        if resolvedDate == nil {
+            let targetYear = extractedYear ?? refYear
+            let targetMonth = extractedMonth ?? refMonth
+            var comps = DateComponents()
+            comps.year = targetYear
+            comps.month = targetMonth
+            comps.day = 1
+            let startOfMonth = cal.date(from: comps) ?? referenceDate
+            let maxDay = cal.range(of: .day, in: .month, for: startOfMonth)?.count ?? 28
+            comps.day = min(max(extractedDay ?? refDay, 1), maxDay)
+            resolvedDate = cal.date(from: comps) ?? referenceDate
+        }
+
+        let finalDate = resolvedDate ?? referenceDate
+
+        // 5. Separa os segmentos por " - " (ou ":" / "-") para extrair o Nome Limpo e o Valor
+        let rawSegments: [String] = {
+            if workingLine.contains(" - ") {
+                return workingLine
+                    .components(separatedBy: " - ")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            } else if workingLine.contains(":") {
+                return workingLine
+                    .components(separatedBy: ":")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            } else {
+                return workingLine
+                    .components(separatedBy: "-")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            }
+        }()
+
+        guard !rawSegments.isEmpty else { return nil }
+        let cleanTitle = rawSegments[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty else { return nil }
+
+        // Procura o valor monetário entre os segmentos seguintes (ignorando segmentos como "dia 05" ou "7 parcelas")
+        var parsedAmount: Double? = nil
+        for segment in rawSegments.dropFirst() {
+            let segFolded = segment
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                .lowercased()
+            if segFolded.hasPrefix("dia ") ||
+               segFolded.contains("parcela") ||
+               segFolded.contains("meses") ||
+               segFolded.hasPrefix("a partir") ||
+               segFolded.hasPrefix("fixo") ||
+               segFolded.hasPrefix("recorrente") {
+                continue
+            }
+            if let val = BRLFormatters.parseAmount(segment), abs(val) > 0.001 {
+                parsedAmount = abs(val)
+                break
+            }
+        }
+
+        // Fallback: procura número monetário na linha removendo "dia X" e "N parcelas/meses"
+        if parsedAmount == nil {
+            var strippedForAmount = foldedWorking
+            strippedForAmount = strippedForAmount.replacingOccurrences(of: #"\bdia\s*\d{1,2}\b"#, with: " ", options: .regularExpression)
+            strippedForAmount = strippedForAmount.replacingOccurrences(of: #"\b\d{1,3}\s*(?:parcelas?|vezes|x|meses)\b"#, with: " ", options: .regularExpression)
+            strippedForAmount = strippedForAmount.replacingOccurrences(of: #"\b\d{2}/\d{2}(?:/\d{2,4})?\b"#, with: " ", options: .regularExpression)
+            if let numRegex = try? NSRegularExpression(pattern: #"(?:r\$\s*)?(\d{1,3}(?:\.\d{3})+,\d{1,2}|\d+,\d{1,2}|\d{1,3}(?:\.\d{3})+|\d+(?:\.\d{1,2})?)"#),
+               let match = numRegex.firstMatch(in: strippedForAmount, range: NSRange(strippedForAmount.startIndex..<strippedForAmount.endIndex, in: strippedForAmount)),
+               let r1 = Range(match.range(at: 1), in: strippedForAmount),
+               let val = BRLFormatters.parseAmount(String(strippedForAmount[r1])),
+               val > 0.001 {
+                parsedAmount = val
+            }
+        }
+
+        guard let finalAmount = parsedAmount, finalAmount > 0.001 else {
+            return nil
+        }
+
+        // 6. Resolve a categoria com base na categoria explícita entre parênteses (ex: "Educação", "Cuidado pessoal", "Pets", "salario") ou semântica
+        let matchedCat = matchCategory(
+            explicitCategoryName: explicitCategoryName,
+            cleanTitle: cleanTitle,
+            rawDescription: rawLine,
+            type: txType,
+            categories: categories
+        )
+
+        let resolvedCategoryName: String = {
+            if let matchedCat {
+                return matchedCat.name
+            }
+            if let explicit = explicitCategoryName, !explicit.isEmpty {
+                return explicit
+            }
+            return txType == .expense ? "Outras Despesas" : "Outras Receitas"
+        }()
+
+        let paymentMethodBadge: String = {
+            switch recurrenceMode {
+            case .installment:
+                return "\(installmentsCount) parcelas"
+            case .repeated:
+                return "Repetir \(installmentsCount) meses"
+            case .recurring:
+                return "Fixo • \(recurrenceFrequency.shortTitle)"
+            case .single:
+                return txType == .expense ? "Despesa" : "Receita"
+            }
+        }()
+
+        var detailParts: [String] = []
+        switch recurrenceMode {
+        case .installment:
+            let totalFull = finalAmount * Double(installmentsCount)
+            detailParts.append("Parcelado em \(installmentsCount)x de \(BRLFormatters.currency(finalAmount)) (Total: \(BRLFormatters.currency(totalFull)))")
+        case .repeated:
+            detailParts.append("Repetido por \(installmentsCount) meses de \(BRLFormatters.currency(finalAmount))")
+        case .recurring:
+            detailParts.append("\(txType == .expense ? "Despesa fixa/recorrente" : "Receita fixa/recorrente") (\(recurrenceFrequency.shortTitle))")
+        case .single:
+            detailParts.append("Lançamento único")
+        }
+        if let d = extractedDay {
+            detailParts.append("Dia \(String(format: "%02d", d))")
+        }
+        detailParts.append("Início em \(BRLFormatters.shortDate(finalDate))")
+        if let expCat = explicitCategoryName {
+            detailParts.append("Categoria: \(expCat)")
+        }
+
+        let dateStr = BRLFormatters.shortDate(finalDate)
+        let normalizedKey = "\(dateStr)|\(cleanTitle.uppercased())|\(String(format: "%.2f", finalAmount))|\(recurrenceMode.rawValue)"
+        let nextOccurrence = (occurrenceCounter[normalizedKey] ?? 0) + 1
+        occurrenceCounter[normalizedKey] = nextOccurrence
+
+        return ParsedStatementTransaction(
+            date: finalDate,
+            rawDescription: rawLine,
+            cleanTitle: cleanTitle,
+            extractedDetails: detailParts.joined(separator: " • "),
+            paymentMethod: paymentMethodBadge,
+            amount: finalAmount,
+            type: txType,
+            suggestedCategoryId: matchedCat?.id,
+            suggestedCategoryName: resolvedCategoryName,
+            explicitCategoryName: explicitCategoryName,
+            recurrenceMode: recurrenceMode,
+            installmentsCount: installmentsCount,
+            recurrenceFrequency: recurrenceFrequency,
+            rawLine: rawLine,
+            occurrenceIndex: nextOccurrence
+        )
+    }
+
+    public static func matchCategory(
+        explicitCategoryName: String?,
+        cleanTitle: String,
+        rawDescription: String,
+        type: TransactionType,
+        categories: [CategoryItem]
+    ) -> CategoryItem? {
+        let candidateCategories = categories.filter { $0.type == type }
+
+        if let explicit = explicitCategoryName?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            let foldedExplicit = explicit
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                .lowercased()
+
+            // 1. Match direto por nome da categoria (ex: "Educação" -> "Educação & Cursos", "Pets" -> "Pets & Veterinário", "salario" -> "Salário & Remuneração", "Cuidado pessoal" -> "Cuidado Pessoal & Estética")
+            if let directMatch = candidateCategories.first(where: { cat in
+                let foldedCat = cat.name
+                    .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                    .lowercased()
+                return foldedCat.contains(foldedExplicit) || foldedExplicit.contains(foldedCat)
+            }) {
+                return directMatch
+            }
+
+            // 2. Match por keywords da categoria
+            if let keywordMatch = candidateCategories.first(where: { cat in
+                cat.keywords.contains { kw in
+                    let foldedKw = kw
+                        .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                        .lowercased()
+                    return !foldedKw.isEmpty && (foldedExplicit.contains(foldedKw) || foldedKw.contains(foldedExplicit))
+                }
+            }) {
+                return keywordMatch
+            }
+
+            // Se a categoria explícita não existir ainda na lista `categories`, retorna `nil` para que o `FinancialDataStore` crie ou associe a categoria!
+            return nil
+        }
+
+        let analysis = analyzeTransactionDetailsAndCategory(
+            rawDescription: "\(cleanTitle) \(rawDescription)",
+            postingDateString: "",
+            amount: 0,
+            type: type,
+            categories: categories
+        )
+        return analysis.category
     }
 
     private static func matchesFilter(_ type: TransactionType, filterMode: StatementImportFilterMode) -> Bool {
@@ -1132,5 +1633,174 @@ public enum SampleContractDocumentsData {
                 try? data.write(to: finURL)
             }
         }
+    }
+}
+
+// MARK: - Debt Import Service (Aceita APENAS Dívidas, ignorando Despesas e Receitas)
+
+public enum DebtImportService {
+
+    /// Analisa texto bruto de um arquivo ou documento usando leitura inteligente para extrair APENAS dívidas.
+    /// Se o arquivo contiver seções de "Despesas" ou "Receitas" ou linhas de transações, elas são estritamente ignoradas.
+    public static func parseDebtsText(_ rawText: String) -> [ParsedDebtImportItem] {
+        let lines = rawText
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        enum Section {
+            case none
+            case debts
+            case transactions
+        }
+
+        var currentSection: Section = .none
+        var results: [ParsedDebtImportItem] = []
+
+        for line in lines {
+            if StatementImportService.isDividerLine(line) {
+                continue
+            }
+
+            if let header = StatementImportService.detectSectionHeader(line) {
+                switch header {
+                case .debts:
+                    currentSection = .debts
+                case .expenses, .incomes:
+                    currentSection = .transactions
+                case .none:
+                    break
+                }
+                continue
+            }
+
+            // Regra estrita: A importação em dívidas deve aceitar APENAS dívidas (ignora seções de Despesas e Receitas)
+            if currentSection == .transactions {
+                continue
+            }
+
+            if let parsedDebt = parseSingleDebtLine(line) {
+                results.append(parsedDebt)
+            }
+        }
+
+        return results
+    }
+
+    private static func parseSingleDebtLine(_ rawLine: String) -> ParsedDebtImportItem? {
+        let trimmed = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let folded = trimmed
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+
+        // Ignora linhas típicas de transações, extratos bancários ou agendamentos mensais/parcelados
+        if folded.contains("saldo do dia") ||
+           folded.contains("saldo anterior") ||
+           folded.contains("limite da conta") ||
+           folded.hasPrefix("periodo de visualizacao") ||
+           folded.hasPrefix("data lancamentos") ||
+           folded.range(of: #"^\d{2}/\d{2}/\d{4}\s+(?:pix|pay|pag|da |aplicacao|resgate|dev pix|rend pago)"#, options: .regularExpression) != nil ||
+           folded.range(of: #"\bdia\s*\d{1,2}\b"#, options: .regularExpression) != nil ||
+           folded.range(of: #"\b\d{1,3}\s*parcelas?\b"#, options: .regularExpression) != nil ||
+           folded.range(of: #"\b(?:fixo|fixa|recorrente)\s+a\s+partir\s+de\b"#, options: .regularExpression) != nil ||
+           folded.range(of: #"\ba\s+partir\s+de\s+(?:janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b"#, options: .regularExpression) != nil {
+            return nil
+        }
+
+        // Suporta formatos como:
+        // "Cartão de crédito Carrefour: 6196"
+        // "Cartão de crédito inter - 6220"
+        // "Cartão de crédito Sam’s - 1681"
+        // "Cartão de crédito Nubank - 7242"
+        // "Cartão de crédito Mercado pago - 5951"
+        // "Cartão de crédito Santander - 29414,8"
+        let pattern = #"^(.+?)\s*(?:[:;\-]|\s+-\s+)\s*R?\$?\s*(-?\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|-?\d+(?:[.,]\d{1,2})?)\s*$"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+
+        let ns = trimmed as NSString
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges >= 3 else {
+            return nil
+        }
+
+        let rawName = ns.substring(with: match.range(at: 1))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ":-•*"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawAmountStr = ns.substring(with: match.range(at: 2))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !rawName.isEmpty,
+              rawName.contains(where: { $0.isLetter }),
+              let amount = BRLFormatters.parseAmount(rawAmountStr),
+              abs(amount) > 0.001 else {
+            return nil
+        }
+
+        let style = detectDebtInstitutionStyle(for: rawName)
+        return ParsedDebtImportItem(
+            name: rawName,
+            originalAmount: abs(amount),
+            bankPresetId: style.bankPresetId,
+            iconSymbol: style.iconSymbol,
+            colorHex: style.colorHex,
+            contractedDate: nil,
+            notes: "Importado via leitura inteligente (LLM Local)",
+            rawLine: trimmed
+        )
+    }
+
+    public static func detectDebtInstitutionStyle(for debtName: String) -> (bankPresetId: String?, colorHex: String, iconSymbol: String) {
+        let folded = debtName
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+
+        if folded.contains("santander") {
+            return ("santander", "#EC0000", "creditcard.trianglebadge.exclamationmark")
+        }
+        if folded.contains("nubank") || folded.contains("roxinho") {
+            return ("nubank", "#820AD1", "creditcard.fill")
+        }
+        if folded.contains("inter") {
+            return ("inter", "#FF7A00", "creditcard.fill")
+        }
+        if folded.contains("mercado pago") || folded.contains("mercadopago") || folded.contains("mercado livre") {
+            return ("mercadopago", "#009EE3", "creditcard.trianglebadge.exclamationmark")
+        }
+        if folded.contains("itau") {
+            return ("itau", "#EC7000", "building.columns.fill")
+        }
+        if folded.contains("bradesco") || folded.contains("bradescard") {
+            return ("bradesco", "#CC092F", "building.2.fill")
+        }
+        if folded.contains("caixa") {
+            return ("caixa", "#005CA9", "xmark.square.fill")
+        }
+        if folded.contains("banco do brasil") || folded.contains("bb") {
+            return ("bb", "#F8D117", "banknote.fill")
+        }
+        if folded.contains("c6") {
+            return ("c6", "#242424", "creditcard.fill")
+        }
+        if folded.contains("btg") {
+            return ("btg", "#001E62", "chart.bar.xaxis")
+        }
+        if folded.contains("picpay") {
+            return ("picpay", "#11C76F", "qrcode.viewfinder")
+        }
+        if folded.contains("xp") {
+            return ("xp", "#1C1C1E", "chart.line.uptrend.xyaxis")
+        }
+        if folded.contains("carrefour") {
+            return (nil, "#004E9E", "creditcard.trianglebadge.exclamationmark")
+        }
+        if folded.contains("sam's") || folded.contains("sams") || folded.contains("sam’s") {
+            return (nil, "#0067A0", "creditcard.trianglebadge.exclamationmark")
+        }
+        return (nil, "#EF4444", "creditcard.trianglebadge.exclamationmark")
     }
 }

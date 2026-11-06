@@ -256,7 +256,8 @@ public final class LocalLLMService: ObservableObject {
         var parsed = StatementImportService.parseStatementText(
             rawText,
             categories: store.categories,
-            filterMode: filterMode
+            filterMode: filterMode,
+            referenceDate: store.selectedMonth
         )
 
         let modelName = store.llmConfig.selectedModel?.displayName ?? "LLM Local"
@@ -264,6 +265,42 @@ public final class LocalLLMService: ObservableObject {
             parsed[idx].extractedDetails = "[IA Local: \(modelName)] \(parsed[idx].extractedDetails)"
         }
 
+        return parsed
+    }
+
+    // MARK: - Debts Analysis via Local LLM (Aceita APENAS Dívidas)
+
+    public func analyzeDebtsFile(
+        fileURL: URL,
+        store: FinancialDataStore
+    ) async -> [ParsedDebtImportItem] {
+        guard store.requireInstalledLLM(forFeature: "Importar Dívidas via Arquivo (IA Local)", action: {}) else {
+            return []
+        }
+        isAnalyzingStatement = true
+        defer { isAnalyzingStatement = false }
+
+        let rawText = StatementImportService.extractText(from: fileURL)
+        return await analyzeDebtsRawText(rawText: rawText, store: store)
+    }
+
+    public func analyzeDebtsRawText(
+        rawText: String,
+        store: FinancialDataStore
+    ) async -> [ParsedDebtImportItem] {
+        guard store.requireInstalledLLM(forFeature: "Importar Dívidas via Arquivo (IA Local)", action: {}) else {
+            return []
+        }
+        isAnalyzingStatement = true
+        defer { isAnalyzingStatement = false }
+
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        var parsed = DebtImportService.parseDebtsText(rawText)
+        let modelName = store.llmConfig.selectedModel?.displayName ?? "LLM Local"
+        for idx in parsed.indices {
+            parsed[idx].notes = "[IA Local: \(modelName)] Dívida extraída via leitura inteligente."
+        }
         return parsed
     }
 

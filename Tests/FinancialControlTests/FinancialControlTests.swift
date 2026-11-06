@@ -692,4 +692,174 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertEqual(annualExp2026, 278.60, accuracy: 0.01)
         XCTAssertEqual(projectedEnd2026, 1500.0 + 11000.0 - 278.60, accuracy: 0.01)
     }
+
+    func testIntelligentTransactionsAndDebtsImportWithStrictSeparation() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Itaú Unibanco",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 0.0
+        )
+        let itauAccount = store.accounts.first!
+        let refDate = BRLFormatters.shortDateFormatter.date(from: "06/11/2026")!
+
+        let combinedSampleText = """
+        Dívidas:
+        Cartão de crédito Carrefour: 6196
+        Cartão de crédito inter - 6220
+        Cartão de crédito Sam’s - 1681
+        Cartão de crédito Nubank - 7242
+        Cartão de crédito Mercado pago - 5951
+        Cartão de crédito Santander - 29414,8
+
+
+        Despesas
+        Faculdade FIAP - dia 05 - 996 - 7 parcelas - a partir de dezembro (Educação)
+        MBA FIAP - dia 05 - 840 - 22 parcelas a partir de dezembro (Educação)
+        Cabeleleiro - dia 15 - 190 - fixo a partir de dezembro (Cuidado pessoal)
+        Ração de cachorro - dia 25 - 260 - fixo a partir de dezembro (Pets)
+
+
+        Receitas
+        Salario Vivo - dia 2 - 14.400,00 - fixo a partir de dezembro (salario)
+        """
+
+        let debtsOnlySampleText = """
+        Cartão de crédito Carrefour: 6196
+        Cartão de crédito inter - 6220
+        Cartão de crédito Sam’s - 1681
+        Cartão de crédito Nubank - 7242
+        Cartão de crédito Mercado pago - 5951
+        Cartão de crédito Santander - 29414,8
+        """
+
+        // 1. A importação em transações e dashboard deve aceitar APENAS transações (ignorando a seção Dívidas)
+        let parsedTransactionsFromCombined = StatementImportService.parseStatementText(
+            combinedSampleText,
+            categories: store.categories,
+            filterMode: .hybrid,
+            referenceDate: refDate
+        )
+        XCTAssertEqual(parsedTransactionsFromCombined.count, 5)
+        XCTAssertFalse(parsedTransactionsFromCombined.contains(where: { $0.cleanTitle.localizedCaseInsensitiveContains("Carrefour") }))
+        XCTAssertFalse(parsedTransactionsFromCombined.contains(where: { $0.cleanTitle.localizedCaseInsensitiveContains("Santander") }))
+
+        // E se tentar importar um arquivo contendo APENAS dívidas na tela de Transações/Dashboard, deve retornar 0 transações
+        let parsedTransactionsFromDebtsOnly = StatementImportService.parseStatementText(
+            debtsOnlySampleText,
+            categories: store.categories,
+            filterMode: .hybrid,
+            referenceDate: refDate
+        )
+        XCTAssertTrue(parsedTransactionsFromDebtsOnly.isEmpty)
+
+        // Verifica detalhes extraídos de cada uma das 5 transações (Faculdade FIAP, MBA FIAP, Cabeleleiro, Ração de cachorro, Salario Vivo)
+        let fiap = parsedTransactionsFromCombined.first(where: { $0.cleanTitle == "Faculdade FIAP" })!
+        XCTAssertEqual(fiap.amount, 996.0, accuracy: 0.01)
+        XCTAssertEqual(fiap.recurrenceMode, .installment)
+        XCTAssertEqual(fiap.installmentsCount, 7)
+        XCTAssertEqual(BRLFormatters.shortDate(fiap.date), "05/12/2026")
+        XCTAssertEqual(fiap.type, .expense)
+
+        let mba = parsedTransactionsFromCombined.first(where: { $0.cleanTitle == "MBA FIAP" })!
+        XCTAssertEqual(mba.amount, 840.0, accuracy: 0.01)
+        XCTAssertEqual(mba.recurrenceMode, .installment)
+        XCTAssertEqual(mba.installmentsCount, 22)
+        XCTAssertEqual(BRLFormatters.shortDate(mba.date), "05/12/2026")
+        XCTAssertEqual(mba.type, .expense)
+
+        let cabeleleiro = parsedTransactionsFromCombined.first(where: { $0.cleanTitle == "Cabeleleiro" })!
+        XCTAssertEqual(cabeleleiro.amount, 190.0, accuracy: 0.01)
+        XCTAssertEqual(cabeleleiro.recurrenceMode, .recurring)
+        XCTAssertEqual(BRLFormatters.shortDate(cabeleleiro.date), "15/12/2026")
+
+        let racao = parsedTransactionsFromCombined.first(where: { $0.cleanTitle == "Ração de cachorro" })!
+        XCTAssertEqual(racao.amount, 260.0, accuracy: 0.01)
+        XCTAssertEqual(racao.recurrenceMode, .recurring)
+        XCTAssertEqual(BRLFormatters.shortDate(racao.date), "25/12/2026")
+
+        let salario = parsedTransactionsFromCombined.first(where: { $0.cleanTitle == "Salario Vivo" })!
+        XCTAssertEqual(salario.amount, 14400.0, accuracy: 0.01)
+        XCTAssertEqual(salario.recurrenceMode, .recurring)
+        XCTAssertEqual(BRLFormatters.shortDate(salario.date), "02/12/2026")
+        XCTAssertEqual(salario.type, .income)
+
+        // Confirma a importação das transações no store e valida a geração das parcelas e séries recorrentes em Dezembro/2026
+        let txImportSummary = store.importParsedTransactions(
+            parsedTransactionsFromCombined,
+            intoAccountId: itauAccount.id,
+            filterMode: .hybrid
+        )
+        XCTAssertEqual(txImportSummary.addedCount, 5)
+        XCTAssertEqual(txImportSummary.addedExpenses, 4)
+        XCTAssertEqual(txImportSummary.addedIncomes, 1)
+
+        let fiapInstallmentsInStore = store.transactions.filter { $0.name.hasPrefix("Faculdade FIAP (") }
+        XCTAssertEqual(fiapInstallmentsInStore.count, 7)
+        XCTAssertTrue(fiapInstallmentsInStore.allSatisfy { abs($0.amount - 996.0) < 0.01 })
+
+        let mbaInstallmentsInStore = store.transactions.filter { $0.name.hasPrefix("MBA FIAP (") }
+        XCTAssertEqual(mbaInstallmentsInStore.count, 22)
+        XCTAssertTrue(mbaInstallmentsInStore.allSatisfy { abs($0.amount - 840.0) < 0.01 })
+
+        let dec2026Date = BRLFormatters.shortDateFormatter.date(from: "15/12/2026")!
+        let dec2026Transactions = store.transactionsForMonth(dec2026Date)
+        XCTAssertEqual(dec2026Transactions.count, 5)
+        XCTAssertEqual(store.monthlyIncome(for: dec2026Date), 14400.0, accuracy: 0.01)
+        XCTAssertEqual(store.monthlyExpense(for: dec2026Date), 996.0 + 840.0 + 190.0 + 260.0, accuracy: 0.01)
+
+        // Deduplicação ao importar novamente o mesmo arquivo de transações
+        let duplicateTxSummary = store.importParsedTransactions(
+            parsedTransactionsFromCombined,
+            intoAccountId: itauAccount.id,
+            filterMode: .hybrid
+        )
+        XCTAssertEqual(duplicateTxSummary.addedCount, 0)
+        XCTAssertEqual(duplicateTxSummary.skippedDuplicatesCount, 5)
+
+        // 2. A importação em Dívidas deve aceitar APENAS dívidas (ignorando Despesas e Receitas)
+        let parsedDebtsFromCombined = DebtImportService.parseDebtsText(combinedSampleText)
+        XCTAssertEqual(parsedDebtsFromCombined.count, 6)
+
+        let parsedDebtsFromPureDebts = DebtImportService.parseDebtsText(debtsOnlySampleText)
+        XCTAssertEqual(parsedDebtsFromPureDebts.count, 6)
+
+        XCTAssertEqual(parsedDebtsFromPureDebts[0].name, "Cartão de crédito Carrefour")
+        XCTAssertEqual(parsedDebtsFromPureDebts[0].originalAmount, 6196.0, accuracy: 0.01)
+
+        XCTAssertEqual(parsedDebtsFromPureDebts[1].name, "Cartão de crédito inter")
+        XCTAssertEqual(parsedDebtsFromPureDebts[1].originalAmount, 6220.0, accuracy: 0.01)
+        XCTAssertEqual(parsedDebtsFromPureDebts[1].bankPresetId, "inter")
+
+        XCTAssertEqual(parsedDebtsFromPureDebts[2].name, "Cartão de crédito Sam’s")
+        XCTAssertEqual(parsedDebtsFromPureDebts[2].originalAmount, 1681.0, accuracy: 0.01)
+
+        XCTAssertEqual(parsedDebtsFromPureDebts[3].name, "Cartão de crédito Nubank")
+        XCTAssertEqual(parsedDebtsFromPureDebts[3].originalAmount, 7242.0, accuracy: 0.01)
+        XCTAssertEqual(parsedDebtsFromPureDebts[3].bankPresetId, "nubank")
+
+        XCTAssertEqual(parsedDebtsFromPureDebts[4].name, "Cartão de crédito Mercado pago")
+        XCTAssertEqual(parsedDebtsFromPureDebts[4].originalAmount, 5951.0, accuracy: 0.01)
+        XCTAssertEqual(parsedDebtsFromPureDebts[4].bankPresetId, "mercadopago")
+
+        XCTAssertEqual(parsedDebtsFromPureDebts[5].name, "Cartão de crédito Santander")
+        XCTAssertEqual(parsedDebtsFromPureDebts[5].originalAmount, 29414.80, accuracy: 0.01)
+        XCTAssertEqual(parsedDebtsFromPureDebts[5].bankPresetId, "santander")
+
+        let debtImportSummary = store.importParsedDebts(parsedDebtsFromPureDebts)
+        XCTAssertEqual(debtImportSummary.addedCount, 6)
+        XCTAssertEqual(debtImportSummary.skippedDuplicatesCount, 0)
+        XCTAssertEqual(store.activeDebts.count, 6)
+
+        let totalImportedDebts = store.activeDebts.reduce(0.0) { $0 + $1.originalAmount }
+        XCTAssertEqual(totalImportedDebts, 6196.0 + 6220.0 + 1681.0 + 7242.0 + 5951.0 + 29414.80, accuracy: 0.01)
+
+        // Deduplicação ao importar novamente as mesmas dívidas
+        let secondDebtImportSummary = store.importParsedDebts(parsedDebtsFromCombined)
+        XCTAssertEqual(secondDebtImportSummary.addedCount, 0)
+        XCTAssertEqual(secondDebtImportSummary.skippedDuplicatesCount, 6)
+    }
 }

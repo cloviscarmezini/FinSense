@@ -959,9 +959,68 @@ public final class FinancialDataStore: ObservableObject {
                        existing.statementOccurrenceIndex == candidate.occurrenceIndex
             }
 
-            return existing.name.caseInsensitiveCompare(candidate.cleanTitle) == .orderedSame &&
+            let strippedExistingName = Self.stripInstallmentSuffix(from: existing.name)
+            return strippedExistingName.caseInsensitiveCompare(candidate.cleanTitle) == .orderedSame &&
                    existing.statementOccurrenceIndex == candidate.occurrenceIndex
         }
+    }
+
+    public func resolveOrCreateCategoryId(named explicitName: String, for type: TransactionType) -> UUID {
+        let trimmed = explicitName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return fallbackCategoryId(for: type)
+        }
+        let foldedTarget = trimmed
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+
+        let sameTypeCategories = categories(for: type)
+        if let direct = sameTypeCategories.first(where: { cat in
+            let foldedCat = cat.name
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                .lowercased()
+            return foldedCat.contains(foldedTarget) || foldedTarget.contains(foldedCat)
+        }) {
+            return direct.id
+        }
+
+        if let kwMatch = sameTypeCategories.first(where: { cat in
+            cat.keywords.contains { kw in
+                let foldedKw = kw
+                    .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                    .lowercased()
+                return !foldedKw.isEmpty && (foldedTarget.contains(foldedKw) || foldedKw.contains(foldedTarget))
+            }
+        }) {
+            return kwMatch.id
+        }
+
+        let iconAndColor: (icon: String, color: String) = {
+            if foldedTarget.contains("cuidado") || foldedTarget.contains("beleza") || foldedTarget.contains("estetica") {
+                return ("scissors", "#EC4899")
+            }
+            if foldedTarget.contains("educac") || foldedTarget.contains("curso") || foldedTarget.contains("faculdade") {
+                return ("graduationcap.fill", "#8B5CF6")
+            }
+            if foldedTarget.contains("pet") {
+                return ("pawprint.fill", "#84CC16")
+            }
+            if foldedTarget.contains("salario") || foldedTarget.contains("remunerac") {
+                return ("banknote.fill", "#10B981")
+            }
+            return (type == .expense ? "tag.fill" : "plus.circle.fill", type == .expense ? "#6366F1" : "#10B981")
+        }()
+
+        let newCat = CategoryItem(
+            name: trimmed.prefix(1).uppercased() + trimmed.dropFirst(),
+            type: type,
+            iconSymbol: iconAndColor.icon,
+            colorHex: iconAndColor.color,
+            keywords: [trimmed.uppercased()],
+            isSystemDefault: false
+        )
+        categories.append(newCat)
+        return newCat.id
     }
 
     public func importParsedTransactions(
@@ -988,24 +1047,101 @@ public final class FinancialDataStore: ObservableObject {
                 continue
             }
 
-            let fallbackCatId = fallbackCategoryId(for: item.type)
-            let tx = FinancialTransaction(
-                name: item.cleanTitle,
-                details: item.extractedDetails,
-                amount: item.amount,
-                date: item.date,
-                type: item.type,
-                isPaid: true,
-                categoryId: item.suggestedCategoryId ?? fallbackCatId,
-                accountId: accountId,
-                ignoreInConsolidated: false,
-                recurrenceMode: .single,
-                rawStatementLine: item.rawLine,
-                statementOccurrenceIndex: item.occurrenceIndex
-            )
-            transactions.append(tx)
-            added += 1
-            if item.type == .expense { addedExp += 1 } else { addedInc += 1 }
+            let resolvedCategoryId: UUID = {
+                if let explicit = item.explicitCategoryName, !explicit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return resolveOrCreateCategoryId(named: explicit, for: item.type)
+                }
+                if let suggested = item.suggestedCategoryId, category(for: suggested) != nil {
+                    return suggested
+                }
+                return fallbackCategoryId(for: item.type)
+            }()
+
+            let effectiveFirstPaid = !isDateInFuture(item.date)
+
+            if item.recurrenceMode == .installment && item.type == .expense && item.installmentsCount >= 2 {
+                let totalFullAmount = item.amount * Double(item.installmentsCount)
+                let createdSeries = createTransaction(
+                    name: item.cleanTitle,
+                    details: item.extractedDetails,
+                    amount: totalFullAmount,
+                    date: item.date,
+                    type: .expense,
+                    isPaid: effectiveFirstPaid,
+                    categoryId: resolvedCategoryId,
+                    accountId: accountId,
+                    ignoreInConsolidated: false,
+                    recurrenceMode: .installment,
+                    installmentsOrMonthsCount: item.installmentsCount
+                )
+                if let firstId = createdSeries.first?.id,
+                   let idx = transactions.firstIndex(where: { $0.id == firstId }) {
+                    transactions[idx].rawStatementLine = item.rawLine
+                    transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
+                }
+                added += 1
+                addedExp += 1
+            } else if item.recurrenceMode == .repeated && item.installmentsCount >= 2 {
+                let createdSeries = createTransaction(
+                    name: item.cleanTitle,
+                    details: item.extractedDetails,
+                    amount: item.amount,
+                    date: item.date,
+                    type: item.type,
+                    isPaid: effectiveFirstPaid,
+                    categoryId: resolvedCategoryId,
+                    accountId: accountId,
+                    ignoreInConsolidated: false,
+                    recurrenceMode: .repeated,
+                    installmentsOrMonthsCount: item.installmentsCount
+                )
+                if let firstId = createdSeries.first?.id,
+                   let idx = transactions.firstIndex(where: { $0.id == firstId }) {
+                    transactions[idx].rawStatementLine = item.rawLine
+                    transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
+                }
+                added += 1
+                if item.type == .expense { addedExp += 1 } else { addedInc += 1 }
+            } else if item.recurrenceMode == .recurring {
+                let createdSeries = createTransaction(
+                    name: item.cleanTitle,
+                    details: item.extractedDetails,
+                    amount: item.amount,
+                    date: item.date,
+                    type: item.type,
+                    isPaid: effectiveFirstPaid,
+                    categoryId: resolvedCategoryId,
+                    accountId: accountId,
+                    ignoreInConsolidated: false,
+                    recurrenceMode: .recurring,
+                    recurrenceFrequency: item.recurrenceFrequency
+                )
+                if let firstId = createdSeries.first?.id,
+                   let idx = transactions.firstIndex(where: { $0.id == firstId }) {
+                    transactions[idx].rawStatementLine = item.rawLine
+                    transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
+                }
+                added += 1
+                if item.type == .expense { addedExp += 1 } else { addedInc += 1 }
+            } else {
+                let tx = FinancialTransaction(
+                    name: item.cleanTitle,
+                    details: item.extractedDetails,
+                    amount: item.amount,
+                    date: item.date,
+                    type: item.type,
+                    isPaid: effectiveFirstPaid,
+                    categoryId: resolvedCategoryId,
+                    accountId: accountId,
+                    ignoreInConsolidated: false,
+                    recurrenceMode: .single,
+                    rawStatementLine: item.rawLine,
+                    statementOccurrenceIndex: item.occurrenceIndex
+                )
+                transactions.append(tx)
+                added += 1
+                if item.type == .expense { addedExp += 1 } else { addedInc += 1 }
+            }
         }
 
         sortTransactions()
@@ -1185,6 +1321,57 @@ public final class FinancialDataStore: ObservableObject {
     public func deleteDebt(_ debtId: UUID) {
         debts.removeAll(where: { $0.id == debtId })
         save()
+    }
+
+    public struct DebtImportSummary {
+        public let totalEvaluated: Int
+        public let addedCount: Int
+        public let skippedDuplicatesCount: Int
+    }
+
+    public func debtAlreadyExists(_ candidate: ParsedDebtImportItem) -> Bool {
+        let candidateFolded = candidate.name
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return debts.contains { existing in
+            guard !existing.isPaid else { return false }
+            let existingFolded = existing.name
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return existingFolded == candidateFolded && abs(existing.originalAmount - candidate.originalAmount) < 0.01
+        }
+    }
+
+    public func importParsedDebts(_ parsedList: [ParsedDebtImportItem]) -> DebtImportSummary {
+        var added = 0
+        var skipped = 0
+
+        for item in parsedList {
+            if debtAlreadyExists(item) {
+                skipped += 1
+                continue
+            }
+            let debt = DebtItem(
+                name: item.name,
+                customImagePath: nil,
+                bankPresetId: item.bankPresetId,
+                iconSymbol: item.iconSymbol,
+                colorHex: item.colorHex,
+                originalAmount: item.originalAmount,
+                contractedDate: item.contractedDate,
+                notes: item.notes
+            )
+            debts.append(debt)
+            added += 1
+        }
+
+        save()
+        return DebtImportSummary(
+            totalEvaluated: parsedList.count,
+            addedCount: added,
+            skippedDuplicatesCount: skipped
+        )
     }
 
     /// Pagar dívida: seleciona de qual conta vai sair o pagamento, mantém o valor original fixo e recebe o "valor da negociação".
