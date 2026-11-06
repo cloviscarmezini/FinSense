@@ -598,7 +598,8 @@ public enum BRLFormatters {
     }()
 
     public static func currency(_ value: Double) -> String {
-        currencyFormatter.string(from: NSNumber(value: value)) ?? String(format: "R$ %.2f", value)
+        let raw = currencyFormatter.string(from: NSNumber(value: value)) ?? String(format: "R$ %.2f", value)
+        return raw.replacingOccurrences(of: "\u{00A0}", with: " ")
     }
 
     public static func shortDate(_ date: Date) -> String {

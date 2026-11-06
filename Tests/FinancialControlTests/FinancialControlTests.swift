@@ -310,4 +310,116 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertTrue(projectionReply.localizedCaseInsensitiveContains("01/01/2026"))
         XCTAssertTrue(projectionReply.localizedCaseInsensitiveContains("01/12/2026"))
     }
+
+    func testSantanderLoanDocumentImportAndOutstandingBalance() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(name: "Santander", bankPresetId: "santander", customImagePath: nil, iconSymbol: "building.columns.fill", colorHex: "#EC0000", initialBalance: 0.0)
+        let acc = store.accounts.first!
+
+        let parsed = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.santanderLoanOCRText,
+            expectedKind: .loan
+        )
+
+        XCTAssertEqual(parsed.kind, .loan)
+        XCTAssertEqual(parsed.contractNumber, "783694303")
+        XCTAssertEqual(parsed.loanSubtype, .consignado)
+        XCTAssertEqual(parsed.totalContractedAmount, 110108.13, accuracy: 0.01)
+        XCTAssertEqual(parsed.outstandingBalance, 91039.22, accuracy: 0.01)
+        XCTAssertEqual(parsed.installmentAmount, 4509.81, accuracy: 0.01)
+        XCTAssertEqual(parsed.billingDay, 25)
+        XCTAssertEqual(parsed.totalInstallments, 36)
+        XCTAssertEqual(parsed.paidInstallmentsCount, 10)
+        XCTAssertEqual(parsed.remainingInstallmentsCount, 26)
+        XCTAssertEqual(parsed.monthlyInterestRate, 2.0087, accuracy: 0.001)
+        XCTAssertEqual(BRLFormatters.shortDate(parsed.startDate), "30/10/2025")
+        XCTAssertEqual(BRLFormatters.shortDate(parsed.firstFutureBillingDate), "25/11/2026")
+
+        let contract = store.createCreditContract(
+            kind: .loan,
+            name: parsed.name,
+            contractNumber: parsed.contractNumber,
+            loanSubtype: parsed.loanSubtype,
+            financingSubtype: parsed.financingSubtype,
+            amortizationSystem: parsed.amortizationSystem,
+            totalContractedAmount: parsed.totalContractedAmount,
+            outstandingBalance: parsed.outstandingBalance,
+            installmentAmount: parsed.installmentAmount,
+            billingDay: parsed.billingDay,
+            totalInstallments: parsed.totalInstallments,
+            monthlyInterestRate: parsed.monthlyInterestRate,
+            startDate: parsed.startDate,
+            accountId: acc.id,
+            overridePastInstallmentsCount: parsed.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: parsed.firstFutureBillingDate
+        )
+
+        XCTAssertEqual(contract.contractNumber, "783694303")
+        XCTAssertEqual(contract.pastInstallmentsElapsedAtCreation, 10)
+        XCTAssertEqual(store.currentOutstandingBalance(for: contract), 91039.22, accuracy: 0.01)
+
+        let futureTxs = store.unpaidTransactions(forContract: contract.id)
+        XCTAssertEqual(futureTxs.count, 26)
+        XCTAssertEqual(BRLFormatters.shortDate(futureTxs.first!.date), "25/11/2026")
+        XCTAssertEqual(BRLFormatters.shortDate(futureTxs.last!.date), "25/12/2028")
+    }
+
+    func testCaixaFinancingDocumentImportAndOutstandingBalance() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(name: "CAIXA", bankPresetId: "caixa", customImagePath: nil, iconSymbol: "building.columns.fill", colorHex: "#005CA9", initialBalance: 0.0)
+        let acc = store.accounts.first!
+
+        let parsed = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.caixaFinancingOCRText,
+            expectedKind: .financing
+        )
+
+        XCTAssertEqual(parsed.kind, .financing)
+        XCTAssertEqual(parsed.contractNumber, "178770203328-1")
+        XCTAssertEqual(parsed.financingSubtype, .imovel)
+        XCTAssertEqual(parsed.amortizationSystem, .price)
+        XCTAssertEqual(parsed.outstandingBalance, 324737.86, accuracy: 0.01)
+        XCTAssertEqual(parsed.installmentAmount, 2658.04, accuracy: 0.01)
+        XCTAssertEqual(parsed.billingDay, 5)
+        XCTAssertEqual(parsed.totalInstallments, 360)
+        XCTAssertEqual(parsed.paidInstallmentsCount, 28)
+        XCTAssertEqual(parsed.remainingInstallmentsCount, 332)
+        XCTAssertEqual(BRLFormatters.shortDate(parsed.startDate), "05/07/2024")
+        XCTAssertEqual(BRLFormatters.shortDate(parsed.firstFutureBillingDate), "05/12/2026")
+
+        let contract = store.createCreditContract(
+            kind: .financing,
+            name: parsed.name,
+            contractNumber: parsed.contractNumber,
+            loanSubtype: parsed.loanSubtype,
+            financingSubtype: parsed.financingSubtype,
+            amortizationSystem: parsed.amortizationSystem,
+            totalContractedAmount: parsed.totalContractedAmount,
+            outstandingBalance: parsed.outstandingBalance,
+            installmentAmount: parsed.installmentAmount,
+            billingDay: parsed.billingDay,
+            totalInstallments: parsed.totalInstallments,
+            monthlyInterestRate: parsed.monthlyInterestRate,
+            startDate: parsed.startDate,
+            accountId: acc.id,
+            overridePastInstallmentsCount: parsed.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: parsed.firstFutureBillingDate
+        )
+
+        XCTAssertEqual(contract.contractNumber, "178770203328-1")
+        XCTAssertEqual(contract.pastInstallmentsElapsedAtCreation, 28)
+        XCTAssertEqual(store.currentOutstandingBalance(for: contract), 324737.86, accuracy: 0.01)
+
+        let futureTxs = store.unpaidTransactions(forContract: contract.id)
+        XCTAssertEqual(futureTxs.count, 332)
+        XCTAssertEqual(BRLFormatters.shortDate(futureTxs.first!.date), "05/12/2026")
+    }
+
+    func testBRLCurrencyMaskAndDigitsOnlyFormatter() {
+        XCTAssertEqual(BRLFormatters.formatCurrencyMaskedInput("450981"), "R$ 4.509,81")
+        XCTAssertEqual(BRLFormatters.formatCurrencyMaskedInput("abc1250xyz!"), "R$ 12,50")
+        XCTAssertEqual(BRLFormatters.formatCurrencyMaskedInput("R$ 91.039,22"), "R$ 91.039,22")
+        XCTAssertEqual(BRLFormatters.parseAmount("R$ 91.039,22") ?? 0, 91039.22, accuracy: 0.001)
+        XCTAssertEqual(BRLFormatters.formatDigitsOnly("36x meses"), "36")
+    }
 }
