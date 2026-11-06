@@ -105,6 +105,8 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var chatHistory: [ChatMessage] = []
     @Published public var selectedMonth: Date = Date()
     @Published public var selectedDestination: SidebarDestination = .dashboard
+    @Published public var selectedTransactionsSubmenu: TransactionsSubmenu = .all
+    @Published public var dashboardPeriodMode: DashboardPeriodMode = .monthly
     @Published public var selectedSettingsSection: SettingsSection = .general
     @Published public var isAIChatPresented: Bool = false
     @Published public var isLLMInstallAlertPresented: Bool = false
@@ -424,18 +426,53 @@ public final class FinancialDataStore: ObservableObject {
         }
     }
 
-    // MARK: - Month Navigation
+    // MARK: - Month & Year Navigation + Date Helpers
 
     public func changeMonth(by offset: Int) {
         if let next = calendar.date(byAdding: .month, value: offset, to: selectedMonth) {
             selectedMonth = next
+            ensureRecurringTransactionsMaterialized(upTo: endOfMonth(for: next))
         }
+    }
+
+    public func changeYear(by offset: Int) {
+        if let next = calendar.date(byAdding: .year, value: offset, to: selectedMonth) {
+            selectedMonth = next
+            ensureRecurringTransactionsMaterialized(upTo: endOfYear(for: next))
+        }
+    }
+
+    public func isDateInFuture(_ date: Date, referenceNow: Date = Date()) -> Bool {
+        calendar.startOfDay(for: date) > calendar.startOfDay(for: referenceNow)
+    }
+
+    /// Retorna uma data padrão apontando sempre para o mês filtrado (`selectedMonth`),
+    /// preservando o dia atual quando possível (ou ajustando ao último dia do mês filtrado).
+    public func defaultTransactionDateForSelectedMonth(today: Date = Date()) -> Date {
+        if isInMonth(today, monthReference: selectedMonth) {
+            return today
+        }
+        let targetComps = calendar.dateComponents([.year, .month], from: selectedMonth)
+        let todayDay = calendar.component(.day, from: today)
+        guard let startOfTargetMonth = calendar.date(from: targetComps),
+              let daysRange = calendar.range(of: .day, in: .month, for: startOfTargetMonth) else {
+            return selectedMonth
+        }
+        var finalComps = targetComps
+        finalComps.day = min(max(todayDay, daysRange.lowerBound), daysRange.upperBound - 1)
+        return calendar.date(from: finalComps) ?? startOfTargetMonth
     }
 
     public func isInMonth(_ date: Date, monthReference: Date) -> Bool {
         let c1 = calendar.dateComponents([.year, .month], from: date)
         let c2 = calendar.dateComponents([.year, .month], from: monthReference)
         return c1.year == c2.year && c1.month == c2.month
+    }
+
+    public func isInYear(_ date: Date, yearReference: Date) -> Bool {
+        let y1 = calendar.component(.year, from: date)
+        let y2 = calendar.component(.year, from: yearReference)
+        return y1 == y2
     }
 
     public func endOfMonth(for monthReference: Date) -> Date {
@@ -446,6 +483,19 @@ public final class FinancialDataStore: ObservableObject {
             return monthReference
         }
         return lastMoment
+    }
+
+    /// Retorna o último instante do último dia do ano (31/12 às 23:59:59) para projeções anuais
+    public func endOfYear(for yearReference: Date) -> Date {
+        let year = calendar.component(.year, from: yearReference)
+        var comps = DateComponents()
+        comps.year = year
+        comps.month = 12
+        comps.day = 31
+        comps.hour = 23
+        comps.minute = 59
+        comps.second = 59
+        return calendar.date(from: comps) ?? endOfMonth(for: yearReference)
     }
 
     // MARK: - Account Management
@@ -490,10 +540,42 @@ public final class FinancialDataStore: ObservableObject {
         accounts.first(where: { $0.id == id })
     }
 
+    public func moveAccounts(fromOffsets source: IndexSet, toOffset destination: Int) {
+        accounts.move(fromOffsets: source, toOffset: destination)
+        save()
+    }
+
+    public func moveAccount(draggedId: UUID, targetId: UUID) {
+        guard draggedId != targetId,
+              let fromIndex = accounts.firstIndex(where: { $0.id == draggedId }),
+              let toIndex = accounts.firstIndex(where: { $0.id == targetId }) else { return }
+        let item = accounts.remove(at: fromIndex)
+        accounts.insert(item, at: toIndex)
+        save()
+    }
+
     // MARK: - Category Management
 
     public func categories(for type: TransactionType) -> [CategoryItem] {
         categories.filter { $0.type == type }
+    }
+
+    public func moveCategories(for type: TransactionType, fromOffsets source: IndexSet, toOffset destination: Int) {
+        var typed = categories.filter { $0.type == type }
+        let others = categories.filter { $0.type != type }
+        typed.move(fromOffsets: source, toOffset: destination)
+        categories = type == .expense ? (typed + others) : (others + typed)
+        save()
+    }
+
+    public func moveCategory(draggedId: UUID, targetId: UUID) {
+        guard draggedId != targetId,
+              let fromIndex = categories.firstIndex(where: { $0.id == draggedId }),
+              let toIndex = categories.firstIndex(where: { $0.id == targetId }),
+              categories[fromIndex].type == categories[toIndex].type else { return }
+        let item = categories.remove(at: fromIndex)
+        categories.insert(item, at: toIndex)
+        save()
     }
 
     public func category(for id: UUID) -> CategoryItem? {
@@ -533,7 +615,7 @@ public final class FinancialDataStore: ObservableObject {
         save()
     }
 
-    // MARK: - Transaction Creation (Single, Installment, Repeated)
+    // MARK: - Transaction Creation (Single, Installment, Repeated, Recurring)
 
     @discardableResult
     public func createTransaction(
@@ -549,19 +631,23 @@ public final class FinancialDataStore: ObservableObject {
         attachmentName: String? = nil,
         ignoreInConsolidated: Bool = false,
         recurrenceMode: TransactionRecurrenceMode = .single,
-        installmentsOrMonthsCount: Int = 1
+        installmentsOrMonthsCount: Int = 1,
+        recurrenceFrequency: RecurrenceFrequency = .monthly,
+        referenceNow: Date = Date()
     ) -> [FinancialTransaction] {
         var created: [FinancialTransaction] = []
         let cleanAmount = abs(amount)
+        // Regra: não é possível pagar/receber uma conta com data no futuro
+        let firstOccurrencePaid = isDateInFuture(date, referenceNow: referenceNow) ? false : isPaid
 
-        if type == .income || recurrenceMode == .single || installmentsOrMonthsCount <= 1 {
+        if recurrenceMode == .single || (recurrenceMode != .recurring && installmentsOrMonthsCount <= 1) {
             let tx = FinancialTransaction(
                 name: name,
                 details: details,
                 amount: cleanAmount,
                 date: date,
                 type: type,
-                isPaid: isPaid,
+                isPaid: firstOccurrencePaid,
                 categoryId: categoryId,
                 accountId: accountId,
                 attachmentPath: attachmentPath,
@@ -571,7 +657,7 @@ public final class FinancialDataStore: ObservableObject {
             )
             transactions.append(tx)
             created.append(tx)
-        } else if recurrenceMode == .installment {
+        } else if recurrenceMode == .installment && type == .expense {
             // Parcelada: receives total full value (`cleanAmount`) and number of installments (`count`)
             let count = max(installmentsOrMonthsCount, 2)
             let groupId = UUID()
@@ -581,7 +667,7 @@ public final class FinancialDataStore: ObservableObject {
             for index in 0..<count {
                 let installmentDate = calendar.date(byAdding: .month, value: index, to: date) ?? date
                 let value = index == 0 ? (baseInstallment + remainder) : baseInstallment
-                let paidStatus = index == 0 ? isPaid : false
+                let paidStatus = (index == 0 && !isDateInFuture(installmentDate, referenceNow: referenceNow)) ? firstOccurrencePaid : false
                 let tx = FinancialTransaction(
                     name: "\(name) (\(index + 1)/\(count))",
                     details: details.isEmpty ? "Compra parcelada em \(count)x (Total: \(BRLFormatters.currency(cleanAmount)))" : details,
@@ -603,18 +689,21 @@ public final class FinancialDataStore: ObservableObject {
                 created.append(tx)
             }
         } else if recurrenceMode == .repeated {
-            // Repetida: receives number of months (`count`) and repeats the exact same value across those months
+            // Repetida: receives number of months (`count`) and repeats the exact same value across those months (supports both Expense and Income)
             let count = max(installmentsOrMonthsCount, 2)
             let groupId = UUID()
             for index in 0..<count {
                 let occurrenceDate = calendar.date(byAdding: .month, value: index, to: date) ?? date
-                let paidStatus = index == 0 ? isPaid : false
+                let paidStatus = (index == 0 && !isDateInFuture(occurrenceDate, referenceNow: referenceNow)) ? firstOccurrencePaid : false
+                let defaultDetail = type == .expense
+                    ? "Despesa repetida mensal (\(index + 1)/\(count))"
+                    : "Receita repetida mensal (\(index + 1)/\(count))"
                 let tx = FinancialTransaction(
                     name: name,
-                    details: details.isEmpty ? "Despesa recorrente mensal (\(index + 1)/\(count))" : details,
+                    details: details.isEmpty ? defaultDetail : details,
                     amount: cleanAmount,
                     date: occurrenceDate,
-                    type: .expense,
+                    type: type,
                     isPaid: paidStatus,
                     categoryId: categoryId,
                     accountId: accountId,
@@ -622,9 +711,44 @@ public final class FinancialDataStore: ObservableObject {
                     attachmentName: attachmentName,
                     ignoreInConsolidated: ignoreInConsolidated,
                     recurrenceMode: .repeated,
+                    recurrenceFrequency: .monthly,
                     seriesGroupId: groupId,
                     installmentIndex: index + 1,
                     installmentTotal: count
+                )
+                transactions.append(tx)
+                created.append(tx)
+            }
+        } else if recurrenceMode == .recurring {
+            // Recorrente contínua (ex: Energia, Água, Wellhub, Netflix mensal, Prime Video anual, Salário recorrente):
+            // existe continuamente enquanto não for cancelada, gerando lançamentos na frequência escolhida.
+            let groupId = UUID()
+            let initialCount = recurrenceFrequency.defaultInitialHorizonCount
+            let defaultDetail = type == .expense
+                ? "Pagamento recorrente (\(recurrenceFrequency.shortTitle))"
+                : "Recebimento recorrente (\(recurrenceFrequency.shortTitle))"
+
+            for index in 0..<initialCount {
+                let occurrenceDate = recurrenceFrequency.nextDate(from: date, occurrenceIndex: index, calendar: calendar)
+                let paidStatus = (index == 0 && !isDateInFuture(occurrenceDate, referenceNow: referenceNow)) ? firstOccurrencePaid : false
+                let tx = FinancialTransaction(
+                    name: name,
+                    details: details.isEmpty ? defaultDetail : details,
+                    amount: cleanAmount,
+                    date: occurrenceDate,
+                    type: type,
+                    isPaid: paidStatus,
+                    categoryId: categoryId,
+                    accountId: accountId,
+                    attachmentPath: attachmentPath,
+                    attachmentName: attachmentName,
+                    ignoreInConsolidated: ignoreInConsolidated,
+                    recurrenceMode: .recurring,
+                    recurrenceFrequency: recurrenceFrequency,
+                    isCanceledRecurringSeries: false,
+                    seriesGroupId: groupId,
+                    installmentIndex: index + 1,
+                    installmentTotal: nil
                 )
                 transactions.append(tx)
                 created.append(tx)
@@ -636,19 +760,160 @@ public final class FinancialDataStore: ObservableObject {
         return created
     }
 
-    public func updateTransaction(_ updated: FinancialTransaction) {
-        if let idx = transactions.firstIndex(where: { $0.id == updated.id }) {
-            transactions[idx] = updated
+    /// Garante que contas/recebimentos recorrentes ativos tenham ocorrências geradas até a data-limite consultada (ao navegar para meses ou anos futuros)
+    public func ensureRecurringTransactionsMaterialized(upTo targetDate: Date) {
+        let recurringTxs = transactions.filter { $0.recurrenceMode == .recurring && $0.seriesGroupId != nil }
+        guard !recurringTxs.isEmpty else { return }
+
+        let grouped = Dictionary(grouping: recurringTxs, by: { $0.seriesGroupId! })
+        var didAppend = false
+
+        for (groupId, items) in grouped {
+            guard !items.contains(where: { $0.isCanceledRecurringSeries == true }) else { continue }
+            guard let lastTx = items.max(by: { $0.date < $1.date }) else { continue }
+            let freq = lastTx.recurrenceFrequency ?? .monthly
+            var currentLastDate = lastTx.date
+            var currentIndex = (lastTx.installmentIndex ?? items.count)
+
+            while currentLastDate < targetDate {
+                let nextDate = freq.nextDate(from: currentLastDate, occurrenceIndex: 1, calendar: calendar)
+                if nextDate <= currentLastDate { break }
+                currentIndex += 1
+                let newTx = FinancialTransaction(
+                    name: lastTx.name,
+                    details: lastTx.details,
+                    amount: lastTx.amount,
+                    date: nextDate,
+                    type: lastTx.type,
+                    isPaid: false,
+                    categoryId: lastTx.categoryId,
+                    accountId: lastTx.accountId,
+                    attachmentPath: lastTx.attachmentPath,
+                    attachmentName: lastTx.attachmentName,
+                    ignoreInConsolidated: lastTx.ignoreInConsolidated,
+                    recurrenceMode: .recurring,
+                    recurrenceFrequency: freq,
+                    isCanceledRecurringSeries: false,
+                    seriesGroupId: groupId,
+                    installmentIndex: currentIndex,
+                    installmentTotal: nil
+                )
+                transactions.append(newTx)
+                currentLastDate = nextDate
+                didAppend = true
+            }
+        }
+
+        if didAppend {
             sortTransactions()
             save()
         }
     }
 
-    public func toggleTransactionPaid(_ id: UUID) {
-        if let idx = transactions.firstIndex(where: { $0.id == id }) {
-            transactions[idx].isPaid.toggle()
-            save()
+    /// Cancela uma assinatura/conta recorrente a partir da transação informada (remove cobranças futuras em aberto e encerra a recorrência)
+    public func cancelRecurringSeries(from transaction: FinancialTransaction, includeCurrent: Bool = false) {
+        guard let groupId = transaction.seriesGroupId else {
+            if includeCurrent {
+                deleteTransaction(transaction.id)
+            }
+            return
         }
+        let cutoffDate = calendar.startOfDay(for: transaction.date)
+        transactions.removeAll { tx in
+            guard tx.seriesGroupId == groupId else { return false }
+            if includeCurrent && tx.id == transaction.id { return true }
+            let txDay = calendar.startOfDay(for: tx.date)
+            return txDay > cutoffDate && !tx.isPaid
+        }
+        for idx in transactions.indices where transactions[idx].seriesGroupId == groupId {
+            transactions[idx].isCanceledRecurringSeries = true
+        }
+        save()
+    }
+
+    /// Atualiza uma transação única ou aplica a edição em lote conforme o `SeriesEditScope`
+    /// (`.onlyThis`: somente naquela transação; `.thisAndFuture`: da transação atual e todas no futuro; `.allInSeries`: em todas as parcelas/ocorrências)
+    public func updateTransaction(
+        _ updated: FinancialTransaction,
+        scope: SeriesEditScope = .onlyThis,
+        referenceNow: Date = Date()
+    ) {
+        guard let targetIdx = transactions.firstIndex(where: { $0.id == updated.id }) else { return }
+        let originalBeforeEdit = transactions[targetIdx]
+
+        var cleanUpdated = updated
+        cleanUpdated.amount = abs(updated.amount)
+        // Regra: não é possível pagar uma conta com data no futuro
+        if isDateInFuture(cleanUpdated.date, referenceNow: referenceNow) {
+            cleanUpdated.isPaid = false
+        }
+
+        let baseCleanName = Self.stripInstallmentSuffix(from: cleanUpdated.name)
+        transactions[targetIdx] = cleanUpdated
+
+        if scope != .onlyThis, let groupId = cleanUpdated.seriesGroupId {
+            let referenceDate = calendar.startOfDay(for: originalBeforeEdit.date)
+            let referenceInstallmentIdx = originalBeforeEdit.installmentIndex
+
+            for idx in transactions.indices {
+                guard transactions[idx].id != cleanUpdated.id,
+                      transactions[idx].seriesGroupId == groupId else { continue }
+
+                let shouldApply: Bool
+                switch scope {
+                case .onlyThis:
+                    shouldApply = false
+                case .allInSeries:
+                    shouldApply = true
+                case .thisAndFuture:
+                    if let refInst = referenceInstallmentIdx, let otherInst = transactions[idx].installmentIndex {
+                        shouldApply = otherInst >= refInst
+                    } else {
+                        shouldApply = calendar.startOfDay(for: transactions[idx].date) >= referenceDate
+                    }
+                }
+
+                if shouldApply {
+                    transactions[idx].amount = cleanUpdated.amount
+                    transactions[idx].categoryId = cleanUpdated.categoryId
+                    transactions[idx].accountId = cleanUpdated.accountId
+                    transactions[idx].ignoreInConsolidated = cleanUpdated.ignoreInConsolidated
+                    transactions[idx].details = cleanUpdated.details
+                    if transactions[idx].recurrenceMode == .installment,
+                       let instIdx = transactions[idx].installmentIndex,
+                       let instTotal = transactions[idx].installmentTotal {
+                        transactions[idx].name = "\(baseCleanName) (\(instIdx)/\(instTotal))"
+                    } else {
+                        transactions[idx].name = baseCleanName
+                    }
+                    if isDateInFuture(transactions[idx].date, referenceNow: referenceNow) {
+                        transactions[idx].isPaid = false
+                    }
+                }
+            }
+        }
+
+        sortTransactions()
+        save()
+    }
+
+    private static func stripInstallmentSuffix(from title: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"\s*\(\d+/\d+\)\s*$"#) else { return title }
+        let range = NSRange(title.startIndex..<title.endIndex, in: title)
+        let stripped = regex.stringByReplacingMatches(in: title, options: [], range: range, withTemplate: "")
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Alterna o status de pago/recebido. Retorna `false` caso o usuário tente marcar como paga uma transação com data no futuro.
+    @discardableResult
+    public func toggleTransactionPaid(_ id: UUID, referenceNow: Date = Date()) -> Bool {
+        guard let idx = transactions.firstIndex(where: { $0.id == id }) else { return false }
+        if !transactions[idx].isPaid && isDateInFuture(transactions[idx].date, referenceNow: referenceNow) {
+            return false
+        }
+        transactions[idx].isPaid.toggle()
+        save()
+        return true
     }
 
     public func toggleTransactionIgnoreInConsolidated(_ id: UUID) {
@@ -1397,14 +1662,142 @@ public final class FinancialDataStore: ObservableObject {
             .reduce(0) { $0 + $1.amount }
     }
 
+    public func monthlyReceivedIncome(for monthReference: Date) -> Double {
+        monthlyIncome(for: monthReference, onlyPaid: true)
+    }
+
+    public func monthlyPendingIncome(for monthReference: Date) -> Double {
+        transactionsForMonth(monthReference)
+            .filter { $0.type == .income && !$0.ignoreInConsolidated && !$0.isPaid }
+            .reduce(0) { $0 + $1.amount }
+    }
+
     public func monthlyExpense(for monthReference: Date, onlyPaid: Bool = false) -> Double {
         transactionsForMonth(monthReference)
             .filter { $0.type == .expense && !$0.ignoreInConsolidated && (!onlyPaid || $0.isPaid) }
             .reduce(0) { $0 + $1.amount }
     }
 
+    public func monthlyPaidExpense(for monthReference: Date) -> Double {
+        monthlyExpense(for: monthReference, onlyPaid: true)
+    }
+
+    public func monthlyPendingExpense(for monthReference: Date) -> Double {
+        transactionsForMonth(monthReference)
+            .filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isPaid }
+            .reduce(0) { $0 + $1.amount }
+    }
+
     public func monthlyNetBalance(for monthReference: Date, onlyPaid: Bool = false) -> Double {
         monthlyIncome(for: monthReference, onlyPaid: onlyPaid) - monthlyExpense(for: monthReference, onlyPaid: onlyPaid)
+    }
+
+    // MARK: - Annual Summaries & End-of-Year Projections (31/12)
+
+    public func transactionsForYear(_ yearReference: Date) -> [FinancialTransaction] {
+        transactions
+            .filter { isInYear($0.date, yearReference: yearReference) }
+            .sorted { a, b in
+                if a.date == b.date { return a.createdAt > b.createdAt }
+                return a.date > b.date
+            }
+    }
+
+    public func annualIncome(for yearReference: Date, onlyPaid: Bool = false) -> Double {
+        transactionsForYear(yearReference)
+            .filter { $0.type == .income && !$0.ignoreInConsolidated && (!onlyPaid || $0.isPaid) }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    public func annualExpense(for yearReference: Date, onlyPaid: Bool = false) -> Double {
+        transactionsForYear(yearReference)
+            .filter { $0.type == .expense && !$0.ignoreInConsolidated && (!onlyPaid || $0.isPaid) }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    public func annualNetBalance(for yearReference: Date, onlyPaid: Bool = false) -> Double {
+        annualIncome(for: yearReference, onlyPaid: onlyPaid) - annualExpense(for: yearReference, onlyPaid: onlyPaid)
+    }
+
+    /// Saldo acumulado consolidado projetado até o último dia do ano (31/12 do ano de `yearReference`)
+    public func accumulatedConsolidatedBalanceThroughYear(_ yearReference: Date, includeProjectedUnpaid: Bool = true) -> Double {
+        let cutoff = endOfYear(for: yearReference)
+        let initialAccountsSum = accounts.reduce(0.0) { $0 + $1.initialBalance }
+        let transactionsDelta = transactions
+            .filter { tx in
+                guard !tx.ignoreInConsolidated else { return false }
+                guard tx.date <= cutoff else { return false }
+                return includeProjectedUnpaid ? true : tx.isPaid
+            }
+            .reduce(0.0) { $0 + $1.signedAmount }
+
+        let consolidatedInvestmentsSum = investments
+            .filter(\.showInConsolidated)
+            .reduce(0.0) { $0 + $1.balance }
+
+        return initialAccountsSum + transactionsDelta + consolidatedInvestmentsSum
+    }
+
+    public func annualCategoryBreakdown(for yearReference: Date, type: TransactionType) -> [CategorySpendSummary] {
+        let yearTxs = transactionsForYear(yearReference)
+            .filter { $0.type == type && !$0.ignoreInConsolidated }
+        let grandTotal = yearTxs.reduce(0.0) { $0 + $1.amount }
+        guard grandTotal > 0 else { return [] }
+
+        var grouped: [UUID: (sum: Double, count: Int)] = [:]
+        for tx in yearTxs {
+            let current = grouped[tx.categoryId] ?? (0.0, 0)
+            grouped[tx.categoryId] = (current.sum + tx.amount, current.count + 1)
+        }
+
+        var result: [CategorySpendSummary] = []
+        for (catId, info) in grouped {
+            let cat = category(for: catId) ?? CategoryItem(
+                id: catId,
+                name: "Outros",
+                type: type,
+                iconSymbol: "tag.fill",
+                colorHex: "#64748B"
+            )
+            result.append(
+                CategorySpendSummary(
+                    category: cat,
+                    total: info.sum,
+                    percentage: (info.sum / grandTotal) * 100.0,
+                    count: info.count
+                )
+            )
+        }
+
+        return result.sorted { $0.total > $1.total }
+    }
+
+    /// Série dos 12 meses do ano selecionado (Janeiro a Dezembro) projetada até 31/12
+    public func annualCashFlowSeries(for yearReference: Date) -> [MonthlyCashFlowPoint] {
+        let year = calendar.component(.year, from: yearReference)
+        var points: [MonthlyCashFlowPoint] = []
+        for month in 1...12 {
+            var comps = DateComponents()
+            comps.year = year
+            comps.month = month
+            comps.day = 15
+            if let mDate = calendar.date(from: comps) {
+                let inc = monthlyIncome(for: mDate)
+                let exp = monthlyExpense(for: mDate)
+                let acc = accumulatedConsolidatedBalance(throughMonth: mDate, includeProjectedUnpaid: true)
+                points.append(
+                    MonthlyCashFlowPoint(
+                        monthDate: mDate,
+                        label: BRLFormatters.shortMonthYearFormatter.string(from: mDate).capitalized,
+                        income: inc,
+                        expense: exp,
+                        net: inc - exp,
+                        accumulatedBalance: acc
+                    )
+                )
+            }
+        }
+        return points
     }
 
     /// Saldo atual de uma conta específica considerando saldo inicial e transações pagas (não ignoradas no consolidado)
@@ -1521,17 +1914,20 @@ public final class FinancialDataStore: ObservableObject {
 
     // MARK: - Comprehensive Dashboard Debt Breakdown
 
-    public func buildComprehensiveDebtSummary(referenceDate: Date = Date()) -> ComprehensiveDebtSummary {
-        let currentMonthUnpaid = transactions.filter { tx in
-            tx.type == .expense && !tx.isPaid && !tx.ignoreInConsolidated && isInMonth(tx.date, monthReference: referenceDate)
+    public func buildComprehensiveDebtSummary(referenceDate: Date = Date(), isAnnual: Bool = false) -> ComprehensiveDebtSummary {
+        let currentPeriodUnpaid = transactions.filter { tx in
+            tx.type == .expense &&
+            !tx.isPaid &&
+            !tx.ignoreInConsolidated &&
+            (isAnnual ? isInYear(tx.date, yearReference: referenceDate) : isInMonth(tx.date, monthReference: referenceDate))
         }
 
-        let endOfCurrentMonth = endOfMonth(for: referenceDate)
+        let endOfCurrentPeriod = isAnnual ? endOfYear(for: referenceDate) : endOfMonth(for: referenceDate)
         let futureRegularUnpaid = transactions.filter { tx in
             tx.type == .expense &&
             !tx.isPaid &&
             !tx.ignoreInConsolidated &&
-            tx.date > endOfCurrentMonth &&
+            tx.date > endOfCurrentPeriod &&
             tx.linkedContractId == nil
         }
 
@@ -1539,7 +1935,7 @@ public final class FinancialDataStore: ObservableObject {
         let openLoans = activeContracts(for: .loan)
         let openFinancings = activeContracts(for: .financing)
 
-        let currentMonthUnpaidSum = currentMonthUnpaid.reduce(0.0) { $0 + $1.amount }
+        let currentMonthUnpaidSum = currentPeriodUnpaid.reduce(0.0) { $0 + $1.amount }
         let futureRegularSum = futureRegularUnpaid.reduce(0.0) { $0 + $1.amount }
         let debtsSum = openDebts.reduce(0.0) { $0 + $1.originalAmount }
 
@@ -1551,7 +1947,7 @@ public final class FinancialDataStore: ObservableObject {
 
         var items: [DebtLineItem] = []
 
-        for tx in currentMonthUnpaid {
+        for tx in currentPeriodUnpaid {
             items.append(
                 DebtLineItem(
                     id: tx.id,
@@ -1637,7 +2033,7 @@ public final class FinancialDataStore: ObservableObject {
         let grandProjected = currentMonthUnpaidSum + futureRegularSum + debtsSum + loansProjectedSum + financingsProjectedSum
 
         return ComprehensiveDebtSummary(
-            currentMonthUnpaidTransactions: currentMonthUnpaid,
+            currentMonthUnpaidTransactions: currentPeriodUnpaid,
             futureUnpaidRegularTransactions: futureRegularUnpaid,
             activeDebts: openDebts,
             activeLoans: openLoans,

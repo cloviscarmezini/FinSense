@@ -15,13 +15,35 @@ public struct DashboardView: View {
     }
 
     public var body: some View {
-        let monthIncome = store.monthlyIncome(for: store.selectedMonth)
-        let monthExpense = store.monthlyExpense(for: store.selectedMonth)
-        let monthNet = monthIncome - monthExpense
-        let accumulatedMonth = store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
-        let expenseByCategory = store.categoryBreakdown(for: store.selectedMonth, type: .expense)
-        let cashFlowPoints = store.cashFlowSeries(around: store.selectedMonth, monthsBack: 2, monthsForward: 3)
-        let debtSummary = store.buildComprehensiveDebtSummary(referenceDate: store.selectedMonth)
+        let isAnnual = store.dashboardPeriodMode == .annual
+        let yearStr = BRLFormatters.yearString(store.selectedMonth)
+        let periodLabel = isAnnual
+            ? "Ano \(yearStr)"
+            : BRLFormatters.shortMonthYearFormatter.string(from: store.selectedMonth).capitalized
+        let periodFullLabel = isAnnual
+            ? "31/12/\(yearStr)"
+            : BRLFormatters.monthYear(store.selectedMonth)
+
+        let periodIncome = isAnnual
+            ? store.annualIncome(for: store.selectedMonth)
+            : store.monthlyIncome(for: store.selectedMonth)
+        let periodExpense = isAnnual
+            ? store.annualExpense(for: store.selectedMonth)
+            : store.monthlyExpense(for: store.selectedMonth)
+        let periodNet = periodIncome - periodExpense
+        let accumulatedBalance = isAnnual
+            ? store.accumulatedConsolidatedBalanceThroughYear(store.selectedMonth)
+            : store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
+        let expenseByCategory = isAnnual
+            ? store.annualCategoryBreakdown(for: store.selectedMonth, type: .expense)
+            : store.categoryBreakdown(for: store.selectedMonth, type: .expense)
+        let cashFlowPoints = isAnnual
+            ? store.annualCashFlowSeries(for: store.selectedMonth)
+            : store.cashFlowSeries(around: store.selectedMonth, monthsBack: 2, monthsForward: 3)
+        let debtSummary = store.buildComprehensiveDebtSummary(
+            referenceDate: store.selectedMonth,
+            isAnnual: isAnnual
+        )
 
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -30,14 +52,18 @@ public struct DashboardView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Dashboard & Insights Financeiros")
                             .font(.system(size: 26, weight: .bold, design: .rounded))
-                        Text("Visão consolidada de contas, categorias, investimentos, passivos e projeções")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        Text(
+                            isAnnual
+                                ? "Projeção consolidada para o último dia do ano (31/12/\(yearStr))"
+                                : "Visão consolidada de contas, categorias, investimentos, passivos e projeções"
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     }
 
                     Spacer()
 
-                    MonthNavigatorBar(store: store)
+                    DashboardPeriodNavigatorBar(store: store)
 
                     Button {
                         store.openAIChat()
@@ -124,31 +150,31 @@ public struct DashboardView: View {
                     )
 
                     MetricCardView(
-                        title: "Receitas (\(BRLFormatters.shortMonthYearFormatter.string(from: store.selectedMonth).capitalized))",
-                        value: BRLFormatters.currency(monthIncome),
-                        subtitle: "Entradas consolidadas no mês",
+                        title: "Receitas (\(periodLabel))",
+                        value: BRLFormatters.currency(periodIncome),
+                        subtitle: isAnnual ? "Entradas projetadas até 31/12/\(yearStr)" : "Entradas consolidadas no mês",
                         icon: "arrow.down.left.circle.fill",
                         tint: Color(hex: "#10B981")
                     )
 
                     MetricCardView(
-                        title: "Despesas (\(BRLFormatters.shortMonthYearFormatter.string(from: store.selectedMonth).capitalized))",
-                        value: BRLFormatters.currency(monthExpense),
-                        subtitle: "Saídas consolidadas no mês",
+                        title: "Despesas (\(periodLabel))",
+                        value: BRLFormatters.currency(periodExpense),
+                        subtitle: isAnnual ? "Saídas projetadas até 31/12/\(yearStr)" : "Saídas consolidadas no mês",
                         icon: "arrow.up.right.circle.fill",
                         tint: Color(hex: "#EF4444")
                     )
 
                     MetricCardView(
-                        title: "Acumulado no Mês",
-                        value: BRLFormatters.currency(accumulatedMonth),
-                        subtitle: "Balanço mensal: \(BRLFormatters.currency(monthNet))",
+                        title: isAnnual ? "Acumulado em 31/12/\(yearStr)" : "Acumulado no Mês",
+                        value: BRLFormatters.currency(accumulatedBalance),
+                        subtitle: isAnnual ? "Balanço anual projetado: \(BRLFormatters.currency(periodNet))" : "Balanço mensal: \(BRLFormatters.currency(periodNet))",
                         icon: "chart.line.uptrend.xyaxis",
-                        tint: monthNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#F59E0B")
+                        tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#F59E0B")
                     )
                 }
 
-                // MARK: - Charts Section (Expense by Category + Monthly Cash Flow)
+                // MARK: - Charts Section (Expense by Category + Monthly/Annual Cash Flow)
                 HStack(alignment: .top, spacing: 16) {
                     // Chart 1: Gráfico de Despesa por Categoria
                     VStack(alignment: .leading, spacing: 14) {
@@ -156,12 +182,12 @@ public struct DashboardView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Despesas por Categoria")
                                     .font(.headline)
-                                Text("Distribuição de gastos em \(BRLFormatters.monthYear(store.selectedMonth))")
+                                Text(isAnnual ? "Distribuição projetada até \(periodFullLabel)" : "Distribuição de gastos em \(periodFullLabel)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(BRLFormatters.currency(monthExpense))
+                            Text(BRLFormatters.currency(periodExpense))
                                 .font(.subheadline.bold())
                                 .foregroundStyle(Color(hex: "#EF4444"))
                         }
@@ -171,7 +197,7 @@ public struct DashboardView: View {
                                 Image(systemName: "chart.pie")
                                     .font(.system(size: 36))
                                     .foregroundStyle(.secondary)
-                                Text("Nenhuma despesa registrada neste mês.")
+                                Text(isAnnual ? "Nenhuma despesa registrada ou projetada neste ano." : "Nenhuma despesa registrada neste mês.")
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
@@ -232,9 +258,9 @@ public struct DashboardView: View {
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Fluxo de Caixa Mensal & Projeção")
+                                Text(isAnnual ? "Projeção Anual Mês a Mês (\(yearStr))" : "Fluxo de Caixa Mensal & Projeção")
                                     .font(.headline)
-                                Text("Comparativo de receitas e despesas entre os meses")
+                                Text(isAnnual ? "Receitas e despesas projetadas de Janeiro a 31/12/\(yearStr)" : "Comparativo de receitas e despesas entre os meses")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -284,17 +310,17 @@ public struct DashboardView: View {
                     )
                 }
 
-                // MARK: - Total de Dívidas e Passivos (Especificando Item a Item)
+                // MARK: - Total de Dívidas e Compromissos
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
                                 Image(systemName: "exclamationmark.shield.fill")
                                     .foregroundStyle(Color(hex: "#EF4444"))
-                                Text("Total de Dívidas e Compromissos (Especificado Item a Item)")
+                                Text("Total de Dívidas e Compromissos")
                                     .font(.title3.bold())
                             }
-                            Text("Detalhamento completo de transações pendentes atuais e futuras, dívidas em aberto (ex: Serasa/Cartões), empréstimos e financiamentos")
+                            Text("Detalhamento de transações pendentes atuais e futuras, dívidas em aberto (ex: Serasa/Cartões), empréstimos e financiamentos")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -318,8 +344,8 @@ public struct DashboardView: View {
                     // 5 Pillars Breakdown
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
                         debtPillarCard(
-                            title: "Transações Atuais",
-                            subtitle: "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) no mês",
+                            title: isAnnual ? "Pendentes no Ano" : "Transações Atuais",
+                            subtitle: isAnnual ? "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) em \(yearStr)" : "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) no mês",
                             amount: debtSummary.currentMonthUnpaidTotal,
                             projected: nil,
                             colorHex: "#F59E0B",
@@ -357,72 +383,6 @@ public struct DashboardView: View {
                             colorHex: "#8B5CF6",
                             icon: "house.and.flag.fill"
                         )
-                    }
-
-                    Divider()
-
-                    // Item by Item List
-                    if debtSummary.itemizedLines.isEmpty {
-                        HStack {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(.green)
-                            Text("Parabéns! Você não possui nenhuma dívida, parcela futura ou empréstimo pendente no momento.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 8)
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Relação Item a Item (\(debtSummary.itemizedLines.count) obrigações identificadas)")
-                                .font(.subheadline.bold())
-                                .foregroundStyle(.secondary)
-
-                            ForEach(debtSummary.itemizedLines.prefix(12)) { line in
-                                HStack(spacing: 12) {
-                                    ZStack {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(Color(hex: line.colorHex).opacity(0.15))
-                                            .frame(width: 32, height: 32)
-                                        Image(systemName: line.iconSymbol)
-                                            .font(.system(size: 14, weight: .semibold))
-                                            .foregroundStyle(Color(hex: line.colorHex))
-                                    }
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        HStack(spacing: 8) {
-                                            Text(line.title)
-                                                .font(.subheadline.weight(.semibold))
-                                            Text(line.section)
-                                                .font(.caption2.weight(.semibold))
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(Capsule().fill(Color(hex: line.colorHex).opacity(0.15)))
-                                                .foregroundStyle(Color(hex: line.colorHex))
-                                        }
-                                        Text(line.subtitle)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-
-                                    Spacer()
-
-                                    VStack(alignment: .trailing, spacing: 2) {
-                                        Text(BRLFormatters.currency(line.nominalAmount))
-                                            .font(.subheadline.bold())
-                                        if abs(line.nominalAmount - line.projectedPayoffAmount) > 0.01 {
-                                            Text("Quitação: \(BRLFormatters.currency(line.projectedPayoffAmount))")
-                                                .font(.caption2.bold())
-                                                .foregroundStyle(Color(hex: "#10B981"))
-                                        }
-                                    }
-                                }
-                                .padding(10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.primary.opacity(0.03))
-                                )
-                            }
-                        }
                     }
                 }
                 .padding(18)

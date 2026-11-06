@@ -203,28 +203,95 @@ public struct MonthNavigatorBar: View {
             Menu {
                 Button("Mês Atual (Hoje)") {
                     store.selectedMonth = Date()
-                }
-                if let nov2026 = BRLFormatters.shortDateFormatter.date(from: "05/11/2026") {
-                    Button("Novembro de 2026 (Extrato)") {
-                        store.selectedMonth = nov2026
-                    }
-                }
-                if let oct2026 = BRLFormatters.shortDateFormatter.date(from: "15/10/2026") {
-                    Button("Outubro de 2026 (Extrato)") {
-                        store.selectedMonth = oct2026
-                    }
-                }
-                if let sep2026 = BRLFormatters.shortDateFormatter.date(from: "15/09/2026") {
-                    Button("Setembro de 2026 (Extrato)") {
-                        store.selectedMonth = sep2026
-                    }
+                    store.ensureRecurringTransactionsMaterialized(upTo: store.endOfMonth(for: Date()))
                 }
             } label: {
-                Label("Ir para", systemImage: "calendar.badge.clock")
+                Label("Hoje", systemImage: "calendar.badge.clock")
                     .font(.caption)
             }
             .menuStyle(.borderedButton)
             .fixedSize()
+        }
+    }
+}
+
+// MARK: - Dashboard Period Navigator Bar (Visão Mensal vs Visão Anual)
+
+public struct DashboardPeriodNavigatorBar: View {
+    @ObservedObject public var store: FinancialDataStore
+
+    public init(store: FinancialDataStore) {
+        self.store = store
+    }
+
+    public var body: some View {
+        HStack(spacing: 12) {
+            Picker("", selection: $store.dashboardPeriodMode) {
+                ForEach(DashboardPeriodMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 215)
+            .onChange(of: store.dashboardPeriodMode) { _, newMode in
+                if newMode == .annual {
+                    store.ensureRecurringTransactionsMaterialized(upTo: store.endOfYear(for: store.selectedMonth))
+                } else {
+                    store.ensureRecurringTransactionsMaterialized(upTo: store.endOfMonth(for: store.selectedMonth))
+                }
+            }
+
+            if store.dashboardPeriodMode == .monthly {
+                MonthNavigatorBar(store: store)
+            } else {
+                HStack(spacing: 10) {
+                    Button {
+                        store.changeYear(by: -1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Ano anterior")
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "calendar")
+                            .foregroundStyle(.secondary)
+                        Text("Ano \(BRLFormatters.yearString(store.selectedMonth)) (Proj. 31/12)")
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .frame(minWidth: 165)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    )
+
+                    Button {
+                        store.changeYear(by: 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .bold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Próximo ano")
+
+                    Button("Ano Atual") {
+                        store.selectedMonth = Date()
+                        store.ensureRecurringTransactionsMaterialized(upTo: store.endOfYear(for: Date()))
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
         }
     }
 }

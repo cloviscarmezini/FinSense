@@ -78,6 +78,44 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     }
 }
 
+public enum TransactionsSubmenu: String, CaseIterable, Identifiable, Hashable {
+    case all
+    case expenses
+    case incomes
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .all: return "Transações"
+        case .expenses: return "Despesas"
+        case .incomes: return "Receitas"
+        }
+    }
+
+    public var icon: String {
+        switch self {
+        case .all: return "arrow.left.arrow.right.circle.fill"
+        case .expenses: return "arrow.up.right.circle.fill"
+        case .incomes: return "arrow.down.left.circle.fill"
+        }
+    }
+}
+
+public enum DashboardPeriodMode: String, Codable, CaseIterable, Identifiable, Hashable {
+    case monthly
+    case annual
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .monthly: return "Visão Mensal"
+        case .annual: return "Visão Anual"
+        }
+    }
+}
+
 public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
     case transactions
     case accounts
@@ -157,14 +195,109 @@ public enum TransactionRecurrenceMode: String, Codable, CaseIterable, Identifiab
     case single
     case installment
     case repeated
+    case recurring
 
     public var id: String { rawValue }
 
     public var title: String {
         switch self {
-        case .single: return "Única"
-        case .installment: return "Parcelada"
-        case .repeated: return "Repetida (Mensal)"
+        case .single: return "Único"
+        case .installment: return "Parcelado"
+        case .repeated: return "Repetido"
+        case .recurring: return "Recorrente"
+        }
+    }
+
+    public static func availableModes(for type: TransactionType) -> [TransactionRecurrenceMode] {
+        switch type {
+        case .expense:
+            return [.single, .installment, .repeated, .recurring]
+        case .income:
+            return [.single, .repeated, .recurring]
+        }
+    }
+}
+
+public enum RecurrenceFrequency: String, Codable, CaseIterable, Identifiable, Hashable {
+    case weekly
+    case biweekly
+    case monthly
+    case bimonthly
+    case quarterly
+    case semiannual
+    case annual
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .weekly: return "Semanal"
+        case .biweekly: return "Quinzenal"
+        case .monthly: return "Mensal (Ex: Netflix, Energia, Água, Wellhub)"
+        case .bimonthly: return "Bimestral (A cada 2 meses)"
+        case .quarterly: return "Trimestral (A cada 3 meses)"
+        case .semiannual: return "Semestral (A cada 6 meses)"
+        case .annual: return "Anual (Ex: Prime Video, Anuidade)"
+        }
+    }
+
+    public var shortTitle: String {
+        switch self {
+        case .weekly: return "Semanal"
+        case .biweekly: return "Quinzenal"
+        case .monthly: return "Mensal"
+        case .bimonthly: return "Bimestral"
+        case .quarterly: return "Trimestral"
+        case .semiannual: return "Semestral"
+        case .annual: return "Anual"
+        }
+    }
+
+    public var defaultInitialHorizonCount: Int {
+        switch self {
+        case .weekly: return 104 // 2 anos
+        case .biweekly: return 78 // 3 anos
+        case .monthly: return 60 // 5 anos
+        case .bimonthly: return 36 // 6 anos
+        case .quarterly: return 28 // 7 anos
+        case .semiannual: return 20 // 10 anos
+        case .annual: return 15 // 15 anos
+        }
+    }
+
+    public func nextDate(from baseDate: Date, occurrenceIndex: Int, calendar: Calendar = .current) -> Date {
+        guard occurrenceIndex > 0 else { return baseDate }
+        switch self {
+        case .weekly:
+            return calendar.date(byAdding: .day, value: 7 * occurrenceIndex, to: baseDate) ?? baseDate
+        case .biweekly:
+            return calendar.date(byAdding: .day, value: 14 * occurrenceIndex, to: baseDate) ?? baseDate
+        case .monthly:
+            return calendar.date(byAdding: .month, value: occurrenceIndex, to: baseDate) ?? baseDate
+        case .bimonthly:
+            return calendar.date(byAdding: .month, value: 2 * occurrenceIndex, to: baseDate) ?? baseDate
+        case .quarterly:
+            return calendar.date(byAdding: .month, value: 3 * occurrenceIndex, to: baseDate) ?? baseDate
+        case .semiannual:
+            return calendar.date(byAdding: .month, value: 6 * occurrenceIndex, to: baseDate) ?? baseDate
+        case .annual:
+            return calendar.date(byAdding: .year, value: occurrenceIndex, to: baseDate) ?? baseDate
+        }
+    }
+}
+
+public enum SeriesEditScope: String, CaseIterable, Identifiable, Hashable {
+    case onlyThis
+    case thisAndFuture
+    case allInSeries
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .allInSeries: return "Alterar em todas as parcelas / ocorrências"
+        case .onlyThis: return "Somente nesta transação"
+        case .thisAndFuture: return "Da transação atual e todas no futuro"
         }
     }
 }
@@ -298,6 +431,8 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
     public var attachmentName: String?
     public var ignoreInConsolidated: Bool
     public var recurrenceMode: TransactionRecurrenceMode
+    public var recurrenceFrequency: RecurrenceFrequency?
+    public var isCanceledRecurringSeries: Bool?
     public var seriesGroupId: UUID?
     public var installmentIndex: Int?
     public var installmentTotal: Int?
@@ -322,6 +457,8 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         attachmentName: String? = nil,
         ignoreInConsolidated: Bool = false,
         recurrenceMode: TransactionRecurrenceMode = .single,
+        recurrenceFrequency: RecurrenceFrequency? = nil,
+        isCanceledRecurringSeries: Bool? = nil,
         seriesGroupId: UUID? = nil,
         installmentIndex: Int? = nil,
         installmentTotal: Int? = nil,
@@ -345,6 +482,8 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         self.attachmentName = attachmentName
         self.ignoreInConsolidated = ignoreInConsolidated
         self.recurrenceMode = recurrenceMode
+        self.recurrenceFrequency = recurrenceFrequency
+        self.isCanceledRecurringSeries = isCanceledRecurringSeries
         self.seriesGroupId = seriesGroupId
         self.installmentIndex = installmentIndex
         self.installmentTotal = installmentTotal
@@ -361,10 +500,17 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
     }
 
     public var installmentBadge: String? {
+        if recurrenceMode == .recurring {
+            return nil
+        }
         if let idx = installmentIndex, let total = installmentTotal, total > 1 {
             return "\(idx)/\(total)"
         }
         return nil
+    }
+
+    public var isPartOfSeries: Bool {
+        seriesGroupId != nil || recurrenceMode != .single
     }
 }
 

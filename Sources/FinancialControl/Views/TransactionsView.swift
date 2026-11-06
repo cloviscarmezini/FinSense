@@ -16,15 +16,28 @@ public struct TransactionsView: View {
     @State private var showImportSheet: Bool = false
     @State private var editingTransaction: FinancialTransaction? = nil
     @State private var transactionPendingDeletion: FinancialTransaction? = nil
+    @State private var recurringTransactionPendingCancellation: FinancialTransaction? = nil
+    @State private var showFuturePaidBlockedAlert: Bool = false
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
         self.llmService = llmService
     }
 
+    private var enforcedTypeFromSubmenu: TransactionType? {
+        switch store.selectedTransactionsSubmenu {
+        case .all:
+            return selectedTypeFilter
+        case .expenses:
+            return .expense
+        case .incomes:
+            return .income
+        }
+    }
+
     private var filteredMonthTransactions: [FinancialTransaction] {
         store.transactionsForMonth(store.selectedMonth).filter { tx in
-            if let typeFilter = selectedTypeFilter, tx.type != typeFilter {
+            if let typeFilter = enforcedTypeFromSubmenu, tx.type != typeFilter {
                 return false
             }
             if let accFilter = selectedAccountFilter, tx.accountId != accFilter {
@@ -50,9 +63,36 @@ public struct TransactionsView: View {
         }
     }
 
+    private var headerTitle: String {
+        switch store.selectedTransactionsSubmenu {
+        case .all:
+            return "Transações por Mês"
+        case .expenses:
+            return "Despesas por Mês"
+        case .incomes:
+            return "Receitas por Mês"
+        }
+    }
+
+    private var headerSubtitle: String {
+        switch store.selectedTransactionsSubmenu {
+        case .all:
+            return "Gerencie despesas, receitas, parcelamentos, recorrências e importação via IA Local"
+        case .expenses:
+            return "Visão mensal de despesas únicas, parceladas, repetidas e recorrentes (assinaturas/contas)"
+        case .incomes:
+            return "Visão mensal de receitas únicas, repetidas e recebimentos recorrentes"
+        }
+    }
+
     public var body: some View {
         let monthIncome = store.monthlyIncome(for: store.selectedMonth)
+        let monthReceivedIncome = store.monthlyReceivedIncome(for: store.selectedMonth)
+        let monthPendingIncome = store.monthlyPendingIncome(for: store.selectedMonth)
+
         let monthExpense = store.monthlyExpense(for: store.selectedMonth)
+        let monthPendingExpense = store.monthlyPendingExpense(for: store.selectedMonth)
+
         let monthBalance = monthIncome - monthExpense
         let accumulatedBalance = store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
 
@@ -60,9 +100,9 @@ public struct TransactionsView: View {
             // MARK: - Header & Month Navigation
             HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Transações por Mês")
+                    Text(headerTitle)
                         .font(.system(size: 26, weight: .bold, design: .rounded))
-                    Text("Gerencie despesas, receitas, parcelamentos, recorrências e importação via IA Local")
+                    Text(headerSubtitle)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -72,58 +112,103 @@ public struct TransactionsView: View {
                 MonthNavigatorBar(store: store)
             }
 
-            // MARK: - Monthly Balance & Accumulated Summary Cards
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
-                MetricCardView(
-                    title: "Receitas no Mês",
-                    value: BRLFormatters.currency(monthIncome),
-                    subtitle: BRLFormatters.monthYear(store.selectedMonth),
-                    icon: "arrow.down.left.circle.fill",
-                    tint: Color(hex: "#10B981")
-                )
+            // MARK: - Monthly Summary Cards (Adaptados por Submenu: Todas, Despesas ou Receitas)
+            switch store.selectedTransactionsSubmenu {
+            case .all:
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                    MetricCardView(
+                        title: "Receitas no Mês",
+                        value: BRLFormatters.currency(monthIncome),
+                        subtitle: BRLFormatters.monthYear(store.selectedMonth),
+                        icon: "arrow.down.left.circle.fill",
+                        tint: Color(hex: "#10B981")
+                    )
 
-                MetricCardView(
-                    title: "Despesas no Mês",
-                    value: BRLFormatters.currency(monthExpense),
-                    subtitle: BRLFormatters.monthYear(store.selectedMonth),
-                    icon: "arrow.up.right.circle.fill",
-                    tint: Color(hex: "#EF4444")
-                )
+                    MetricCardView(
+                        title: "Despesas no Mês",
+                        value: BRLFormatters.currency(monthExpense),
+                        subtitle: BRLFormatters.monthYear(store.selectedMonth),
+                        icon: "arrow.up.right.circle.fill",
+                        tint: Color(hex: "#EF4444")
+                    )
 
-                MetricCardView(
-                    title: "Balanço do Mês",
-                    value: BRLFormatters.currency(monthBalance),
-                    subtitle: monthBalance >= 0 ? "Superávit no período" : "Déficit no período",
-                    icon: "equal.circle.fill",
-                    tint: monthBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
-                )
+                    MetricCardView(
+                        title: "Balanço do Mês",
+                        value: BRLFormatters.currency(monthBalance),
+                        subtitle: monthBalance >= 0 ? "Superávit no período" : "Déficit no período",
+                        icon: "equal.circle.fill",
+                        tint: monthBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                    )
 
-                MetricCardView(
-                    title: "Acumulado até o Mês",
-                    value: BRLFormatters.currency(accumulatedBalance),
-                    subtitle: "Saldo + Invest. Consolidados",
-                    icon: "chart.line.uptrend.xyaxis.circle.fill",
-                    tint: Color(hex: "#3B82F6")
-                )
+                    MetricCardView(
+                        title: "Acumulado até o Mês",
+                        value: BRLFormatters.currency(accumulatedBalance),
+                        subtitle: "Saldo + Invest. Consolidados",
+                        icon: "chart.line.uptrend.xyaxis.circle.fill",
+                        tint: Color(hex: "#3B82F6")
+                    )
+                }
+
+            case .expenses:
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2), spacing: 12) {
+                    MetricCardView(
+                        title: "Total de Despesas",
+                        value: BRLFormatters.currency(monthExpense),
+                        subtitle: "Despesas consolidadas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                        icon: "arrow.up.right.circle.fill",
+                        tint: Color(hex: "#EF4444")
+                    )
+
+                    MetricCardView(
+                        title: "Total Pendente",
+                        value: BRLFormatters.currency(monthPendingExpense),
+                        subtitle: "Despesas ainda não pagas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                        icon: "clock.badge.exclamationmark",
+                        tint: Color(hex: "#F59E0B")
+                    )
+                }
+
+            case .incomes:
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2), spacing: 12) {
+                    MetricCardView(
+                        title: "Total Recebido",
+                        value: BRLFormatters.currency(monthReceivedIncome),
+                        subtitle: "Receitas efetivadas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                        icon: "checkmark.circle.fill",
+                        tint: Color(hex: "#10B981")
+                    )
+
+                    MetricCardView(
+                        title: "À Receber",
+                        value: BRLFormatters.currency(monthPendingIncome),
+                        subtitle: "Receitas pendentes/previstas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                        icon: "clock.arrow.circlepath",
+                        tint: Color(hex: "#3B82F6")
+                    )
+                }
             }
 
             // MARK: - Action & Filter Bar
             HStack(spacing: 10) {
-                Button {
-                    showCreateExpenseSheet = true
-                } label: {
-                    Label("Nova Despesa", systemImage: "minus.circle.fill")
+                if store.selectedTransactionsSubmenu != .incomes {
+                    Button {
+                        showCreateExpenseSheet = true
+                    } label: {
+                        Label("Nova Despesa", systemImage: "minus.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#EF4444"))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#EF4444"))
 
-                Button {
-                    showCreateIncomeSheet = true
-                } label: {
-                    Label("Nova Receita", systemImage: "plus.circle.fill")
+                if store.selectedTransactionsSubmenu != .expenses {
+                    Button {
+                        showCreateIncomeSheet = true
+                    } label: {
+                        Label("Nova Receita", systemImage: "plus.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#10B981"))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#10B981"))
 
                 Button {
                     store.requireInstalledLLM(forFeature: "Importar Relatório / Extrato com IA Local") {
@@ -136,12 +221,23 @@ public struct TransactionsView: View {
 
                 Divider().frame(height: 22)
 
-                Picker("Tipo", selection: $selectedTypeFilter) {
-                    Text("Todos os Tipos").tag(TransactionType?.none)
-                    Text("Apenas Despesas").tag(TransactionType?.some(.expense))
-                    Text("Apenas Receitas").tag(TransactionType?.some(.income))
+                if store.selectedTransactionsSubmenu == .all {
+                    Picker("Tipo", selection: $selectedTypeFilter) {
+                        Text("Todos os Tipos").tag(TransactionType?.none)
+                        Text("Apenas Despesas").tag(TransactionType?.some(.expense))
+                        Text("Apenas Receitas").tag(TransactionType?.some(.income))
+                    }
+                    .frame(width: 155)
                 }
-                .frame(width: 165)
+
+                Picker("Categoria", selection: $selectedCategoryFilter) {
+                    Text("Todas as Categorias").tag(UUID?.none)
+                    let catsToList = enforcedTypeFromSubmenu.map { store.categories(for: $0) } ?? store.categories
+                    ForEach(catsToList) { cat in
+                        Text(cat.name).tag(UUID?.some(cat.id))
+                    }
+                }
+                .frame(width: 175)
 
                 Picker("Conta", selection: $selectedAccountFilter) {
                     Text("Todas as Contas").tag(UUID?.none)
@@ -149,7 +245,7 @@ public struct TransactionsView: View {
                         Text(acc.name).tag(UUID?.some(acc.id))
                     }
                 }
-                .frame(width: 165)
+                .frame(width: 155)
 
                 Toggle("Só Pendentes", isOn: $onlyPendingFilter)
                     .toggleStyle(.checkbox)
@@ -161,10 +257,10 @@ public struct TransactionsView: View {
                         .foregroundStyle(.secondary)
                     MacFullWidthTextInput(
                         text: $searchText,
-                        placeholder: "Buscar transação...",
+                        placeholder: "Buscar...",
                         font: .systemFont(ofSize: 13)
                     )
-                    .frame(width: 175, height: 20)
+                    .frame(width: 150, height: 20)
                     if !searchText.isEmpty {
                         Button {
                             searchText = ""
@@ -188,9 +284,9 @@ public struct TransactionsView: View {
                     Image(systemName: "doc.text.magnifyingglass")
                         .font(.system(size: 42))
                         .foregroundStyle(.secondary)
-                    Text("Nenhuma transação encontrada para \(BRLFormatters.monthYear(store.selectedMonth))")
+                    Text("Nenhum lançamento encontrado para \(BRLFormatters.monthYear(store.selectedMonth))")
                         .font(.headline)
-                    Text("Adicione uma nova despesa/receita, navegue entre os meses ou importe um extrato PDF com a LLM local.")
+                    Text("Adicione um lançamento, navegue entre os meses ou importe um extrato PDF com a LLM local.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -212,6 +308,9 @@ public struct TransactionsView: View {
             }
         }
         .padding(24)
+        .onChange(of: store.selectedTransactionsSubmenu) { _, _ in
+            selectedCategoryFilter = nil
+        }
         .sheet(isPresented: $showCreateExpenseSheet) {
             TransactionEditorSheet(
                 store: store,
@@ -230,7 +329,9 @@ public struct TransactionsView: View {
             StatementImportSheet(
                 store: store,
                 llmService: llmService,
-                initialFilterMode: .hybrid
+                initialFilterMode: store.selectedTransactionsSubmenu == .expenses
+                    ? .expensesOnly
+                    : (store.selectedTransactionsSubmenu == .incomes ? .incomesOnly : .hybrid)
             )
         }
         .sheet(item: $editingTransaction) { txToEdit in
@@ -259,12 +360,40 @@ public struct TransactionsView: View {
         } message: { tx in
             Text("Deseja realmente excluir a transação \"\(tx.name)\" no valor de \(BRLFormatters.currency(tx.amount)) (\(BRLFormatters.shortDate(tx.date)))? Esta ação não pode ser desfeita.")
         }
+        .alert(
+            "Cancelar Recorrência / Assinatura",
+            isPresented: Binding(
+                get: { recurringTransactionPendingCancellation != nil },
+                set: { if !$0 { recurringTransactionPendingCancellation = nil } }
+            ),
+            presenting: recurringTransactionPendingCancellation
+        ) { tx in
+            Button("Cancelar Próximas Cobranças", role: .destructive) {
+                store.cancelRecurringSeries(from: tx, includeCurrent: false)
+                recurringTransactionPendingCancellation = nil
+            }
+            Button("Cancelar Incluindo Esta (\(BRLFormatters.shortDate(tx.date)))", role: .destructive) {
+                store.cancelRecurringSeries(from: tx, includeCurrent: true)
+                recurringTransactionPendingCancellation = nil
+            }
+            Button("Voltar", role: .cancel) {
+                recurringTransactionPendingCancellation = nil
+            }
+        } message: { tx in
+            Text("Deseja encerrar a recorrência de \"\(tx.name)\" a partir de \(BRLFormatters.shortDate(tx.date))? As ocorrências futuras em aberto serão removidas.")
+        }
+        .alert("Não Permitido para Data no Futuro", isPresented: $showFuturePaidBlockedAlert) {
+            Button("Entendi", role: .cancel) {}
+        } message: {
+            Text("Não é possível marcar como paga ou recebida uma conta com data no futuro. Aguarde a data do lançamento ou altere a data para hoje ou uma data passada.")
+        }
     }
 
     @ViewBuilder
     private func transactionRow(_ tx: FinancialTransaction) -> some View {
         let cat = store.category(for: tx.categoryId)
         let acc = store.account(for: tx.accountId)
+        let isFuture = store.isDateInFuture(tx.date)
 
         HStack(spacing: 14) {
             CategoryBadgeView(category: cat, size: 40)
@@ -285,12 +414,26 @@ public struct TransactionsView: View {
                     }
 
                     if tx.recurrenceMode == .repeated {
-                        Label("Mensal", systemImage: "repeat")
+                        Label("Repetida", systemImage: "repeat")
                             .font(.caption2)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(Capsule().fill(Color.purple.opacity(0.15)))
                             .foregroundStyle(.purple)
+                    }
+
+                    if tx.recurrenceMode == .recurring {
+                        let freqLabel = tx.recurrenceFrequency?.shortTitle ?? "Mensal"
+                        let isCanceled = tx.isCanceledRecurringSeries == true
+                        Label(
+                            isCanceled ? "Recorrente (\(freqLabel) • Cancelada)" : "Recorrente • \(freqLabel)",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill((isCanceled ? Color.secondary : Color(hex: "#06B6D4")).opacity(0.16)))
+                        .foregroundStyle(isCanceled ? Color.secondary : Color(hex: "#06B6D4"))
                     }
 
                     if tx.ignoreInConsolidated {
@@ -345,12 +488,16 @@ public struct TransactionsView: View {
 
             Spacer()
 
-            // Paid / Received Status Toggle
+            // Paid / Received Status Toggle (Bloqueado se data for futura)
             Button {
-                store.toggleTransactionPaid(tx.id)
+                if !tx.isPaid && isFuture {
+                    showFuturePaidBlockedAlert = true
+                } else {
+                    _ = store.toggleTransactionPaid(tx.id)
+                }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: tx.isPaid ? "checkmark.circle.fill" : "clock.badge.exclamationmark")
+                    Image(systemName: tx.isPaid ? "checkmark.circle.fill" : (isFuture ? "calendar.badge.clock" : "clock.badge.exclamationmark"))
                     Text(tx.isPaid ? (tx.type == .expense ? "Pago" : "Recebido") : (tx.type == .expense ? "Não Pago" : "Não Recebido"))
                         .font(.caption.weight(.semibold))
                 }
@@ -363,7 +510,7 @@ public struct TransactionsView: View {
                 .foregroundStyle(tx.isPaid ? Color.green : Color.amberWarning)
             }
             .buttonStyle(.plain)
-            .help("Alternar status de Pago / Recebido")
+            .help(isFuture && !tx.isPaid ? "Não é possível pagar uma conta com data no futuro" : "Alternar status de Pago / Recebido")
 
             // Amount
             Text((tx.type == .expense ? "- " : "+ ") + BRLFormatters.currency(tx.amount))
@@ -377,6 +524,18 @@ public struct TransactionsView: View {
 
             // Context actions
             HStack(spacing: 4) {
+                if tx.recurrenceMode == .recurring && tx.isCanceledRecurringSeries != true {
+                    Button {
+                        recurringTransactionPendingCancellation = tx
+                    } label: {
+                        Image(systemName: "stop.circle")
+                            .foregroundStyle(.orange)
+                            .frame(width: 26, height: 26)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Cancelar recorrência / assinatura")
+                }
+
                 Button {
                     editingTransaction = tx
                 } label: {
@@ -414,7 +573,7 @@ extension Color {
     static let amberWarning = Color(hex: "#D97706")
 }
 
-// MARK: - Transaction Editor Sheet (Create Expense / Create Income / Edit + Statement Import Trigger)
+// MARK: - Transaction Editor Sheet (Create Expense / Create Income / Edit + Series Edit Scope Prompt)
 
 public struct TransactionEditorSheet: View {
     @ObservedObject public var store: FinancialDataStore
@@ -428,19 +587,21 @@ public struct TransactionEditorSheet: View {
     @State private var details: String = ""
     @State private var amountText: String = ""
     @State private var date: Date = Date()
-    @State private var isPaid: Bool = true // Marcado por default!
+    @State private var isPaid: Bool = true // Marcado por default quando não está no futuro!
     @State private var categoryId: UUID = UUID()
     @State private var accountId: UUID = UUID()
     @State private var ignoreInConsolidated: Bool = false
     @State private var attachmentPath: String? = nil
     @State private var attachmentName: String? = nil
 
-    // Recorrência para Despesas (Parcelada / Repetida)
+    // Modalidade de lançamento (Único, Parcelado, Repetido, Recorrente) e Frequência
     @State private var recurrenceMode: TransactionRecurrenceMode = .single
     @State private var installmentsOrMonthsCount: Int = 2
+    @State private var recurrenceFrequency: RecurrenceFrequency = .monthly
 
     @State private var showEmbeddedStatementImporter: Bool = false
     @State private var showRemoveAttachmentConfirmation: Bool = false
+    @State private var pendingSeriesUpdateTransaction: FinancialTransaction? = nil
     @State private var validationError: String? = nil
 
     public init(
@@ -455,7 +616,13 @@ public struct TransactionEditorSheet: View {
         _type = State(initialValue: existingTransaction?.type ?? initialType)
     }
 
+    private var isSelectedDateInFuture: Bool {
+        store.isDateInFuture(date)
+    }
+
     public var body: some View {
+        let availableModes = TransactionRecurrenceMode.availableModes(for: type)
+
         VStack(alignment: .leading, spacing: 18) {
             // Top bar
             HStack {
@@ -497,7 +664,7 @@ public struct TransactionEditorSheet: View {
                 if let firstCat = store.categories(for: newType).first {
                     categoryId = firstCat.id
                 }
-                if newType == .income {
+                if newType == .income && recurrenceMode == .installment {
                     recurrenceMode = .single
                 }
             }
@@ -506,7 +673,9 @@ public struct TransactionEditorSheet: View {
                 Section("Dados Principais") {
                     BorderedTextField(
                         label: "Nome da Transação",
-                        placeholder: "Ex: Supermercado Delta, Salário, Condomínio",
+                        placeholder: type == .expense
+                            ? "Ex: Energia CPFL, Água, Wellhub, Netflix, Prime Video"
+                            : "Ex: Salário Mensal, Aluguel Recebido, Dividendos",
                         text: $name
                     )
 
@@ -519,11 +688,16 @@ public struct TransactionEditorSheet: View {
                         )
 
                         DatePicker("Data", selection: $date, displayedComponents: [.date])
+                            .onChange(of: date) { _, newDate in
+                                if store.isDateInFuture(newDate) {
+                                    isPaid = false
+                                }
+                            }
                     }
 
                     BorderedTextField(
                         label: "Detalhes / Observações (Opcional)",
-                        placeholder: "Ex: Compras da semana, NF, observação",
+                        placeholder: "Ex: Assinatura anual, conta de consumo, NF",
                         text: $details
                     )
                 }
@@ -559,16 +733,16 @@ public struct TransactionEditorSheet: View {
                     }
                 }
 
-                if type == .expense && existingTransaction == nil {
-                    Section("Parcelamento ou Repetição Mensal (Despesas)") {
+                if existingTransaction == nil {
+                    Section(type == .expense ? "Modalidade de Pagamento (Único, Parcelado, Repetido ou Recorrente)" : "Modalidade de Recebimento (Único, Repetido ou Recorrente)") {
                         Picker("Modalidade", selection: $recurrenceMode) {
-                            ForEach(TransactionRecurrenceMode.allCases) { mode in
+                            ForEach(availableModes) { mode in
                                 Text(mode.title).tag(mode)
                             }
                         }
                         .pickerStyle(.segmented)
 
-                        if recurrenceMode == .installment {
+                        if recurrenceMode == .installment && type == .expense {
                             EditableIntegerStepperField(
                                 label: "Quantidade de Parcelas (Digite ou ajuste)",
                                 value: $installmentsOrMonthsCount,
@@ -593,15 +767,37 @@ public struct TransactionEditorSheet: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                        } else if recurrenceMode == .recurring {
+                            Picker("Frequência da Recorrência", selection: $recurrenceFrequency) {
+                                ForEach(RecurrenceFrequency.allCases) { freq in
+                                    Text(freq.title).tag(freq)
+                                }
+                            }
+                            if let recVal = BRLFormatters.parseAmount(amountText), recVal > 0 {
+                                Text("Cobrança/recebimento contínuo (\(recurrenceFrequency.shortTitle)) no valor de \(BRLFormatters.currency(recVal)) enquanto não for cancelado.")
+                                    .font(.caption)
+                                    .foregroundStyle(Color(hex: "#06B6D4"))
+                            } else {
+                                Text("Ideal para contas contínuas (Energia, Água, Wellhub, Netflix mensal, Prime Video anual, Salário). Existirá automaticamente nos períodos futuros até você cancelar.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
 
                 Section("Status, Consolidação e Anexo") {
                     Toggle(
-                        type == .expense ? "Pago (Desmarque para despesa não paga atual ou futura)" : "Recebido (Desmarque para receita futura/pendente)",
+                        type == .expense ? "Pago (Desmarque para despesa não paga)" : "Recebido (Desmarque para receita pendente)",
                         isOn: $isPaid
                     )
+                    .disabled(isSelectedDateInFuture)
+
+                    if isSelectedDateInFuture {
+                        Text("Não é possível marcar como \(type == .expense ? "paga" : "recebida") uma conta com data no futuro (\(BRLFormatters.shortDate(date))).")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
 
                     Toggle(
                         "Ignorar no consolidado (Apenas registro, não soma/desconta no saldo)",
@@ -661,7 +857,7 @@ public struct TransactionEditorSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 600, height: 610)
+        .frame(width: 640, height: 640)
         .onAppear {
             if let existing = existingTransaction {
                 type = existing.type
@@ -669,13 +865,19 @@ public struct TransactionEditorSheet: View {
                 details = existing.details
                 amountText = BRLFormatters.currency(existing.amount)
                 date = existing.date
-                isPaid = existing.isPaid
+                isPaid = store.isDateInFuture(existing.date) ? false : existing.isPaid
                 categoryId = existing.categoryId
                 accountId = existing.accountId
                 ignoreInConsolidated = existing.ignoreInConsolidated
                 attachmentPath = existing.attachmentPath
                 attachmentName = existing.attachmentName
+                recurrenceMode = existing.recurrenceMode
+                recurrenceFrequency = existing.recurrenceFrequency ?? .monthly
             } else {
+                // Sempre aponta a data inicial para o mês filtrado (`store.selectedMonth`)!
+                let defaultDate = store.defaultTransactionDateForSelectedMonth()
+                date = defaultDate
+                isPaid = !store.isDateInFuture(defaultDate)
                 categoryId = store.fallbackCategoryId(for: type)
                 accountId = store.accounts.first?.id ?? UUID()
             }
@@ -699,6 +901,35 @@ public struct TransactionEditorSheet: View {
         } message: {
             Text("Deseja realmente remover o anexo \"\(attachmentName ?? "")\" desta transação?")
         }
+        .alert(
+            "Como deseja aplicar a alteração?",
+            isPresented: Binding(
+                get: { pendingSeriesUpdateTransaction != nil },
+                set: { if !$0 { pendingSeriesUpdateTransaction = nil } }
+            ),
+            presenting: pendingSeriesUpdateTransaction
+        ) { updatedTx in
+            Button("Alterar em todas as parcelas") {
+                store.updateTransaction(updatedTx, scope: .allInSeries)
+                pendingSeriesUpdateTransaction = nil
+                dismiss()
+            }
+            Button("Somente naquela transação") {
+                store.updateTransaction(updatedTx, scope: .onlyThis)
+                pendingSeriesUpdateTransaction = nil
+                dismiss()
+            }
+            Button("Da transação atual e todas no futuro") {
+                store.updateTransaction(updatedTx, scope: .thisAndFuture)
+                pendingSeriesUpdateTransaction = nil
+                dismiss()
+            }
+            Button("Cancelar", role: .cancel) {
+                pendingSeriesUpdateTransaction = nil
+            }
+        } message: { updatedTx in
+            Text("Este lançamento faz parte de uma série (\(updatedTx.recurrenceMode.title.lowercased())). Escolha onde aplicar o novo valor de \(BRLFormatters.currency(updatedTx.amount)) e as demais alterações:")
+        }
     }
 
     private func saveAction() {
@@ -716,19 +947,28 @@ public struct TransactionEditorSheet: View {
             return
         }
 
+        let effectivePaid = store.isDateInFuture(date) ? false : isPaid
+
         if var existing = existingTransaction {
             existing.name = trimmedName
             existing.details = details.trimmingCharacters(in: .whitespacesAndNewlines)
             existing.amount = parsedAmount
             existing.date = date
             existing.type = type
-            existing.isPaid = isPaid
+            existing.isPaid = effectivePaid
             existing.categoryId = categoryId
             existing.accountId = accountId
             existing.ignoreInConsolidated = ignoreInConsolidated
             existing.attachmentPath = attachmentPath
             existing.attachmentName = attachmentName
-            store.updateTransaction(existing)
+
+            if existing.isPartOfSeries {
+                pendingSeriesUpdateTransaction = existing
+                return
+            } else {
+                store.updateTransaction(existing, scope: .onlyThis)
+                dismiss()
+            }
         } else {
             store.createTransaction(
                 name: trimmedName,
@@ -736,17 +976,18 @@ public struct TransactionEditorSheet: View {
                 amount: parsedAmount,
                 date: date,
                 type: type,
-                isPaid: isPaid,
+                isPaid: effectivePaid,
                 categoryId: categoryId,
                 accountId: accountId,
                 attachmentPath: attachmentPath,
                 attachmentName: attachmentName,
                 ignoreInConsolidated: ignoreInConsolidated,
-                recurrenceMode: type == .expense ? recurrenceMode : .single,
-                installmentsOrMonthsCount: installmentsOrMonthsCount
+                recurrenceMode: recurrenceMode,
+                installmentsOrMonthsCount: installmentsOrMonthsCount,
+                recurrenceFrequency: recurrenceFrequency
             )
+            dismiss()
         }
-        dismiss()
     }
 }
 

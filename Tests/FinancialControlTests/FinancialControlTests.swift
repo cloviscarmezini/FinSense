@@ -499,9 +499,9 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertEqual(store.remainingNominalAmount(for: loan2), 19950.00, accuracy: 0.01)
         XCTAssertEqual(store.projectedPayoffAmount(for: loan2), 16200.00, accuracy: 0.01)
 
-        // Marca uma parcela do primeiro empréstimo como paga para garantir que até transações pagas do empréstimo sejam removidas ao excluir o empréstimo
+        // Marca uma parcela do primeiro empréstimo como paga (na data da cobrança) para garantir que até transações pagas do empréstimo sejam removidas ao excluir o empréstimo
         if let firstTxLoan1 = store.transactions.first(where: { $0.linkedContractId == loan1.id }) {
-            store.toggleTransactionPaid(firstTxLoan1.id)
+            _ = store.toggleTransactionPaid(firstTxLoan1.id, referenceNow: firstTxLoan1.date)
         }
 
         // 3. Deleta o primeiro empréstimo
@@ -547,5 +547,149 @@ final class FinancialControlTests: XCTestCase {
         wrapper.textField.stringValue = "R$ 10,00"
         wrapper.updatePlaceholderVisibility()
         XCTAssertTrue(wrapper.placeholderLabel.isHidden, "Placeholder deve sumir assim que um valor for inserido")
+    }
+
+    func testRecurringExpensesAndIncomesSeriesEditScopesFuturePayBlockAndAnnualProjection() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(name: "Itaú", bankPresetId: "itau", customImagePath: nil, iconSymbol: "building.columns.fill", colorHex: "#EC7000", initialBalance: 1000.0)
+        store.addAccount(name: "Nubank", bankPresetId: "nubank", customImagePath: nil, iconSymbol: "creditcard.fill", colorHex: "#820AD1", initialBalance: 500.0)
+        let acc1 = store.accounts[0]
+        let acc2 = store.accounts[1]
+        let expCat = store.fallbackCategoryId(for: .expense)
+        let incCat = store.fallbackCategoryId(for: .income)
+
+        let refToday = BRLFormatters.shortDateFormatter.date(from: "06/11/2026")!
+
+        // 1. Verifica que a data padrão para nova transação aponta sempre para o mês filtrado
+        let march2027 = BRLFormatters.shortDateFormatter.date(from: "01/03/2027")!
+        store.selectedMonth = march2027
+        let defaultDateInFilteredMonth = store.defaultTransactionDateForSelectedMonth(today: refToday)
+        XCTAssertTrue(store.isInMonth(defaultDateInFilteredMonth, monthReference: march2027))
+        XCTAssertEqual(BRLFormatters.shortDate(defaultDateInFilteredMonth), "06/03/2027")
+
+        // 2. Verifica que não é possível pagar uma conta com data no futuro
+        let futureTxCreated = store.createTransaction(
+            name: "Conta no Futuro",
+            amount: 250.0,
+            date: defaultDateInFilteredMonth,
+            type: .expense,
+            isPaid: true, // Mesmo tentando criar como paga no futuro, deve ficar não paga
+            categoryId: expCat,
+            accountId: acc1.id,
+            recurrenceMode: .single,
+            referenceNow: refToday
+        ).first!
+        XCTAssertFalse(futureTxCreated.isPaid, "Transação com data futura não pode ser marcada como paga")
+        XCTAssertFalse(store.toggleTransactionPaid(futureTxCreated.id, referenceNow: refToday), "Não deve permitir pagar conta com data no futuro")
+        XCTAssertFalse(store.transactions.first(where: { $0.id == futureTxCreated.id })!.isPaid)
+
+        // 3. Cria pagamento recorrente mensal (Netflix) e anual (Prime Video) + recebimento recorrente mensal (Salário)
+        let netflixSeries = store.createTransaction(
+            name: "Netflix",
+            amount: 55.90,
+            date: refToday,
+            type: .expense,
+            isPaid: true,
+            categoryId: expCat,
+            accountId: acc1.id,
+            recurrenceMode: .recurring,
+            recurrenceFrequency: .monthly,
+            referenceNow: refToday
+        )
+        XCTAssertGreaterThanOrEqual(netflixSeries.count, 12)
+        XCTAssertTrue(netflixSeries.first!.isPaid)
+        XCTAssertFalse(netflixSeries[1].isPaid)
+
+        let primeSeries = store.createTransaction(
+            name: "Prime Video",
+            amount: 166.80,
+            date: refToday,
+            type: .expense,
+            isPaid: true,
+            categoryId: expCat,
+            accountId: acc1.id,
+            recurrenceMode: .recurring,
+            recurrenceFrequency: .annual,
+            referenceNow: refToday
+        )
+        XCTAssertGreaterThanOrEqual(primeSeries.count, 5)
+
+        let salarySeries = store.createTransaction(
+            name: "Salário Recorrente",
+            amount: 5000.0,
+            date: refToday,
+            type: .income,
+            isPaid: true,
+            categoryId: incCat,
+            accountId: acc1.id,
+            recurrenceMode: .recurring,
+            recurrenceFrequency: .monthly,
+            referenceNow: refToday
+        )
+        XCTAssertGreaterThanOrEqual(salarySeries.count, 12)
+
+        // 4. Testa os 3 escopos de edição de valor para séries (somente naquela, da atual e futuras, em todas)
+        // 4a. Somente naquela transação (.onlyThis)
+        var thirdNetflix = store.transactions
+            .filter { $0.seriesGroupId == netflixSeries.first!.seriesGroupId }
+            .sorted { $0.date < $1.date }[2]
+        thirdNetflix.amount = 65.90
+        store.updateTransaction(thirdNetflix, scope: .onlyThis, referenceNow: refToday)
+
+        let afterOnlyThis = store.transactions
+            .filter { $0.seriesGroupId == netflixSeries.first!.seriesGroupId }
+            .sorted { $0.date < $1.date }
+        XCTAssertEqual(afterOnlyThis[0].amount, 55.90, accuracy: 0.01)
+        XCTAssertEqual(afterOnlyThis[1].amount, 55.90, accuracy: 0.01)
+        XCTAssertEqual(afterOnlyThis[2].amount, 65.90, accuracy: 0.01)
+        XCTAssertEqual(afterOnlyThis[3].amount, 55.90, accuracy: 0.01)
+
+        // 4b. Da transação atual e todas no futuro (.thisAndFuture)
+        var fourthNetflix = afterOnlyThis[3]
+        fourthNetflix.amount = 79.90
+        store.updateTransaction(fourthNetflix, scope: .thisAndFuture, referenceNow: refToday)
+
+        let afterThisAndFuture = store.transactions
+            .filter { $0.seriesGroupId == netflixSeries.first!.seriesGroupId }
+            .sorted { $0.date < $1.date }
+        XCTAssertEqual(afterThisAndFuture[0].amount, 55.90, accuracy: 0.01)
+        XCTAssertEqual(afterThisAndFuture[2].amount, 65.90, accuracy: 0.01)
+        XCTAssertEqual(afterThisAndFuture[3].amount, 79.90, accuracy: 0.01)
+        XCTAssertEqual(afterThisAndFuture[4].amount, 79.90, accuracy: 0.01)
+
+        // 4c. Alterar em todas as parcelas/ocorrências (.allInSeries) — inclusive para Recebimento Recorrente
+        var secondSalary = store.transactions
+            .filter { $0.seriesGroupId == salarySeries.first!.seriesGroupId }
+            .sorted { $0.date < $1.date }[1]
+        secondSalary.amount = 5500.0
+        store.updateTransaction(secondSalary, scope: .allInSeries, referenceNow: refToday)
+
+        let allSalaries = store.transactions.filter { $0.seriesGroupId == salarySeries.first!.seriesGroupId }
+        XCTAssertTrue(allSalaries.allSatisfy { abs($0.amount - 5500.0) < 0.01 })
+
+        // 5. Reordenação de Contas e Categorias (Drag and Drop)
+        XCTAssertEqual(store.accounts.map(\.id), [acc1.id, acc2.id])
+        store.moveAccount(draggedId: acc2.id, targetId: acc1.id)
+        XCTAssertEqual(store.accounts.map(\.id), [acc2.id, acc1.id])
+
+        let expCatsBefore = store.categories(for: .expense)
+        if expCatsBefore.count >= 2 {
+            let firstCatId = expCatsBefore[0].id
+            let secondCatId = expCatsBefore[1].id
+            store.moveCategory(draggedId: secondCatId, targetId: firstCatId)
+            let expCatsAfter = store.categories(for: .expense)
+            XCTAssertEqual(expCatsAfter[0].id, secondCatId)
+            XCTAssertEqual(expCatsAfter[1].id, firstCatId)
+        }
+
+        // 6. Visão Anual no Dashboard: projeção até o último dia do ano (31/12/2026)
+        let annualInc2026 = store.annualIncome(for: refToday)
+        let annualExp2026 = store.annualExpense(for: refToday)
+        let projectedEnd2026 = store.accumulatedConsolidatedBalanceThroughYear(refToday)
+        // Em Nov e Dez de 2026 há 2 meses de Salário (2 * 5500 = 11000)
+        XCTAssertEqual(annualInc2026, 11000.0, accuracy: 0.01)
+        // Em Nov e Dez de 2026 há 2 meses de Netflix (55.90 + 55.90) + 1 Prime Video anual (166.80) = 278.60
+        XCTAssertEqual(annualExp2026, 278.60, accuracy: 0.01)
+        XCTAssertEqual(projectedEnd2026, 1500.0 + 11000.0 - 278.60, accuracy: 0.01)
     }
 }

@@ -47,7 +47,62 @@ public struct MainContentView: View {
                 List(selection: $store.selectedDestination) {
                     Section("Visão Geral & Fluxo") {
                         sidebarRow(.dashboard)
-                        sidebarRow(.transactions)
+
+                        Button {
+                            store.selectedDestination = .transactions
+                            store.selectedTransactionsSubmenu = .all
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: SidebarDestination.transactions.icon)
+                                    .foregroundStyle(
+                                        store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == .all
+                                            ? Color.accentColor
+                                            : .primary
+                                    )
+                                Text(SidebarDestination.transactions.title)
+                                    .font(.system(size: 13.5, weight: .medium))
+                                Spacer()
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .tag(SidebarDestination.transactions)
+
+                        ForEach([TransactionsSubmenu.expenses, TransactionsSubmenu.incomes]) { sub in
+                            Button {
+                                store.selectedDestination = .transactions
+                                store.selectedTransactionsSubmenu = sub
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: sub.icon)
+                                        .font(.caption)
+                                        .foregroundStyle(
+                                            store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == sub
+                                                ? (sub == .expenses ? Color(hex: "#EF4444") : Color(hex: "#10B981"))
+                                                : .secondary
+                                        )
+                                        .frame(width: 18)
+                                    Text(sub.title)
+                                        .font(.caption)
+                                        .fontWeight(
+                                            store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == sub
+                                                ? .semibold
+                                                : .regular
+                                        )
+                                        .foregroundStyle(
+                                            store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == sub
+                                                ? Color.primary
+                                                : .secondary
+                                        )
+                                    Spacer()
+                                }
+                                .padding(.leading, 18)
+                                .padding(.vertical, 2)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+
                         sidebarRow(.investments)
                     }
 

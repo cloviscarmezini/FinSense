@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct SettingsView: View {
     @ObservedObject public var store: FinancialDataStore
@@ -715,6 +716,7 @@ public struct AccountsManagementSectionView: View {
     @State private var showCreateAccountSheet: Bool = false
     @State private var editingAccount: BankAccount? = nil
     @State private var accountPendingDeletion: BankAccount? = nil
+    @State private var draggedAccountId: UUID? = nil
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -722,11 +724,17 @@ public struct AccountsManagementSectionView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Contas Bancárias & Carteiras")
                         .font(.title3.bold())
-                    Text("Base inicial com os principais bancos e ícones oficiais, além da opção de anexar qualquer imagem/ícone da sua máquina")
+                    Text("Base inicial com os principais bancos e ícones oficiais, opção de anexar imagem da máquina e reordenação arrastando e soltando")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                if store.accounts.count > 1 {
+                    Label("Arraste e solte para reordenar", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.trailing, 8)
+                }
                 Button {
                     showCreateAccountSheet = true
                 } label: {
@@ -757,7 +765,13 @@ public struct AccountsManagementSectionView: View {
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
                         ForEach(store.accounts) { account in
                             let currentBal = store.currentBalance(forAccount: account.id)
+                            let isDragging = draggedAccountId == account.id
                             HStack(spacing: 14) {
+                                Image(systemName: "line.3.horizontal")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .help("Arraste para reordenar esta conta")
+
                                 AccountAvatarView(account: account, size: 48)
 
                                 VStack(alignment: .leading, spacing: 4) {
@@ -801,9 +815,26 @@ public struct AccountsManagementSectionView: View {
                             }
                             .padding(16)
                             .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .stroke(isDragging ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDragging ? 2 : 1)
+                            )
+                            .opacity(isDragging ? 0.65 : 1.0)
+                            .onDrag {
+                                draggedAccountId = account.id
+                                return NSItemProvider(object: account.id.uuidString as NSString)
+                            }
+                            .onDrop(
+                                of: [UTType.text],
+                                delegate: AccountReorderDropDelegate(
+                                    targetAccountId: account.id,
+                                    draggedAccountId: $draggedAccountId,
+                                    store: store
+                                )
+                            )
                         }
                     }
+                    .animation(.easeInOut(duration: 0.18), value: store.accounts.map(\.id))
                 }
             }
         }
@@ -831,6 +862,28 @@ public struct AccountsManagementSectionView: View {
         } message: { account in
             Text("Deseja realmente excluir a conta \"\(account.name)\"? Esta ação não pode ser desfeita.")
         }
+    }
+}
+
+private struct AccountReorderDropDelegate: DropDelegate {
+    let targetAccountId: UUID
+    @Binding var draggedAccountId: UUID?
+    let store: FinancialDataStore
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedId = draggedAccountId, draggedId != targetAccountId else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            store.moveAccount(draggedId: draggedId, targetId: targetAccountId)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedAccountId = nil
+        return true
     }
 }
 
@@ -1035,6 +1088,7 @@ public struct CategoriesManagementSectionView: View {
     @State private var showCreateCategorySheet: Bool = false
     @State private var editingCategory: CategoryItem? = nil
     @State private var categoryPendingDeletion: CategoryItem? = nil
+    @State private var draggedCategoryId: UUID? = nil
 
     public var body: some View {
         let filteredCategories = store.categories(for: selectedTypeTab)
@@ -1050,6 +1104,13 @@ public struct CategoriesManagementSectionView: View {
 
                 Spacer()
 
+                if filteredCategories.count > 1 {
+                    Label("Arraste e solte para reordenar", systemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.trailing, 8)
+                }
+
                 Button {
                     showCreateCategorySheet = true
                 } label: {
@@ -1062,7 +1123,13 @@ public struct CategoriesManagementSectionView: View {
             ScrollView {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)], spacing: 14) {
                     ForEach(filteredCategories) { cat in
+                        let isDragging = draggedCategoryId == cat.id
                         HStack(spacing: 12) {
+                            Image(systemName: "line.3.horizontal")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .help("Arraste para reordenar esta categoria")
+
                             CategoryBadgeView(category: cat, size: 40)
 
                             VStack(alignment: .leading, spacing: 2) {
@@ -1094,9 +1161,26 @@ public struct CategoriesManagementSectionView: View {
                         }
                         .padding(12)
                         .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.07), lineWidth: 1))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .stroke(isDragging ? Color.accentColor : Color.primary.opacity(0.07), lineWidth: isDragging ? 2 : 1)
+                        )
+                        .opacity(isDragging ? 0.65 : 1.0)
+                        .onDrag {
+                            draggedCategoryId = cat.id
+                            return NSItemProvider(object: cat.id.uuidString as NSString)
+                        }
+                        .onDrop(
+                            of: [UTType.text],
+                            delegate: CategoryReorderDropDelegate(
+                                targetCategoryId: cat.id,
+                                draggedCategoryId: $draggedCategoryId,
+                                store: store
+                            )
+                        )
                     }
                 }
+                .animation(.easeInOut(duration: 0.18), value: filteredCategories.map(\.id))
             }
         }
         .sheet(isPresented: $showCreateCategorySheet) {
@@ -1123,6 +1207,28 @@ public struct CategoriesManagementSectionView: View {
         } message: { cat in
             Text("Deseja realmente excluir a categoria de \(cat.type.title.lowercased()) \"\(cat.name)\"? Esta ação não pode ser desfeita.")
         }
+    }
+}
+
+private struct CategoryReorderDropDelegate: DropDelegate {
+    let targetCategoryId: UUID
+    @Binding var draggedCategoryId: UUID?
+    let store: FinancialDataStore
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedId = draggedCategoryId, draggedId != targetCategoryId else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            store.moveCategory(draggedId: draggedId, targetId: targetCategoryId)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedCategoryId = nil
+        return true
     }
 }
 

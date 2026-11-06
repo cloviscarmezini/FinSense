@@ -610,6 +610,11 @@ public enum BRLFormatters {
         monthYearFormatter.string(from: date).capitalized
     }
 
+    public static func yearString(_ date: Date) -> String {
+        let year = Calendar(identifier: .gregorian).component(.year, from: date)
+        return String(year)
+    }
+
     public static func parseAmount(_ text: String) -> Double? {
         let cleaned = text
             .replacingOccurrences(of: "R$", with: "")
