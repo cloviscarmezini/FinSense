@@ -52,6 +52,7 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
 }
 
 public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
+    case general = "general"
     case llm = "llm"
     case accounts = "accounts"
     case categories = "categories"
@@ -60,6 +61,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
 
     public var title: String {
         switch self {
+        case .general: return "Gerais"
         case .llm: return "Configuração da LLM"
         case .accounts: return "Contas"
         case .categories: return "Categorias"
@@ -68,9 +70,62 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
 
     public var icon: String {
         switch self {
+        case .general: return "slider.horizontal.3"
         case .llm: return "cpu.fill"
         case .accounts: return "building.columns.fill"
         case .categories: return "square.grid.2x2.fill"
+        }
+    }
+}
+
+public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
+    case transactions
+    case accounts
+    case categories
+    case investments
+    case loans
+    case financings
+    case debts
+    case aiModelsAndChat
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .transactions: return "Transações (Despesas e Receitas)"
+        case .accounts: return "Contas Bancárias"
+        case .categories: return "Categorias"
+        case .investments: return "Investimentos"
+        case .loans: return "Empréstimos"
+        case .financings: return "Financiamentos"
+        case .debts: return "Dívidas"
+        case .aiModelsAndChat: return "Modelos Locais e Histórico da IA"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .transactions: return "Remove todos os lançamentos passados, atuais e futuros"
+        case .accounts: return "Remove todas as contas cadastradas"
+        case .categories: return "Remove as categorias atuais da base"
+        case .investments: return "Remove todos os grupos e saldos de investimentos"
+        case .loans: return "Remove todos os contratos de empréstimos"
+        case .financings: return "Remove todos os financiamentos de imóvel e carro"
+        case .debts: return "Remove todos os cards de dívidas abertas e quitadas"
+        case .aiModelsAndChat: return "Remove modelos baixados e histórico de conversas do chat"
+        }
+    }
+
+    public var icon: String {
+        switch self {
+        case .transactions: return "arrow.left.arrow.right.circle.fill"
+        case .accounts: return "building.columns.fill"
+        case .categories: return "square.grid.2x2.fill"
+        case .investments: return "chart.line.uptrend.xyaxis.circle.fill"
+        case .loans: return "banknote.fill"
+        case .financings: return "house.and.flag.fill"
+        case .debts: return "exclamationmark.shield.fill"
+        case .aiModelsAndChat: return "cpu.fill"
         }
     }
 }

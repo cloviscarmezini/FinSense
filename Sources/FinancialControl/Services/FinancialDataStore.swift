@@ -4,6 +4,7 @@ import SwiftUI
 // MARK: - Persistent Snapshot
 
 public struct FinancialDatabaseSnapshot: Codable {
+    public var schemaVersion: Int?
     public var accounts: [BankAccount]
     public var categories: [CategoryItem]
     public var transactions: [FinancialTransaction]
@@ -15,6 +16,7 @@ public struct FinancialDatabaseSnapshot: Codable {
     public var hasSeededInitialStatement: Bool
 
     public init(
+        schemaVersion: Int? = 2,
         accounts: [BankAccount] = [],
         categories: [CategoryItem] = [],
         transactions: [FinancialTransaction] = [],
@@ -25,6 +27,7 @@ public struct FinancialDatabaseSnapshot: Codable {
         chatHistory: [ChatMessage] = [],
         hasSeededInitialStatement: Bool = false
     ) {
+        self.schemaVersion = schemaVersion
         self.accounts = accounts
         self.categories = categories
         self.transactions = transactions
@@ -102,8 +105,10 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var chatHistory: [ChatMessage] = []
     @Published public var selectedMonth: Date = Date()
     @Published public var selectedDestination: SidebarDestination = .dashboard
-    @Published public var selectedSettingsSection: SettingsSection = .llm
+    @Published public var selectedSettingsSection: SettingsSection = .general
     @Published public var isAIChatPresented: Bool = false
+    @Published public var isLLMInstallAlertPresented: Bool = false
+    @Published public var pendingAIFeatureName: String = ""
 
     public let storageDirectory: URL
     public let databaseFileURL: URL
@@ -117,7 +122,7 @@ public final class FinancialDataStore: ObservableObject {
         return cal
     }()
 
-    public init(customDirectory: URL? = nil, seedStatementOnFirstLaunch: Bool = true) {
+    public init(customDirectory: URL? = nil, seedStatementOnFirstLaunch: Bool = false) {
         if let customDirectory {
             self.storageDirectory = customDirectory
         } else {
@@ -139,11 +144,12 @@ public final class FinancialDataStore: ObservableObject {
         try? fm.createDirectory(at: modelsDirectoryURL, withIntermediateDirectories: true)
     }
 
-    public func loadOrInitialize(seedStatementOnFirstLaunch: Bool = true) {
+    public func loadOrInitialize(seedStatementOnFirstLaunch: Bool = false) {
         let fm = FileManager.default
         if fm.fileExists(atPath: databaseFileURL.path),
            let data = try? Data(contentsOf: databaseFileURL),
-           let decoded = try? JSONDecoder().decode(FinancialDatabaseSnapshot.self, from: data) {
+           let decoded = try? JSONDecoder().decode(FinancialDatabaseSnapshot.self, from: data),
+           decoded.schemaVersion == 2 {
             self.accounts = decoded.accounts
             self.categories = decoded.categories
             self.transactions = decoded.transactions
@@ -153,18 +159,15 @@ public final class FinancialDataStore: ObservableObject {
             self.llmConfig = decoded.llmConfig
             self.chatHistory = decoded.chatHistory
             self.hasSeededInitialStatement = decoded.hasSeededInitialStatement
-
-            if self.categories.isEmpty {
-                self.categories = DefaultCategoriesCatalog.buildInitialCategories()
-            }
-            if self.accounts.isEmpty {
-                self.accounts = Self.buildDefaultAccounts()
-            }
         } else {
+            // Instalação limpa: sempre inicia zerado, apenas com as categorias padrões, sem despesas ou contas.
             self.categories = DefaultCategoriesCatalog.buildInitialCategories()
-            self.accounts = Self.buildDefaultAccounts()
-            self.investments = Self.buildDefaultInvestments(accounts: self.accounts)
-            self.debts = Self.buildDefaultSampleDebts()
+            self.accounts = []
+            self.transactions = []
+            self.investments = []
+            self.debts = []
+            self.contracts = []
+            self.llmConfig = LLMConfiguration()
             self.chatHistory = [
                 ChatMessage(
                     role: .assistant,
@@ -172,6 +175,9 @@ public final class FinancialDataStore: ObservableObject {
                 )
             ]
             if seedStatementOnFirstLaunch {
+                self.accounts = Self.buildDefaultAccounts()
+                self.investments = Self.buildDefaultInvestments(accounts: self.accounts)
+                self.debts = Self.buildDefaultSampleDebts()
                 seedAttachedItauStatementIfNeeded()
             }
             save()
@@ -180,6 +186,7 @@ public final class FinancialDataStore: ObservableObject {
 
     public func save() {
         let snapshot = FinancialDatabaseSnapshot(
+            schemaVersion: 2,
             accounts: accounts,
             categories: categories,
             transactions: transactions,
@@ -195,6 +202,103 @@ public final class FinancialDataStore: ObservableObject {
         if let data = try? encoder.encode(snapshot) {
             try? data.write(to: databaseFileURL, options: .atomic)
         }
+    }
+
+    // MARK: - Mandatory Local LLM Installation Check & Reset from Scratch ("Recomeçar do zero")
+
+    public var hasInstalledLLMModel: Bool {
+        !llmConfig.downloadedModels.isEmpty && llmConfig.selectedModel != nil
+    }
+
+    /// Qualquer opção que use IA obrigatoriamente solicita a instalação caso o usuário tente usar sem ter instalado previamente.
+    @discardableResult
+    public func requireInstalledLLM(forFeature featureName: String, action: () -> Void) -> Bool {
+        if hasInstalledLLMModel {
+            action()
+            return true
+        } else {
+            pendingAIFeatureName = featureName
+            isLLMInstallAlertPresented = true
+            return false
+        }
+    }
+
+    public func openAIChat() {
+        _ = requireInstalledLLM(forFeature: "Chat Financeiro com IA Local") {
+            isAIChatPresented = true
+        }
+    }
+
+    public func navigateToLLMInstallSettings() {
+        isLLMInstallAlertPresented = false
+        isAIChatPresented = false
+        selectedDestination = .settings
+        selectedSettingsSection = .llm
+    }
+
+    /// Recomeçar do zero: deleta da base todos os itens selecionados pelo usuário.
+    public func resetSelectedData(_ targets: Set<ResetDataTarget>) {
+        if targets.contains(.transactions) {
+            transactions.removeAll()
+            hasSeededInitialStatement = false
+        }
+        if targets.contains(.accounts) {
+            accounts.removeAll()
+        }
+        if targets.contains(.categories) {
+            categories.removeAll()
+        }
+        if targets.contains(.investments) {
+            investments.removeAll()
+            if !targets.contains(.transactions) {
+                transactions.removeAll { $0.linkedInvestmentId != nil }
+            }
+        }
+        if targets.contains(.loans) {
+            let loanIds = Set(contracts.filter { $0.kind == .loan }.map(\.id))
+            contracts.removeAll { $0.kind == .loan }
+            if !targets.contains(.transactions) {
+                transactions.removeAll { tx in
+                    guard let cid = tx.linkedContractId else { return false }
+                    return loanIds.contains(cid)
+                }
+            }
+        }
+        if targets.contains(.financings) {
+            let finIds = Set(contracts.filter { $0.kind == .financing }.map(\.id))
+            contracts.removeAll { $0.kind == .financing }
+            if !targets.contains(.transactions) {
+                transactions.removeAll { tx in
+                    guard let cid = tx.linkedContractId else { return false }
+                    return finIds.contains(cid)
+                }
+            }
+        }
+        if targets.contains(.debts) {
+            debts.removeAll()
+            if !targets.contains(.transactions) {
+                transactions.removeAll { $0.linkedDebtId != nil }
+            }
+        }
+        if targets.contains(.aiModelsAndChat) {
+            for model in llmConfig.downloadedModels {
+                let fileURL = URL(fileURLWithPath: model.localPath)
+                let parentDir = fileURL.deletingLastPathComponent()
+                try? FileManager.default.removeItem(at: fileURL)
+                if parentDir.lastPathComponent.contains("__") {
+                    try? FileManager.default.removeItem(at: parentDir)
+                }
+            }
+            llmConfig.downloadedModels.removeAll()
+            llmConfig.selectedModelId = nil
+            chatHistory = [
+                ChatMessage(
+                    role: .assistant,
+                    content: "Olá! Sou seu assistente financeiro local. Tenho acesso completo às suas contas, transações, investimentos, empréstimos, financiamentos e dívidas."
+                )
+            ]
+        }
+        save()
     }
 
     // MARK: - Default Accounts & Investments
@@ -378,7 +482,6 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     public func deleteAccount(_ accountId: UUID) {
-        guard accounts.count > 1 else { return }
         accounts.removeAll(where: { $0.id == accountId })
         save()
     }
@@ -395,6 +498,14 @@ public final class FinancialDataStore: ObservableObject {
 
     public func category(for id: UUID) -> CategoryItem? {
         categories.first(where: { $0.id == id })
+    }
+
+    public func fallbackCategoryId(for type: TransactionType, matchingSubstring: String? = nil) -> UUID {
+        if let sub = matchingSubstring,
+           let matched = categories.first(where: { $0.type == type && $0.name.localizedCaseInsensitiveContains(sub) }) {
+            return matched.id
+        }
+        return categories(for: type).first?.id ?? categories.first?.id ?? UUID()
     }
 
     public func addCategory(name: String, type: TransactionType, iconSymbol: String, colorHex: String, keywords: [String] = []) {
@@ -612,7 +723,7 @@ public final class FinancialDataStore: ObservableObject {
                 continue
             }
 
-            let fallbackCatId = categories(for: item.type).first?.id ?? categories.first!.id
+            let fallbackCatId = fallbackCategoryId(for: item.type)
             let tx = FinancialTransaction(
                 name: item.cleanTitle,
                 details: item.extractedDetails,
@@ -716,11 +827,9 @@ public final class FinancialDataStore: ObservableObject {
         let txType: TransactionType = movementType == .deposit ? .expense : .income
         let categoryId: UUID = {
             if movementType == .deposit {
-                return categories.first(where: { $0.name.contains("Aplicações") && $0.type == .expense })?.id
-                    ?? categories(for: .expense).first!.id
+                return fallbackCategoryId(for: .expense, matchingSubstring: "Aplicações")
             } else {
-                return categories.first(where: { $0.name.contains("Resgate") && $0.type == .income })?.id
-                    ?? categories(for: .income).first!.id
+                return fallbackCategoryId(for: .income, matchingSubstring: "Resgate")
             }
         }()
 
@@ -826,8 +935,7 @@ public final class FinancialDataStore: ObservableObject {
         let cleanNegotiated = abs(negotiatedAmount)
         let discount = debt.originalAmount - cleanNegotiated
 
-        let debtCategoryId = categories.first(where: { $0.name.contains("Dívidas") && $0.type == .expense })?.id
-            ?? categories(for: .expense).first!.id
+        let debtCategoryId = fallbackCategoryId(for: .expense, matchingSubstring: "Dívidas")
 
         let discountText = discount > 0.01
             ? " (Desconto na negociação: \(BRLFormatters.currency(discount)) sobre valor original de \(BRLFormatters.currency(debt.originalAmount)))"
@@ -937,8 +1045,7 @@ public final class FinancialDataStore: ObservableObject {
         notes: String = "",
         referenceDate: Date = Date()
     ) -> CreditContract {
-        let creditCategoryId = categories.first(where: { $0.name.contains("Empréstimos") && $0.type == .expense })?.id
-            ?? categories(for: .expense).first!.id
+        let creditCategoryId = fallbackCategoryId(for: .expense, matchingSubstring: "Empréstimos")
 
         let scheduleInfo = computePastInstallmentsAndFirstFutureDate(
             startDate: startDate,
