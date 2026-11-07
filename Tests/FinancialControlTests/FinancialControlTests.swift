@@ -1509,4 +1509,196 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertEqual(store.transactions.count, txCountBeforeImport + 1)
         XCTAssertTrue(store.transactions.contains(where: { $0.name == "Manutenção Filtro de Água" && abs($0.amount - 65.50) < 0.01 }))
     }
+
+    func testLocalLLMDebtPayoffUsesDilutedMonthlyCashFlowAndCurrentMonthBalance() throws {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Mercado Pago",
+            bankPresetId: "mercadopago",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#009EE3",
+            initialBalance: 0.0
+        )
+        let account = store.accounts.first!
+        let nov2026 = BRLFormatters.shortDateFormatter.date(from: "07/11/2026")!
+        let dec2026 = BRLFormatters.shortDateFormatter.date(from: "05/12/2026")!
+        store.selectedMonth = nov2026
+
+        let salaryCat = store.incomeCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Salário") }) ?? store.incomeCategories.first!
+        let housingCat = store.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Moradia") }) ?? store.expenseCategories.first!
+        let loanCat = store.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Empréstimo") }) ?? store.expenseCategories.first!
+
+        // 1. Movimentações de Outubro/2026 (Saldo fechado de Outubro: R$ 802,84)
+        let oct2026 = BRLFormatters.shortDateFormatter.date(from: "10/10/2026")!
+        _ = store.createTransaction(
+            name: "Receitas Outubro",
+            amount: 13932.72,
+            date: oct2026,
+            type: .income,
+            isPaid: true,
+            categoryId: salaryCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+        _ = store.createTransaction(
+            name: "Despesas Outubro",
+            amount: 13129.88,
+            date: oct2026,
+            type: .expense,
+            isPaid: true,
+            categoryId: housingCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+
+        // 2. Movimentações de Novembro/2026 (Mês Atual):
+        // Pagos até 07/11: Receita R$ 9.717,18 e Despesa R$ 9.339,09 -> Saldo realizado hoje = 802,84 + 378,09 = R$ 1.180,93
+        // Pendentes até o fim de Novembro: Receita R$ 2.690,00 e Despesa R$ 300,02 -> Saldo projetado fim de Novembro = R$ 3.570,91
+        _ = store.createTransaction(
+            name: "Salário Recebido Novembro",
+            amount: 9717.18,
+            date: BRLFormatters.shortDateFormatter.date(from: "05/11/2026")!,
+            type: .income,
+            isPaid: true,
+            categoryId: salaryCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+        _ = store.createTransaction(
+            name: "Contas Pagas Novembro",
+            amount: 9339.09,
+            date: BRLFormatters.shortDateFormatter.date(from: "06/11/2026")!,
+            type: .expense,
+            isPaid: true,
+            categoryId: housingCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+        _ = store.createTransaction(
+            name: "Salário + Vale JSL Pendente Novembro",
+            amount: 2690.00,
+            date: BRLFormatters.shortDateFormatter.date(from: "15/11/2026")!,
+            type: .income,
+            isPaid: false,
+            categoryId: salaryCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+        _ = store.createTransaction(
+            name: "Seguro Carro Pendente Novembro",
+            amount: 300.02,
+            date: BRLFormatters.shortDateFormatter.date(from: "22/11/2026")!,
+            type: .expense,
+            isPaid: false,
+            categoryId: housingCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+
+        XCTAssertEqual(store.totalCheckingBalanceNow, 1180.93, accuracy: 0.01)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: nov2026, includeProjectedUnpaid: true), 3570.91, accuracy: 0.01)
+
+        // 3. Receitas recorrentes a partir de Dezembro/2026 (R$ 17.255,00/mês)
+        _ = store.createTransaction(
+            name: "Salario Vivo",
+            amount: 14655.00,
+            date: dec2026,
+            type: .income,
+            isPaid: false,
+            categoryId: salaryCat.id,
+            accountId: account.id,
+            recurrenceMode: .recurring,
+            recurrenceFrequency: .monthly,
+            referenceNow: nov2026
+        )
+        _ = store.createTransaction(
+            name: "Salário + Vale JSL",
+            amount: 2600.00,
+            date: dec2026,
+            type: .income,
+            isPaid: false,
+            categoryId: salaryCat.id,
+            accountId: account.id,
+            recurrenceMode: .recurring,
+            recurrenceFrequency: .monthly,
+            referenceNow: nov2026
+        )
+
+        // 4. Financiamento imobiliário de longo prazo (332 parcelas até 2054!) + Empréstimos Santander (26 parcelas)
+        // Verifica que as 332 parcelas futuras NÃO distorcem a média mensal dividindo por 336 meses!
+        let parsedCaixa = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.caixaFinancingOCRText,
+            expectedKind: .financing
+        )
+        _ = store.createCreditContract(
+            kind: .financing,
+            name: parsedCaixa.name,
+            contractNumber: parsedCaixa.contractNumber,
+            loanSubtype: parsedCaixa.loanSubtype,
+            financingSubtype: parsedCaixa.financingSubtype,
+            amortizationSystem: parsedCaixa.amortizationSystem,
+            totalContractedAmount: parsedCaixa.totalContractedAmount,
+            outstandingBalance: parsedCaixa.outstandingBalance,
+            installmentAmount: parsedCaixa.installmentAmount,
+            billingDay: parsedCaixa.billingDay,
+            totalInstallments: parsedCaixa.totalInstallments,
+            monthlyInterestRate: parsedCaixa.monthlyInterestRate,
+            startDate: parsedCaixa.startDate,
+            accountId: account.id,
+            overridePastInstallmentsCount: parsedCaixa.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: parsedCaixa.firstFutureBillingDate
+        )
+
+        _ = store.createTransaction(
+            name: "Empréstimo Santander",
+            amount: 4509.81 * 26.0,
+            date: BRLFormatters.shortDateFormatter.date(from: "07/12/2026")!,
+            type: .expense,
+            isPaid: false,
+            categoryId: loanCat.id,
+            accountId: account.id,
+            recurrenceMode: .installment,
+            installmentsOrMonthsCount: 26,
+            referenceNow: nov2026
+        )
+
+        // 5. Cadastra múltiplas dívidas em aberto (incluindo "Cartão de crédito Sam’s" com apóstrofo curvo e outra dívida alta)
+        store.addDebt(
+            name: "Cartão de crédito Sam’s",
+            customImagePath: nil,
+            bankPresetId: nil,
+            iconSymbol: "creditcard.fill",
+            colorHex: "#009EE3",
+            originalAmount: 1681.00,
+            contractedDate: nil
+        )
+        store.addDebt(
+            name: "Cartão de crédito Santander",
+            customImagePath: nil,
+            bankPresetId: "santander",
+            iconSymbol: "creditcard.fill",
+            colorHex: "#EC0000",
+            originalAmount: 29414.80,
+            contractedDate: nil
+        )
+
+        // 6. Pergunta exatamente como o usuário digitou (com apóstrofo reto ' em "Cartão de crédito Sam's")
+        let samsResponse = LocalLLMService.generateFinancialResponse(
+            for: "Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida \"Cartão de crédito Sam's\"?",
+            store: store,
+            modelLabel: "Qwen2.5"
+        )
+
+        // Deve encontrar "Cartão de crédito Sam’s" (R$ 1.681,00)
+        XCTAssertTrue(samsResponse.contains("Cartão de crédito Sam’s"))
+        XCTAssertTrue(samsResponse.contains("1.681,00"))
+        // NÃO deve gerar falso alerta de déficit mensal nem dividir receitas de 5 anos por 336 meses
+        XCTAssertFalse(samsResponse.contains("Alerta de Fluxo de Caixa para Quitação"))
+        XCTAssertFalse(samsResponse.contains("-R$ 486,87"))
+        // Deve concluir que já é possível quitar ao fim do mês atual (Novembro de 2026), com saldo projetado de R$ 3.570,91 e sobra de R$ 1.889,91
+        XCTAssertTrue(samsResponse.localizedCaseInsensitiveContains("Quitação já ao Fim do Mês Atual"))
+        XCTAssertTrue(samsResponse.contains("3.570,91"))
+        XCTAssertTrue(samsResponse.contains("1.889,91"))
+    }
 }

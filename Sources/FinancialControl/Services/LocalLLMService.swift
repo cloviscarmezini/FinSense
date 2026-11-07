@@ -428,13 +428,29 @@ public final class LocalLLMService: ObservableObject {
         return generateComprehensiveDatabaseOverview(store: store)
     }
 
-    // MARK: - Specialized Analysis 1: Debt Payoff Timeline ("Cartão Mercado Pago", etc.)
+    private static func normalizeForMatching(_ text: String) -> String {
+        let folded = text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+        let quoteChars = CharacterSet(charactersIn: "'’‘`´\"“”")
+        let withoutQuotes = folded.components(separatedBy: quoteChars).joined()
+        let components = withoutQuotes.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
+        return components.joined(separator: " ")
+    }
+
+    // MARK: - Specialized Analysis 1: Debt Payoff Timeline ("Cartão Mercado Pago", "Cartão de crédito Sam's", etc.)
 
     private static func analyzeDebtPayoffTimeline(
         prompt: String,
         normalizedPrompt: String,
         store: FinancialDataStore
     ) -> String {
+        let cal = Calendar.current
+        let referenceMonth = store.selectedMonth
+
+        // Garante que receitas e despesas recorrentes estejam materializadas para o horizonte de análise (24 meses)
+        if let horizonDate = cal.date(byAdding: .month, value: 24, to: referenceMonth) {
+            store.ensureRecurringTransactionsMaterialized(upTo: horizonDate)
+        }
+
         // Verifica se há dados suficientes de transações (receitas e despesas) na base de dados
         let activeTransactions = store.transactions.filter { !$0.ignoreInConsolidated }
         let incomeTransactions = activeTransactions.filter { $0.type == .income }
@@ -449,16 +465,29 @@ public final class LocalLLMService: ObservableObject {
             """
         }
 
-        // Procura a dívida mencionada na pergunta ou na lista de dívidas
+        // Procura a dívida mencionada na pergunta (normalizando apóstrofos curvos/retos e acentuação)
         let allOpenDebts = store.activeDebts
+        let matchablePrompt = normalizeForMatching(prompt)
+
         var targetDebt: DebtItem? = allOpenDebts.first { debt in
-            let debtNorm = debt.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
-            return normalizedPrompt.contains(debtNorm)
+            let debtNorm = normalizeForMatching(debt.name)
+            return !debtNorm.isEmpty && matchablePrompt.contains(debtNorm)
+        }
+
+        if targetDebt == nil {
+            // Tenta correspondência pelos termos distintivos do nome da dívida (ex: "sams", "mercado pago", "nubank", "carrefour")
+            let genericDebtWords: Set<String> = ["cartao", "de", "credito", "divida", "banco", "fatura", "conta", "emprestimo"]
+            targetDebt = allOpenDebts.first { debt in
+                let tokens = normalizeForMatching(debt.name)
+                    .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                    .filter { $0.count >= 3 && !genericDebtWords.contains($0) }
+                return !tokens.isEmpty && tokens.allSatisfy { matchablePrompt.contains($0) }
+            }
         }
 
         if targetDebt == nil && normalizedPrompt.contains("mercado pago") {
             targetDebt = allOpenDebts.first {
-                $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")).contains("mercado pago")
+                normalizeForMatching($0.name).contains("mercado pago")
             }
         }
         if targetDebt == nil && allOpenDebts.count == 1 {
@@ -483,90 +512,240 @@ public final class LocalLLMService: ObservableObject {
             }
         }
 
-        // Separa movimentações operacionais reais de transferências internas de Cofrinhos/CDB para medir a geração de caixa real
-        let operationalIncomes = incomeTransactions.filter { tx in
+        // Filtra movimentações operacionais (ignorando transferências internas de Cofrinhos/CDB)
+        let operationalIncomesAll = incomeTransactions.filter { tx in
             let u = tx.name.uppercased()
             return !u.contains("RESGATE COFRINHOS") && !u.contains("RESGATE CDB")
         }
-        let operationalExpenses = expenseTransactions.filter { tx in
+        let operationalExpensesAll = expenseTransactions.filter { tx in
             let u = tx.name.uppercased()
             return !u.contains("APLICACAO COFRINHOS") && !u.contains("APLICACAO CDB")
         }
+        let effectiveIncomesAll = operationalIncomesAll.isEmpty ? incomeTransactions : operationalIncomesAll
+        let effectiveExpensesAll = operationalExpensesAll.isEmpty ? expenseTransactions : operationalExpensesAll
 
-        let totalGrossIncome = incomeTransactions.reduce(0.0) { $0 + $1.amount }
-        let totalGrossExpense = expenseTransactions.reduce(0.0) { $0 + $1.amount }
+        // Constrói janela realista de meses operacionais em torno do mês atual (-2 meses até +6 meses)
+        // Isso garante que financiamentos de 30 anos (ex: 332 parcelas até 2054) sejam considerados APENAS
+        // pela parcela diluída em cada mês, sem distorcer a média dividindo por 336 meses!
+        var candidateWindowMonths: [Date] = []
+        for offset in -2...6 {
+            if let m = cal.date(byAdding: .month, value: offset, to: referenceMonth) {
+                candidateWindowMonths.append(m)
+            }
+        }
 
-        let totalRealIncome = operationalIncomes.isEmpty ? totalGrossIncome : operationalIncomes.reduce(0.0) { $0 + $1.amount }
-        let totalRealExpense = operationalExpenses.isEmpty ? totalGrossExpense : operationalExpenses.reduce(0.0) { $0 + $1.amount }
+        let completeWindowMonths = candidateWindowMonths.filter { m in
+            let inc = effectiveIncomesAll.filter { store.isInMonth($0.date, monthReference: m) }.reduce(0.0) { $0 + $1.amount }
+            let exp = effectiveExpensesAll.filter { store.isInMonth($0.date, monthReference: m) }.reduce(0.0) { $0 + $1.amount }
+            return inc > 0 && exp > 0
+        }
 
-        // Calcula número de meses distintos com movimentação relevante
-        let cal = Calendar.current
-        let activeMonthsSet = Set(operationalExpenses.map { tx -> String in
-            let c = cal.dateComponents([.year, .month], from: tx.date)
-            return "\(c.year ?? 2026)-\(c.month ?? 1)"
-        })
-        let monthsCount = Double(max(activeMonthsSet.count, 1))
+        let referenceMonths: [Date]
+        if !completeWindowMonths.isEmpty {
+            referenceMonths = completeWindowMonths
+        } else {
+            let activeNearMonths = candidateWindowMonths.filter { m in
+                effectiveIncomesAll.contains { store.isInMonth($0.date, monthReference: m) } ||
+                effectiveExpensesAll.contains { store.isInMonth($0.date, monthReference: m) }
+            }
+            if !activeNearMonths.isEmpty {
+                referenceMonths = activeNearMonths
+            } else {
+                // Fallback: agrupa os até 6 meses mais recentes com movimentação até o mês selecionado
+                var uniqueMonthDates: [String: Date] = [:]
+                for tx in (effectiveIncomesAll + effectiveExpensesAll) {
+                    let comps = cal.dateComponents([.year, .month], from: tx.date)
+                    let key = String(format: "%04d-%02d", comps.year ?? 2026, comps.month ?? 1)
+                    if uniqueMonthDates[key] == nil {
+                        uniqueMonthDates[key] = tx.date
+                    }
+                }
+                let sortedKeys = uniqueMonthDates.keys.sorted()
+                let chosenKeys = Array(sortedKeys.prefix(6))
+                referenceMonths = chosenKeys.compactMap { uniqueMonthDates[$0] }
+            }
+        }
 
-        let avgMonthlyIncome = totalRealIncome / monthsCount
-        let avgMonthlyExpense = totalRealExpense / monthsCount
+        let monthsCount = Double(max(referenceMonths.count, 1))
+        let windowIncomes = effectiveIncomesAll.filter { tx in
+            referenceMonths.contains { store.isInMonth(tx.date, monthReference: $0) }
+        }
+        let windowExpenses = effectiveExpensesAll.filter { tx in
+            referenceMonths.contains { store.isInMonth(tx.date, monthReference: $0) }
+        }
+
+        let totalWindowIncome = windowIncomes.reduce(0.0) { $0 + $1.amount }
+        let totalWindowExpense = windowExpenses.reduce(0.0) { $0 + $1.amount }
+
+        let avgMonthlyIncome = totalWindowIncome / monthsCount
+        let avgMonthlyExpense = totalWindowExpense / monthsCount
         let avgMonthlySurplus = avgMonthlyIncome - avgMonthlyExpense
 
-        // Maiores categorias de gasto operacional para recomendar economia prática
+        // Maiores categorias de gasto operacional na janela mensal analisada (com parcelas diluídas mês a mês)
         var catTotals: [String: Double] = [:]
-        for tx in operationalExpenses {
+        for tx in windowExpenses {
             let catName = store.category(for: tx.categoryId)?.name ?? "Outros"
             catTotals[catName, default: 0.0] += tx.amount
         }
         let topCategories = catTotals.sorted { $0.value > $1.value }.prefix(3)
-        let topCatsDescription = topCategories.map { "\($0.key) (\(BRLFormatters.currency($0.value / monthsCount))/mês)" }.joined(separator: ", ")
+        let topCatsDescription = topCategories.isEmpty
+            ? "Sem despesas categorizadas no período"
+            : topCategories.map { "\($0.key) (\(BRLFormatters.currency($0.value / monthsCount))/mês)" }.joined(separator: ", ")
 
+        // Dados da dívida analisada individualmente (sem somar outras dívidas abertas!)
         let debtValue = debt.originalAmount
         let checkingNow = store.totalCheckingBalanceNow
         let consolidatedInvNow = store.consolidatedInvestmentsBalance
+        let immediateLiquidityNow = checkingNow + consolidatedInvNow
+
+        // Fluxo de caixa e balanço do mês atual (referenceMonth)
+        let currentMonthLabel = BRLFormatters.monthYear(referenceMonth)
+        let currentMonthIncome = store.monthlyIncome(for: referenceMonth)
+        let currentMonthExpense = store.monthlyExpense(for: referenceMonth)
+        let currentMonthRemainingProvision = store.totalRemainingProvision(for: referenceMonth)
+        let currentMonthNet = currentMonthIncome - currentMonthExpense - currentMonthRemainingProvision
+        let projectedEndOfCurrentMonth = store.accumulatedConsolidatedBalance(throughMonth: referenceMonth, includeProjectedUnpaid: true)
+
+        // Simulação mês a mês da evolução do saldo acumulado (para o mês atual + próximos 5 meses)
+        struct MonthlyBalanceSnapshot {
+            let monthOffset: Int
+            let monthDate: Date
+            let monthLabel: String
+            let income: Double
+            let expense: Double
+            let provisionRemaining: Double
+            let netFlow: Double
+            let projectedAccumulatedBalance: Double
+        }
+
+        var monthlySnapshots: [MonthlyBalanceSnapshot] = []
+        var runningProjectedBalance = projectedEndOfCurrentMonth
+
+        monthlySnapshots.append(
+            MonthlyBalanceSnapshot(
+                monthOffset: 0,
+                monthDate: referenceMonth,
+                monthLabel: currentMonthLabel,
+                income: currentMonthIncome,
+                expense: currentMonthExpense,
+                provisionRemaining: currentMonthRemainingProvision,
+                netFlow: currentMonthNet,
+                projectedAccumulatedBalance: projectedEndOfCurrentMonth
+            )
+        )
+
+        var payoffMonthSnapshot: MonthlyBalanceSnapshot? = projectedEndOfCurrentMonth >= debtValue ? monthlySnapshots.first : nil
+
+        for offset in 1...24 {
+            guard let futureMonth = cal.date(byAdding: .month, value: offset, to: referenceMonth) else { continue }
+            let scheduledInc = store.monthlyIncome(for: futureMonth)
+            let scheduledExp = store.monthlyExpense(for: futureMonth)
+            let provRem = store.totalRemainingProvision(for: futureMonth)
+
+            let effInc = scheduledInc > 0 ? scheduledInc : avgMonthlyIncome
+            let effExp = scheduledExp > 0 ? scheduledExp : avgMonthlyExpense
+            let netFlow = effInc - effExp - provRem
+            runningProjectedBalance += netFlow
+
+            let snap = MonthlyBalanceSnapshot(
+                monthOffset: offset,
+                monthDate: futureMonth,
+                monthLabel: BRLFormatters.monthYear(futureMonth),
+                income: effInc,
+                expense: effExp,
+                provisionRemaining: provRem,
+                netFlow: netFlow,
+                projectedAccumulatedBalance: runningProjectedBalance
+            )
+            if offset <= 5 {
+                monthlySnapshots.append(snap)
+            }
+            if payoffMonthSnapshot == nil && runningProjectedBalance >= debtValue {
+                payoffMonthSnapshot = snap
+            }
+        }
+
+        let monthlyEvolutionLines = monthlySnapshots.map { snap -> String in
+            let balanceAfterDebt = snap.projectedAccumulatedBalance - debtValue
+            let statusBadge = balanceAfterDebt >= 0
+                ? "✅ Quita e sobram \(BRLFormatters.currency(balanceAfterDebt))"
+                : "⏳ Faltam \(BRLFormatters.currency(abs(balanceAfterDebt)))"
+            return "- **\(snap.monthLabel):** Receitas \(BRLFormatters.currency(snap.income)) | Despesas \(BRLFormatters.currency(snap.expense)) (Saldo do mês: `\(snap.netFlow >= 0 ? "+" : "")\(BRLFormatters.currency(snap.netFlow))`) → **Balanço Projetado: \(BRLFormatters.currency(snap.projectedAccumulatedBalance))** (*\(statusBadge)*)"
+        }.joined(separator: "\n")
 
         var timelineSection = ""
-        if avgMonthlySurplus > 0 {
+        if immediateLiquidityNow >= debtValue {
+            let remainingImmediate = immediateLiquidityNow - debtValue
+            let remainingEndOfMonth = projectedEndOfCurrentMonth - debtValue
+            timelineSection = """
+            ### 3. Conclusão e Tempo para Quitação
+            - **Quitação Imediata (Hoje) ou até o Fim de \(currentMonthLabel):** Você **já possui saldo disponível suficiente** para quitar **\(debt.name)** (**\(BRLFormatters.currency(debtValue))**) agora mesmo ou no fechamento deste mês!
+            - **Com o saldo já realizado hoje (\(BRLFormatters.currency(immediateLiquidityNow))):** Quitando à vista hoje, ainda restam **\(BRLFormatters.currency(remainingImmediate))** disponíveis.
+            - **No fechamento do mês atual (\(currentMonthLabel)):** Com o resultado líquido do mês (**\(currentMonthNet >= 0 ? "+" : "")\(BRLFormatters.currency(currentMonthNet))**), seu saldo projetado de fim de mês atinge **\(BRLFormatters.currency(projectedEndOfCurrentMonth))**. Pagando a dívida de **\(BRLFormatters.currency(debtValue))**, você termina **\(currentMonthLabel)** com **\(BRLFormatters.currency(remainingEndOfMonth))** de saldo positivo.
+            """
+        } else if projectedEndOfCurrentMonth >= debtValue {
+            let missingToday = max(0.0, debtValue - immediateLiquidityNow)
+            let remainingAfterPayoff = projectedEndOfCurrentMonth - debtValue
+            let exactMonthsByAverage = avgMonthlySurplus > 0 ? (debtValue / avgMonthlySurplus) : 1.0
+            timelineSection = """
+            ### 3. Conclusão e Tempo para Quitação
+            - **Quitação já ao Fim do Mês Atual (\(currentMonthLabel) — menos de 1 mês):** Considerando o seu fluxo de caixa e o balanço deste mês, **você já consegue quitar integralmente a dívida \(debt.name) (\(BRLFormatters.currency(debtValue))) até o fim de \(currentMonthLabel)**!
+            - **Por que você já consegue quitar neste mês:** Hoje seu saldo realizado em conta/investimentos é de **\(BRLFormatters.currency(immediateLiquidityNow))** (faltariam apenas **\(BRLFormatters.currency(missingToday))** se pagasse hoje), mas com as receitas e despesas de **\(currentMonthLabel)** (resultado líquido de **+\(BRLFormatters.currency(currentMonthNet))** no mês), seu **Saldo Projetado de Fim de Mês chega a \(BRLFormatters.currency(projectedEndOfCurrentMonth))**.
+            - **Sobra após quitar no fim deste mês:** Ao pagar **\(BRLFormatters.currency(debtValue))** até o final de **\(currentMonthLabel)**, ainda sobrarão **\(BRLFormatters.currency(remainingAfterPayoff))** de saldo projetado na sua conta.
+            - **Pela geração média mensal isolada (\(BRLFormatters.currency(max(avgMonthlySurplus, 0)))/mês):** Essa dívida equivale a apenas `\(String(format: "%.1f", exactMonthsByAverage))` mês de sobra operacional média (ou seja, é absorvida dentro de **1 mês** de fluxo).
+            """
+        } else if let targetSnap = payoffMonthSnapshot {
+            let monthsNeeded = targetSnap.monthOffset
+            let remainingAfterPayoff = targetSnap.projectedAccumulatedBalance - debtValue
+            let exactMonthsByAverage = avgMonthlySurplus > 0 ? (debtValue / avgMonthlySurplus) : Double(monthsNeeded)
+            timelineSection = """
+            ### 3. Conclusão e Tempo para Quitação
+            - **Prazo Projetado pelo Balanço Mensal:** Mantendo seu padrão de receitas e despesas (com parcelas de empréstimos/financiamentos devidamente diluídas mês a mês), você acumulará saldo suficiente para quitar **\(debt.name)** (**\(BRLFormatters.currency(debtValue))**) em **\(monthsNeeded) \(monthsNeeded == 1 ? "mês" : "meses")** — no fechamento de **\(targetSnap.monthLabel)**.
+            - **Balanço Projetado em \(targetSnap.monthLabel):** **\(BRLFormatters.currency(targetSnap.projectedAccumulatedBalance))** (quitando a dívida, restarão **\(BRLFormatters.currency(remainingAfterPayoff))** de saldo).
+            - **Pelo ritmo médio de sobra mensal (\(BRLFormatters.currency(max(avgMonthlySurplus, 0)))/mês):** Equivale a cerca de `\(String(format: "%.1f", exactMonthsByAverage))` meses de capacidade de poupança líquida.
+            """
+        } else if avgMonthlySurplus > 0 {
             let exactMonths = debtValue / avgMonthlySurplus
             let roundedMonths = Int(ceil(exactMonths))
-            let daysEstimate = Int(ceil(exactMonths * 30.0))
-
-            // Simulação reduzindo 15% das despesas variáveis
             let optimizedSurplus = avgMonthlySurplus + (avgMonthlyExpense * 0.15)
             let optimizedMonths = Int(ceil(debtValue / max(optimizedSurplus, 1)))
-
             timelineSection = """
-            ### Estimativa de Tempo para Quitação
-            - **Pelo seu ritmo atual de sobra mensal (\(BRLFormatters.currency(avgMonthlySurplus))/mês):** Você levará aproximadamente **\(roundedMonths) \(roundedMonths == 1 ? "mês" : "meses")** (cerca de **\(daysEstimate) dias**, ou `\(String(format: "%.1f", exactMonths))` meses exatos) para acumular **\(BRLFormatters.currency(debtValue))** usando exclusivamente a sobra líquida do seu fluxo mensal.
-            - **Com otimização de 15% nos gastos variáveis (\(BRLFormatters.currency(optimizedSurplus))/mês):** O prazo cai para **\(optimizedMonths) \(optimizedMonths == 1 ? "mês" : "meses")**.
-            - **Usando saldo já disponível hoje:** Você possui atualmente **\(BRLFormatters.currency(checkingNow))** em conta corrente e **\(BRLFormatters.currency(consolidatedInvNow))** em investimentos consolidados — portanto, **já possui liquidez imediata suficiente** caso deseje quitar à vista hoje (especialmente se negociar um desconto na aba **Dívidas -> Pagar**).
+            ### 3. Estimativa de Tempo para Quitação
+            - **Pelo seu ritmo atual de sobra mensal (\(BRLFormatters.currency(avgMonthlySurplus))/mês):** Você levará aproximadamente **\(roundedMonths) \(roundedMonths == 1 ? "mês" : "meses")** (`\(String(format: "%.1f", exactMonths))` meses exatos) para acumular **\(BRLFormatters.currency(debtValue))** usando a sobra líquida do seu fluxo mensal.
+            - **Com otimização de 15% nos gastos (\(BRLFormatters.currency(optimizedSurplus))/mês):** O prazo cai para **\(optimizedMonths) \(optimizedMonths == 1 ? "mês" : "meses")**.
             """
         } else {
             let monthlyDeficit = abs(avgMonthlySurplus)
             let necessaryCut = monthlyDeficit + (debtValue / 6.0)
             timelineSection = """
-            ### Alerta de Fluxo de Caixa para Quitação
-            - No ritmo atual, suas despesas operacionais médias (**\(BRLFormatters.currency(avgMonthlyExpense))/mês**) superam suas receitas médias (**\(BRLFormatters.currency(avgMonthlyIncome))/mês**) em **\(BRLFormatters.currency(monthlyDeficit))/mês**.
-            - Mantendo esse padrão sem cortes, o fluxo mensal isolado não gera sobra para quitar a dívida.
+            ### 3. Alerta de Fluxo de Caixa para Quitação
+            - No ritmo médio recente, suas despesas operacionais (**\(BRLFormatters.currency(avgMonthlyExpense))/mês**) superam suas receitas médias (**\(BRLFormatters.currency(avgMonthlyIncome))/mês**) em **\(BRLFormatters.currency(monthlyDeficit))/mês**.
             - **Plano de ação:** Reduzindo cerca de **\(BRLFormatters.currency(necessaryCut))/mês** nos seus principais gastos (\(topCatsDescription)), você quitará **\(debt.name)** em **6 meses**, ou pode utilizar parte do seu saldo atual disponível (**\(BRLFormatters.currency(checkingNow))** em conta + **\(BRLFormatters.currency(consolidatedInvNow))** em investimentos) para negociar um acordo à vista com desconto.
             """
         }
 
         return """
         ## Análise de Quitação da Dívida: **\(debt.name)**
-        *Baseado em 100% dos registros da sua base de dados (\(activeTransactions.count) transações analisadas)*
+        *Análise focada exclusivamente nesta dívida e no seu fluxo de caixa mensal (com parcelas de contratos diluídas mês a mês)*
 
-        ### 1. Dados da Dívida
+        ### 1. Dados da Dívida Analisada
         - **Dívida:** \(debt.name)
-        - **Valor Original:** **\(BRLFormatters.currency(debtValue))**
+        - **Valor para Quitação:** **\(BRLFormatters.currency(debtValue))**
         - **Data de Contratação:** \(debt.contractedDate.map { BRLFormatters.shortDate($0) } ?? "Não informada")
+        - **Saldo Disponível Hoje (Conta + Investimentos):** **\(BRLFormatters.currency(immediateLiquidityNow))**
+        - **Saldo Projetado no Fim do Mês Atual (\(currentMonthLabel)):** **\(BRLFormatters.currency(projectedEndOfCurrentMonth))**
 
-        ### 2. Seu Padrão de Receitas vs. Modo de Gastar
-        - **Receita Operacional Média:** **\(BRLFormatters.currency(avgMonthlyIncome)) / mês** (Total no período: \(BRLFormatters.currency(totalRealIncome)))
-        - **Despesa Operacional Média:** **\(BRLFormatters.currency(avgMonthlyExpense)) / mês** (Total no período: \(BRLFormatters.currency(totalRealExpense)))
-        - **Resultado Líquido Mensal (Capacidade de Poupança):** **\(BRLFormatters.currency(avgMonthlySurplus)) / mês**
-        - **Principais focos de gasto:** \(topCatsDescription)
+        ### 2. Seu Padrão Mensal de Receitas vs. Modo de Gastar
+        - **Mês Atual (\(currentMonthLabel)):** Receitas de **\(BRLFormatters.currency(currentMonthIncome))** vs. Despesas de **\(BRLFormatters.currency(currentMonthExpense))** → Saldo líquido do mês: **\(currentMonthNet >= 0 ? "+" : "")\(BRLFormatters.currency(currentMonthNet))**
+        - **Receita Operacional Média Mensal:** **\(BRLFormatters.currency(avgMonthlyIncome)) / mês** *(base de \(Int(monthsCount)) meses operacionais)*
+        - **Despesa Operacional Média Mensal (diluída no tempo):** **\(BRLFormatters.currency(avgMonthlyExpense)) / mês**
+        - **Resultado Líquido Mensal Médio (Capacidade de Poupança):** **\(avgMonthlySurplus >= 0 ? "+" : "")\(BRLFormatters.currency(avgMonthlySurplus)) / mês**
+        - **Principais focos de gasto mensal:** \(topCatsDescription)
 
         \(timelineSection)
+
+        ### 4. Evolução do Fluxo de Caixa e Balanço dos Meses
+        \(monthlyEvolutionLines)
         """
     }
 
@@ -577,9 +756,13 @@ public final class LocalLLMService: ObservableObject {
         store: FinancialDataStore
     ) -> String {
         let cal = Calendar.current
+        let now = Date()
         let range = extractDateRange(from: prompt)
-        let startDate = range?.start ?? BRLFormatters.shortDateFormatter.date(from: "01/01/2026") ?? Date()
+        let startDate = range?.start ?? BRLFormatters.shortDateFormatter.date(from: "01/01/2026") ?? now
         let endDate = range?.end ?? BRLFormatters.shortDateFormatter.date(from: "01/12/2026") ?? cal.date(byAdding: .month, value: 12, to: startDate)!
+
+        let horizonLimitDate = cal.date(byAdding: .month, value: 12, to: max(now, endDate)) ?? endDate
+        store.ensureRecurringTransactionsMaterialized(upTo: horizonLimitDate)
 
         let allValidTxs = store.transactions.filter { !$0.ignoreInConsolidated }
         if allValidTxs.isEmpty && store.activeDebts.isEmpty && store.contracts.isEmpty {
@@ -610,13 +793,13 @@ public final class LocalLLMService: ObservableObject {
         let avgMonthlyRealIncome = (realIncomes.reduce(0.0) { $0 + $1.amount }) / activeMonthsDivisor
         let avgMonthlyRealExpense = (realExpenses.reduce(0.0) { $0 + $1.amount }) / activeMonthsDivisor
 
-        // Compromissos futuros já agendados (parcelas de empréstimos, financiamentos, compras parceladas/repetidas)
-        let now = Date()
+        // Compromissos futuros já agendados dentro de um horizonte realista de 12 meses (diluídos mês a mês)
+        let twelveMonthsFromNow = cal.date(byAdding: .month, value: 12, to: now) ?? endDate
         let futureUnpaidExpenses = allValidTxs
-            .filter { $0.type == .expense && !$0.isPaid && $0.date >= cal.startOfDay(for: now) }
+            .filter { $0.type == .expense && !$0.isPaid && $0.date >= cal.startOfDay(for: now) && $0.date <= twelveMonthsFromNow }
             .sorted { $0.date < $1.date }
         let futureUnpaidIncomes = allValidTxs
-            .filter { $0.type == .income && !$0.isPaid && $0.date >= cal.startOfDay(for: now) }
+            .filter { $0.type == .income && !$0.isPaid && $0.date >= cal.startOfDay(for: now) && $0.date <= twelveMonthsFromNow }
             .sorted { $0.date < $1.date }
 
         let currentAccountBalance = store.totalCheckingBalanceNow
@@ -624,13 +807,13 @@ public final class LocalLLMService: ObservableObject {
         let totalLiquidPatrimony = store.totalConsolidatedPatrimonyNow
         let debtSummary = store.buildComprehensiveDebtSummary(referenceDate: now)
 
-        // Simulação cronológica futura para encontrar a data exata em que o saldo entra em débito (< 0)
+        // Simulação cronológica futura para encontrar a data exata em que o saldo entra em débito (< 0) nos próximos 12 meses
         var runningBalance = currentAccountBalance
         var firstOverdraftDate: Date? = nil
         var firstOverdraftAmount: Double = 0.0
         var firstOverdraftReason: String = ""
 
-        // 1) Verifica eventos futuros exatos agendados no banco de dados
+        // 1) Verifica eventos futuros exatos agendados no banco de dados (dentro do horizonte de 12 meses)
         let futureEvents = (futureUnpaidExpenses + futureUnpaidIncomes).sorted { $0.date < $1.date }
         for event in futureEvents {
             runningBalance += event.signedAmount
@@ -641,27 +824,22 @@ public final class LocalLLMService: ObservableObject {
             }
         }
 
-        // 2) Projeção mensal para os próximos 12 meses combinando compromissos agendados + padrão médio de gastos
+        // 2) Projeção mensal para os próximos 6 meses combinando compromissos agendados diluídos no mês + padrão médio
         var projectionLines: [String] = []
-        var simulatedCash = currentAccountBalance
+        var simulatedCash = store.accumulatedConsolidatedBalance(throughMonth: now, includeProjectedUnpaid: true)
         let monthlyRecurringLoansAndFinancings = store.activeContracts(for: .loan).reduce(0.0) { $0 + $1.installmentAmount } +
                                                  store.activeContracts(for: .financing).reduce(0.0) { $0 + $1.installmentAmount }
 
-        // Gasto mensal projetado considerando histórico de despesas + parcelas de contratos ativos
         let projectedMonthlyOutflow = max(avgMonthlyRealExpense, monthlyRecurringLoansAndFinancings)
-        // Se o usuário perguntar quando entrará em débito caso mantenha apenas seus gastos ou seu fluxo líquido:
         let projectedMonthlyNet = avgMonthlyRealIncome - projectedMonthlyOutflow
 
         for mOffset in 1...6 {
             guard let futureMonth = cal.date(byAdding: .month, value: mOffset, to: now) else { continue }
-            let scheduledExpInMonth = futureUnpaidExpenses
-                .filter { store.isInMonth($0.date, monthReference: futureMonth) }
-                .reduce(0.0) { $0 + $1.amount }
-            let scheduledIncInMonth = futureUnpaidIncomes
-                .filter { store.isInMonth($0.date, monthReference: futureMonth) }
-                .reduce(0.0) { $0 + $1.amount }
+            let scheduledExpInMonth = store.monthlyExpense(for: futureMonth)
+            let scheduledIncInMonth = store.monthlyIncome(for: futureMonth)
+            let remainingProvInMonth = store.totalRemainingProvision(for: futureMonth)
 
-            let effectiveOut = scheduledExpInMonth > 0 ? max(scheduledExpInMonth, avgMonthlyRealExpense) : projectedMonthlyOutflow
+            let effectiveOut = (scheduledExpInMonth > 0 ? scheduledExpInMonth : projectedMonthlyOutflow) + remainingProvInMonth
             let effectiveIn = scheduledIncInMonth > 0 ? scheduledIncInMonth : avgMonthlyRealIncome
             let monthDelta = effectiveIn - effectiveOut
             simulatedCash += monthDelta
@@ -673,7 +851,7 @@ public final class LocalLLMService: ObservableObject {
             if simulatedCash < 0 && firstOverdraftDate == nil {
                 firstOverdraftDate = futureMonth
                 firstOverdraftAmount = simulatedCash
-                firstOverdraftReason = "pelo déficit acumulado mensal de \(BRLFormatters.currency( abs(monthDelta) ))/mês"
+                firstOverdraftReason = "pelo déficit acumulado mensal de \(BRLFormatters.currency(abs(monthDelta)))/mês"
             }
         }
 
