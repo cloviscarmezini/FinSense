@@ -11,6 +11,7 @@ public struct FinancialDatabaseSnapshot: Codable {
     public var investments: [InvestmentItem]
     public var debts: [DebtItem]
     public var contracts: [CreditContract]
+    public var provisions: [CategoryProvision]?
     public var llmConfig: LLMConfiguration
     public var chatHistory: [ChatMessage]
     public var hasSeededInitialStatement: Bool
@@ -23,6 +24,7 @@ public struct FinancialDatabaseSnapshot: Codable {
         investments: [InvestmentItem] = [],
         debts: [DebtItem] = [],
         contracts: [CreditContract] = [],
+        provisions: [CategoryProvision]? = [],
         llmConfig: LLMConfiguration = LLMConfiguration(),
         chatHistory: [ChatMessage] = [],
         hasSeededInitialStatement: Bool = false
@@ -34,6 +36,7 @@ public struct FinancialDatabaseSnapshot: Codable {
         self.investments = investments
         self.debts = debts
         self.contracts = contracts
+        self.provisions = provisions
         self.llmConfig = llmConfig
         self.chatHistory = chatHistory
         self.hasSeededInitialStatement = hasSeededInitialStatement
@@ -101,6 +104,7 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var investments: [InvestmentItem] = []
     @Published public var debts: [DebtItem] = []
     @Published public var contracts: [CreditContract] = []
+    @Published public var provisions: [CategoryProvision] = []
     @Published public var llmConfig: LLMConfiguration = LLMConfiguration()
     @Published public var chatHistory: [ChatMessage] = []
     @Published public var selectedMonth: Date = Date()
@@ -158,6 +162,7 @@ public final class FinancialDataStore: ObservableObject {
             self.investments = decoded.investments
             self.debts = decoded.debts
             self.contracts = decoded.contracts
+            self.provisions = decoded.provisions ?? []
             self.llmConfig = decoded.llmConfig
             self.chatHistory = decoded.chatHistory
             self.hasSeededInitialStatement = decoded.hasSeededInitialStatement
@@ -169,6 +174,7 @@ public final class FinancialDataStore: ObservableObject {
             self.investments = []
             self.debts = []
             self.contracts = []
+            self.provisions = []
             self.llmConfig = LLMConfiguration()
             self.chatHistory = [
                 ChatMessage(
@@ -195,6 +201,7 @@ public final class FinancialDataStore: ObservableObject {
             investments: investments,
             debts: debts,
             contracts: contracts,
+            provisions: provisions,
             llmConfig: llmConfig,
             chatHistory: chatHistory,
             hasSeededInitialStatement: hasSeededInitialStatement
@@ -249,6 +256,7 @@ public final class FinancialDataStore: ObservableObject {
         }
         if targets.contains(.categories) {
             categories.removeAll()
+            provisions.removeAll()
         }
         if targets.contains(.investments) {
             investments.removeAll()
@@ -582,6 +590,14 @@ public final class FinancialDataStore: ObservableObject {
         categories.first(where: { $0.id == id })
     }
 
+    public var expenseCategories: [CategoryItem] {
+        categories(for: .expense)
+    }
+
+    public var incomeCategories: [CategoryItem] {
+        categories(for: .income)
+    }
+
     public func fallbackCategoryId(for type: TransactionType, matchingSubstring: String? = nil) -> UUID {
         if let sub = matchingSubstring,
            let matched = categories.first(where: { $0.type == type && $0.name.localizedCaseInsensitiveContains(sub) }) {
@@ -612,6 +628,7 @@ public final class FinancialDataStore: ObservableObject {
 
     public func deleteCategory(_ categoryId: UUID) {
         categories.removeAll(where: { $0.id == categoryId })
+        provisions.removeAll(where: { $0.categoryId == categoryId })
         save()
     }
 
@@ -1935,6 +1952,175 @@ public final class FinancialDataStore: ObservableObject {
         monthlyIncome(for: monthReference, onlyPaid: onlyPaid) - monthlyExpense(for: monthReference, onlyPaid: onlyPaid)
     }
 
+    // MARK: - Category Provisions (Orçamento por Envelopes Dinâmicos)
+
+    /// Define ou atualiza o teto estimado para uma categoria em um mês específico.
+    /// Se `estimatedAmount <= 0`, desativa/zera a provisão daquele mês em diante.
+    public func setCategoryProvision(
+        categoryId: UUID,
+        estimatedAmount: Double,
+        for monthReference: Date,
+        repeatForFutureMonths: Bool = true
+    ) {
+        let year = calendar.component(.year, from: monthReference)
+        let month = calendar.component(.month, from: monthReference)
+        let sanitizedAmount = max(0.0, estimatedAmount)
+
+        if let existingIndex = provisions.firstIndex(where: {
+            $0.categoryId == categoryId && $0.year == year && $0.month == month
+        }) {
+            if sanitizedAmount <= 0 {
+                // Verifica se existe uma provisão recorrente anterior que seria herdada caso removêssemos o registro.
+                let targetKey = year * 100 + month
+                let hasPriorRecurring = provisions.contains {
+                    $0.categoryId == categoryId &&
+                    $0.yearMonthKey < targetKey &&
+                    $0.repeatForFutureMonths &&
+                    $0.estimatedAmount > 0
+                }
+                if hasPriorRecurring {
+                    provisions[existingIndex].estimatedAmount = 0
+                    provisions[existingIndex].repeatForFutureMonths = repeatForFutureMonths
+                } else {
+                    provisions.remove(at: existingIndex)
+                }
+            } else {
+                provisions[existingIndex].estimatedAmount = sanitizedAmount
+                provisions[existingIndex].repeatForFutureMonths = repeatForFutureMonths
+            }
+        } else {
+            if sanitizedAmount > 0 {
+                let newProvision = CategoryProvision(
+                    categoryId: categoryId,
+                    year: year,
+                    month: month,
+                    estimatedAmount: sanitizedAmount,
+                    repeatForFutureMonths: repeatForFutureMonths
+                )
+                provisions.append(newProvision)
+            } else {
+                let targetKey = year * 100 + month
+                let hasPriorRecurring = provisions.contains {
+                    $0.categoryId == categoryId &&
+                    $0.yearMonthKey < targetKey &&
+                    $0.repeatForFutureMonths &&
+                    $0.estimatedAmount > 0
+                }
+                if hasPriorRecurring {
+                    let stopper = CategoryProvision(
+                        categoryId: categoryId,
+                        year: year,
+                        month: month,
+                        estimatedAmount: 0,
+                        repeatForFutureMonths: repeatForFutureMonths
+                    )
+                    provisions.append(stopper)
+                }
+            }
+        }
+
+        save()
+    }
+
+    /// Remove ou zera a provisão de uma categoria a partir do mês informado.
+    public func removeCategoryProvision(categoryId: UUID, for monthReference: Date) {
+        setCategoryProvision(
+            categoryId: categoryId,
+            estimatedAmount: 0,
+            for: monthReference,
+            repeatForFutureMonths: true
+        )
+    }
+
+    /// Retorna a provisão efetiva vigente para a categoria no mês (`monthReference`),
+    /// respeitando a configuração de recorrência (`repeatForFutureMonths`) de meses anteriores.
+    public func effectiveProvision(
+        forCategory categoryId: UUID,
+        in monthReference: Date
+    ) -> (provision: CategoryProvision, isInherited: Bool)? {
+        let targetYear = calendar.component(.year, from: monthReference)
+        let targetMonth = calendar.component(.month, from: monthReference)
+        let targetKey = targetYear * 100 + targetMonth
+
+        let candidates = provisions
+            .filter { $0.categoryId == categoryId && $0.yearMonthKey <= targetKey }
+            .sorted { a, b in
+                if a.yearMonthKey == b.yearMonthKey {
+                    return a.createdAt < b.createdAt
+                }
+                return a.yearMonthKey < b.yearMonthKey
+            }
+
+        guard let latest = candidates.last else { return nil }
+
+        if latest.yearMonthKey == targetKey {
+            guard latest.estimatedAmount > 0 else { return nil }
+            return (latest, false)
+        } else {
+            guard latest.repeatForFutureMonths && latest.estimatedAmount > 0 else { return nil }
+            return (latest, true)
+        }
+    }
+
+    /// Gasto Realizado ($G_{real}$): Soma de todas as despesas reais confirmadas ou pendentes vinculadas à categoria no mês.
+    public func realizedMonthlyExpense(forCategory categoryId: UUID, in monthReference: Date) -> Double {
+        transactionsForMonth(monthReference)
+            .filter { $0.type == .expense && !$0.ignoreInConsolidated && $0.categoryId == categoryId }
+            .reduce(0.0) { $0 + $1.amount }
+    }
+
+    /// Envelope calculado para uma categoria específica no mês de referência, caso possua teto ativo.
+    public func provisionEnvelope(
+        forCategory categoryId: UUID,
+        in monthReference: Date
+    ) -> CategoryProvisionEnvelope? {
+        guard let cat = category(for: categoryId), cat.type == .expense else { return nil }
+        guard let effective = effectiveProvision(forCategory: categoryId, in: monthReference) else { return nil }
+        let realized = realizedMonthlyExpense(forCategory: categoryId, in: monthReference)
+        return CategoryProvisionEnvelope(
+            category: cat,
+            provision: effective.provision,
+            isInheritedFromPreviousMonth: effective.isInherited,
+            estimatedAmount: effective.provision.estimatedAmount,
+            realizedExpense: realized
+        )
+    }
+
+    /// Lista todos os envelopes de provisão ativos no mês de referência.
+    public func provisionEnvelopes(for monthReference: Date) -> [CategoryProvisionEnvelope] {
+        expenseCategories.compactMap { cat in
+            provisionEnvelope(forCategory: cat.id, in: monthReference)
+        }
+        .sorted { a, b in
+            if a.rawProgressPercentage == b.rawProgressPercentage {
+                return a.estimatedAmount > b.estimatedAmount
+            }
+            return a.rawProgressPercentage > b.rawProgressPercentage
+        }
+    }
+
+    /// Soma total dos tetos estimados ($\sum T_{estimado}$) configurados para o mês.
+    public func totalEstimatedProvision(for monthReference: Date) -> Double {
+        provisionEnvelopes(for: monthReference)
+            .reduce(0.0) { $0 + $1.estimatedAmount }
+    }
+
+    /// Soma total do saldo estimado remanescente ($\sum P_{restante}$) no mês.
+    public func totalRemainingProvision(for monthReference: Date) -> Double {
+        provisionEnvelopes(for: monthReference)
+            .reduce(0.0) { $0 + $1.remainingProvision }
+    }
+
+    /// Despesa total projetada do mês considerando despesas reais + provisões variáveis remanescentes ($\sum P_{restante}$).
+    public func projectedMonthlyExpense(for monthReference: Date) -> Double {
+        monthlyExpense(for: monthReference, onlyPaid: false) + totalRemainingProvision(for: monthReference)
+    }
+
+    /// Resultado líquido projetado do mês considerando receitas - despesas reais - provisões remanescentes.
+    public func projectedMonthlyNetBalance(for monthReference: Date) -> Double {
+        monthlyIncome(for: monthReference, onlyPaid: false) - projectedMonthlyExpense(for: monthReference)
+    }
+
     // MARK: - Annual Summaries & End-of-Year Projections (31/12)
 
     public func transactionsForYear(_ yearReference: Date) -> [FinancialTransaction] {
@@ -2062,7 +2248,8 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Saldo acumulado consolidado até o fim do mês informado (`monthReference`),
-    /// incluindo saldo inicial das contas + movimentações até aquele mês + investimentos marcados com "Exibir no consolidado".
+    /// incluindo saldo inicial das contas + movimentações até aquele mês + investimentos marcados com "Exibir no consolidado"
+    /// menos a provisão de gastos variáveis remanescentes ($\sum P_{restante}$) quando `includeProjectedUnpaid == true`.
     public func accumulatedConsolidatedBalance(throughMonth monthReference: Date, includeProjectedUnpaid: Bool = true) -> Double {
         let cutoff = endOfMonth(for: monthReference)
         let initialAccountsSum = accounts.reduce(0.0) { $0 + $1.initialBalance }
@@ -2078,7 +2265,9 @@ public final class FinancialDataStore: ObservableObject {
             .filter(\.showInConsolidated)
             .reduce(0.0) { $0 + $1.balance }
 
-        return initialAccountsSum + transactionsDelta + consolidatedInvestmentsSum
+        let remainingProvisions = includeProjectedUnpaid ? totalRemainingProvision(for: monthReference) : 0.0
+
+        return initialAccountsSum + transactionsDelta + consolidatedInvestmentsSum - remainingProvisions
     }
 
     public var totalCheckingBalanceNow: Double {

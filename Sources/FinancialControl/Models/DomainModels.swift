@@ -1007,3 +1007,108 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
         self.modelUsed = modelUsed
     }
 }
+
+// MARK: - Provisão de Gastos Estimados (Orçamento por Envelopes Dinâmicos)
+
+public enum ProvisionStatusLevel: String, Codable, CaseIterable, Hashable {
+    case normal = "Normal"      // Abaixo de 80%
+    case warning = "Alerta"     // Entre 80% e 100%
+    case exceeded = "Estourado" // Acima de 100% (estourado)
+
+    public var title: String { rawValue }
+
+    public var colorHex: String {
+        switch self {
+        case .normal: return "#10B981"   // Verde
+        case .warning: return "#F59E0B"  // Amarelo / Laranja
+        case .exceeded: return "#EF4444" // Vermelho
+        }
+    }
+
+    public var iconSymbol: String {
+        switch self {
+        case .normal: return "checkmark.circle.fill"
+        case .warning: return "exclamationmark.triangle.fill"
+        case .exceeded: return "xmark.octagon.fill"
+        }
+    }
+}
+
+public struct CategoryProvision: Identifiable, Codable, Hashable {
+    public var id: UUID
+    public var categoryId: UUID
+    public var year: Int
+    public var month: Int
+    public var estimatedAmount: Double
+    public var repeatForFutureMonths: Bool
+    public var createdAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        categoryId: UUID,
+        year: Int,
+        month: Int,
+        estimatedAmount: Double,
+        repeatForFutureMonths: Bool = true,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.categoryId = categoryId
+        self.year = year
+        self.month = min(max(month, 1), 12)
+        self.estimatedAmount = max(0, estimatedAmount)
+        self.repeatForFutureMonths = repeatForFutureMonths
+        self.createdAt = createdAt
+    }
+
+    public var yearMonthKey: Int {
+        year * 100 + month
+    }
+}
+
+public struct CategoryProvisionEnvelope: Identifiable, Hashable {
+    public var id: UUID { category.id }
+    public let category: CategoryItem
+    public let provision: CategoryProvision
+    public var provisionId: UUID { provision.id }
+    public let estimatedAmount: Double          // T_estimado
+    public let realizedExpense: Double          // G_real (soma das despesas reais confirmadas ou pendentes na categoria no mês)
+    public let remainingProvision: Double       // P_restante = max(0, T_estimado - G_real)
+    public let exceededAmount: Double           // max(0, G_real - T_estimado)
+    public let rawProgressPercentage: Double    // (G_real / T_estimado) * 100
+    public let clampedProgressPercentage: Double // min(100, (G_real / T_estimado) * 100)
+    public let status: ProvisionStatusLevel
+    public var repeatForFutureMonths: Bool { provision.repeatForFutureMonths }
+    public let isInheritedFromPreviousMonth: Bool
+
+    public init(
+        category: CategoryItem,
+        provision: CategoryProvision,
+        isInheritedFromPreviousMonth: Bool,
+        estimatedAmount: Double,
+        realizedExpense: Double
+    ) {
+        self.category = category
+        self.provision = provision
+        let cleanEstimate = max(0.0, estimatedAmount)
+        let cleanRealized = max(0.0, realizedExpense)
+        self.estimatedAmount = cleanEstimate
+        self.realizedExpense = cleanRealized
+        self.remainingProvision = max(0.0, cleanEstimate - cleanRealized)
+        self.exceededAmount = max(0.0, cleanRealized - cleanEstimate)
+
+        let rawPct = cleanEstimate > 0.0001 ? ((cleanRealized / cleanEstimate) * 100.0) : 0.0
+        self.rawProgressPercentage = rawPct
+        self.clampedProgressPercentage = min(100.0, max(0.0, rawPct))
+
+        if cleanRealized > cleanEstimate + 0.001 {
+            self.status = .exceeded
+        } else if rawPct >= 80.0 - 0.001 {
+            self.status = .warning
+        } else {
+            self.status = .normal
+        }
+
+        self.isInheritedFromPreviousMonth = isInheritedFromPreviousMonth
+    }
+}

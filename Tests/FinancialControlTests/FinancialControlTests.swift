@@ -1049,4 +1049,128 @@ final class FinancialControlTests: XCTestCase {
         defaults.set(false, forKey: importTextBoxKey)
         XCTAssertFalse(defaults.bool(forKey: importTextBoxKey))
     }
+
+    func testDynamicCategoryProvisionsAcceptanceCriteriaAndLLMCommands() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Itaú Principal",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 1000.0
+        )
+        let acc = store.accounts.first!
+        let nov2026 = BRLFormatters.shortDateFormatter.date(from: "10/11/2026")!
+        let dec2026 = BRLFormatters.shortDateFormatter.date(from: "10/12/2026")!
+        store.selectedMonth = nov2026
+
+        let foodCat = store.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Alimentação") })!
+        let fuelCat = store.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Combustível") })!
+
+        // Critério 1: A criação de uma estimativa não altera o saldo operacional atual nem cria registros em "Todas as Transações"
+        store.setCategoryProvision(
+            categoryId: foodCat.id,
+            estimatedAmount: 300.0,
+            for: nov2026,
+            repeatForFutureMonths: true
+        )
+        XCTAssertTrue(store.transactions.isEmpty)
+        XCTAssertEqual(store.totalCheckingBalanceNow, 1000.0, accuracy: 0.01)
+        XCTAssertEqual(store.totalConsolidatedPatrimonyNow, 1000.0, accuracy: 0.01)
+        XCTAssertEqual(store.totalRemainingProvision(for: nov2026), 300.0, accuracy: 0.01)
+        // Saldo Projetado de fim de mês considera a provisão restante (1000 - 300 = 700)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: nov2026, includeProjectedUnpaid: true), 700.0, accuracy: 0.01)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: nov2026, includeProjectedUnpaid: false), 1000.0, accuracy: 0.01)
+
+        // Critério 2: Ao adicionar uma nova despesa real de R$ 50 em uma categoria provisionada de R$ 300,
+        // a provisão restante do Dashboard cai imediatamente para R$ 250 e não há duplicação no saldo projetado.
+        _ = store.createTransaction(
+            name: "Lanche iFood",
+            amount: 50.0,
+            date: nov2026,
+            type: .expense,
+            isPaid: true,
+            categoryId: foodCat.id,
+            accountId: acc.id,
+            ignoreInConsolidated: false
+        )
+        let envAfter50 = store.provisionEnvelope(forCategory: foodCat.id, in: nov2026)!
+        XCTAssertEqual(envAfter50.realizedExpense, 50.0, accuracy: 0.01)
+        XCTAssertEqual(envAfter50.remainingProvision, 250.0, accuracy: 0.01)
+        XCTAssertEqual(envAfter50.status, .normal)
+        XCTAssertEqual(store.totalRemainingProvision(for: nov2026), 250.0, accuracy: 0.01)
+        // Saldo operacional atual caiu para 950, mas o Saldo Projetado continua 700 (950 - 250 = 700, sem duplicar!)
+        XCTAssertEqual(store.totalCheckingBalanceNow, 950.0, accuracy: 0.01)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: nov2026, includeProjectedUnpaid: true), 700.0, accuracy: 0.01)
+
+        // Faixa de Alerta (entre 80% e 100%): adicionando mais R$ 200 (Total G_real = R$ 250 de R$ 300 -> 83.33%)
+        _ = store.createTransaction(
+            name: "Restaurante Domingo",
+            amount: 200.0,
+            date: nov2026,
+            type: .expense,
+            isPaid: false, // despesa pendente também abate a provisão!
+            categoryId: foodCat.id,
+            accountId: acc.id,
+            ignoreInConsolidated: false
+        )
+        let envWarning = store.provisionEnvelope(forCategory: foodCat.id, in: nov2026)!
+        XCTAssertEqual(envWarning.realizedExpense, 250.0, accuracy: 0.01)
+        XCTAssertEqual(envWarning.remainingProvision, 50.0, accuracy: 0.01)
+        XCTAssertEqual(envWarning.status, .warning)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: nov2026, includeProjectedUnpaid: true), 700.0, accuracy: 0.01)
+
+        // Critério 3: Ao atingir ou estourar a estimativa, a provisão remanescente torna-se zero
+        // e o saldo projetado reflete apenas os gastos reais que constam no extrato.
+        _ = store.createTransaction(
+            name: "Jantar Especial",
+            amount: 90.0,
+            date: nov2026,
+            type: .expense,
+            isPaid: true,
+            categoryId: foodCat.id,
+            accountId: acc.id,
+            ignoreInConsolidated: false
+        )
+        let envExceeded = store.provisionEnvelope(forCategory: foodCat.id, in: nov2026)!
+        XCTAssertEqual(envExceeded.realizedExpense, 340.0, accuracy: 0.01)
+        XCTAssertEqual(envExceeded.remainingProvision, 0.0, accuracy: 0.01)
+        XCTAssertEqual(envExceeded.exceededAmount, 40.0, accuracy: 0.01)
+        XCTAssertEqual(envExceeded.clampedProgressPercentage, 100.0, accuracy: 0.01)
+        XCTAssertEqual(envExceeded.status, .exceeded)
+        // Saldo projetado reflete apenas os R$ 340 reais: 1000 - 340 = 660
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: nov2026, includeProjectedUnpaid: true), 660.0, accuracy: 0.01)
+
+        // Critério 4: Mudanças de mês respeitam as configurações de recorrência automática das previsões
+        store.setCategoryProvision(
+            categoryId: fuelCat.id,
+            estimatedAmount: 400.0,
+            for: nov2026,
+            repeatForFutureMonths: false // Não repetir para dezembro
+        )
+        let decFoodEnv = store.provisionEnvelope(forCategory: foodCat.id, in: dec2026)
+        let decFuelEnv = store.provisionEnvelope(forCategory: fuelCat.id, in: dec2026)
+        XCTAssertNotNil(decFoodEnv)
+        XCTAssertEqual(decFoodEnv?.estimatedAmount ?? 0, 300.0, accuracy: 0.01)
+        XCTAssertEqual(decFoodEnv?.remainingProvision ?? 0, 300.0, accuracy: 0.01)
+        XCTAssertNil(decFuelEnv)
+
+        // Integração com IA Local (Chat): configurar e consultar previsões em linguagem natural
+        let setReply = LocalLLMService.generateFinancialResponse(
+            for: "Reserve R$ 500 para gasolina este mês",
+            store: store,
+            modelLabel: "TestModel"
+        )
+        XCTAssertTrue(setReply.localizedCaseInsensitiveContains("Combustível"))
+        XCTAssertEqual(store.provisionEnvelope(forCategory: fuelCat.id, in: nov2026)?.estimatedAmount ?? 0, 500.0, accuracy: 0.01)
+
+        let queryReply = LocalLLMService.generateFinancialResponse(
+            for: "Quanto ainda posso gastar com lanches em novembro?",
+            store: store,
+            modelLabel: "TestModel"
+        )
+        XCTAssertTrue(queryReply.localizedCaseInsensitiveContains("Alimentação"))
+        XCTAssertTrue(queryReply.localizedCaseInsensitiveContains("Estourado"))
+    }
 }

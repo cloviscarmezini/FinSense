@@ -304,19 +304,25 @@ public struct MetricCardView: View {
     public let subtitle: String
     public let icon: String
     public let tint: Color
+    public var footnote: String?
+    public var footnoteColor: Color
 
     public init(
         title: String,
         value: String,
         subtitle: String,
         icon: String,
-        tint: Color
+        tint: Color,
+        footnote: String? = nil,
+        footnoteColor: Color = .secondary
     ) {
         self.title = title
         self.value = value
         self.subtitle = subtitle
         self.icon = icon
         self.tint = tint
+        self.footnote = footnote
+        self.footnoteColor = footnoteColor
     }
 
     public var body: some View {
@@ -343,10 +349,20 @@ public struct MetricCardView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
 
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if let footnote, !footnote.isEmpty {
+                    Text(footnote)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(footnoteColor)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

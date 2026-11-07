@@ -8,6 +8,7 @@ public struct DashboardView: View {
     @State private var showCreateExpenseSheet: Bool = false
     @State private var showCreateIncomeSheet: Bool = false
     @State private var showImportStatementSheet: Bool = false
+    @State private var showProvisionsSheet: Bool = false
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -44,6 +45,9 @@ public struct DashboardView: View {
             referenceDate: store.selectedMonth,
             isAnnual: isAnnual
         )
+        let monthEnvelopes = store.provisionEnvelopes(for: store.selectedMonth)
+        let remainingProvisionsTotal = store.totalRemainingProvision(for: store.selectedMonth)
+        let estimatedProvisionsTotal = store.totalEstimatedProvision(for: store.selectedMonth)
 
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -118,6 +122,15 @@ public struct DashboardView: View {
                     }
                     .buttonStyle(.bordered)
 
+                    Button {
+                        showProvisionsSheet = true
+                    } label: {
+                        Label("Previsões & Tetos do Mês", systemImage: "tray.full.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Color(hex: "#6366F1"))
+                    .help("Definir limites/previsões de gastos variáveis por categoria (Envelopes Dinâmicos)")
+
                     Spacer()
 
                     if let activeModel = store.llmConfig.selectedModel {
@@ -166,11 +179,105 @@ public struct DashboardView: View {
                     )
 
                     MetricCardView(
-                        title: isAnnual ? "Acumulado em 31/12/\(yearStr)" : "Acumulado no Mês",
+                        title: isAnnual ? "Acumulado em 31/12/\(yearStr)" : "Saldo Projetado no Mês",
                         value: BRLFormatters.currency(accumulatedBalance),
                         subtitle: isAnnual ? "Balanço anual projetado: \(BRLFormatters.currency(periodNet))" : "Balanço mensal: \(BRLFormatters.currency(periodNet))",
                         icon: "chart.line.uptrend.xyaxis",
-                        tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#F59E0B")
+                        tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#F59E0B"),
+                        footnote: (!isAnnual && !monthEnvelopes.isEmpty)
+                            ? "Provisão de Gastos Variáveis: \(BRLFormatters.currency(remainingProvisionsTotal)) restantes"
+                            : nil,
+                        footnoteColor: remainingProvisionsTotal > 0 ? Color(hex: "#6366F1") : .secondary
+                    )
+                }
+
+                // MARK: - Previsões & Tetos do Mês (Orçamento por Envelopes Dinâmicos)
+                if !isAnnual {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .center, spacing: 12) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "tray.full.fill")
+                                    .foregroundStyle(Color(hex: "#6366F1"))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Previsões & Tetos do Mês")
+                                        .font(.headline)
+                                    Text("Orçamento por envelopes dinâmicos em \(periodFullLabel) (abatimento em tempo real sem gerar transações fictícias)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            Spacer()
+
+                            if !monthEnvelopes.isEmpty {
+                                HStack(spacing: 14) {
+                                    VStack(alignment: .trailing, spacing: 1) {
+                                        Text("Total Orçado")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        Text(BRLFormatters.currency(estimatedProvisionsTotal))
+                                            .font(.subheadline.weight(.semibold))
+                                    }
+                                    Divider().frame(height: 26)
+                                    VStack(alignment: .trailing, spacing: 1) {
+                                        Text("Provisão de Gastos Variáveis")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        Text("\(BRLFormatters.currency(remainingProvisionsTotal)) restantes")
+                                            .font(.subheadline.bold())
+                                            .foregroundStyle(Color(hex: "#6366F1"))
+                                    }
+                                }
+                            }
+
+                            Button {
+                                showProvisionsSheet = true
+                            } label: {
+                                Label(
+                                    monthEnvelopes.isEmpty ? "Configurar Previsões" : "Editar Tetos",
+                                    systemImage: "slider.horizontal.3"
+                                )
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(hex: "#6366F1"))
+                            .controlSize(.small)
+                        }
+
+                        if monthEnvelopes.isEmpty {
+                            HStack(spacing: 12) {
+                                Image(systemName: "sparkles.rectangle.stack")
+                                    .font(.system(size: 22))
+                                    .foregroundStyle(Color(hex: "#6366F1").opacity(0.8))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Nenhum teto estimado configurado para \(periodFullLabel).")
+                                        .font(.subheadline.weight(.medium))
+                                    Text("Defina limites para categorias variáveis (ex: Combustível, Alimentação, Lazer) ou peça no Chat IA: \"Reserve R$ 500 para gasolina este mês\".")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.primary.opacity(0.03))
+                            )
+                        } else {
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
+                                ForEach(monthEnvelopes) { env in
+                                    provisionEnvelopeCard(env)
+                                }
+                            }
+                        }
+                    }
+                    .padding(18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                     )
                 }
 
@@ -532,6 +639,96 @@ public struct DashboardView: View {
                 initialFilterMode: .hybrid
             )
         }
+        .sheet(isPresented: $showProvisionsSheet) {
+            MonthlyProvisionsSheet(store: store)
+        }
+    }
+
+    @ViewBuilder
+    private func provisionEnvelopeCard(_ env: CategoryProvisionEnvelope) -> some View {
+        let statusColorHex: String = {
+            switch env.status {
+            case .normal: return "#10B981"
+            case .warning: return "#F59E0B"
+            case .exceeded: return "#EF4444"
+            }
+        }()
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                CategoryBadgeView(category: env.category, size: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(env.category.name)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        if env.provision.repeatForFutureMonths {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .help("Repetir automaticamente para os próximos meses")
+                        }
+                    }
+                    Text("Gasto Real: \(BRLFormatters.currency(env.realizedExpense)) de \(BRLFormatters.currency(env.estimatedAmount))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Text(env.status.rawValue)
+                    .font(.system(size: 10.5, weight: .bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color(hex: statusColorHex).opacity(0.15)))
+                    .foregroundStyle(Color(hex: statusColorHex))
+            }
+
+            // Progress Bar: min(100, (G_real / T_estimado) * 100)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(height: 8)
+                    Capsule()
+                        .fill(Color(hex: statusColorHex).gradient)
+                        .frame(
+                            width: max(0, geo.size.width * CGFloat(env.clampedProgressPercentage / 100.0)),
+                            height: 8
+                        )
+                }
+            }
+            .frame(height: 8)
+
+            HStack {
+                Text(String(format: "%.0f%% utilizado", env.clampedProgressPercentage))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color(hex: statusColorHex))
+
+                Spacer()
+
+                if env.status == .exceeded {
+                    Text("Excedente: +\(BRLFormatters.currency(env.exceededAmount))")
+                        .font(.caption2.bold())
+                        .foregroundStyle(Color(hex: "#EF4444"))
+                } else {
+                    Text("Restante: \(BRLFormatters.currency(env.remainingProvision))")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.primary)
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color(hex: statusColorHex).opacity(0.28), lineWidth: 1)
+        )
     }
 
     @ViewBuilder
@@ -579,5 +776,247 @@ public struct DashboardView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color(hex: colorHex).opacity(0.22), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - Modal: Previsões & Tetos do Mês (Orçamento por Envelopes Dinâmicos)
+
+public struct MonthlyProvisionsSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    @Environment(\.dismiss) private var dismiss
+
+    private struct DraftProvisionItem: Identifiable {
+        var id: UUID { category.id }
+        let category: CategoryItem
+        let realizedExpense: Double
+        var amountString: String
+        var repeatForFutureMonths: Bool
+        var wasInitiallyActive: Bool
+    }
+
+    @State private var draftItems: [DraftProvisionItem] = []
+    @State private var globalRepeatToggle: Bool = true
+
+    public init(store: FinancialDataStore) {
+        self.store = store
+    }
+
+    public var body: some View {
+        let monthTitle = BRLFormatters.monthYear(store.selectedMonth)
+
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: "#6366F1").opacity(0.15))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "tray.full.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Previsões & Tetos do Mês")
+                        .font(.title3.bold())
+                    Text("Defina tetos de gastos variáveis para \(monthTitle) sem criar lançamentos fictícios no extrato")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(20)
+
+            Divider()
+
+            // Global Persistence Toggle Bar
+            HStack(spacing: 12) {
+                Toggle(isOn: $globalRepeatToggle) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                        Text("Repetir esta previsão para os próximos meses")
+                            .font(.subheadline.weight(.medium))
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .onChange(of: globalRepeatToggle) { _, newValue in
+                    for idx in draftItems.indices {
+                        draftItems[idx].repeatForFutureMonths = newValue
+                    }
+                }
+
+                Spacer()
+
+                Text("Deixe em R$ 0,00 ou vazio para categorias sem teto estimado.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+            .background(Color.primary.opacity(0.03))
+
+            Divider()
+
+            // Category List
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach($draftItems) { $item in
+                        let parsedEstimated = BRLFormatters.parseCurrencyInput(item.amountString)
+                        let remaining = max(0.0, parsedEstimated - item.realizedExpense)
+
+                        HStack(spacing: 14) {
+                            CategoryBadgeView(category: item.category, size: 36)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.category.name)
+                                    .font(.subheadline.weight(.semibold))
+                                HStack(spacing: 8) {
+                                    Text("Gasto realizado no mês: \(BRLFormatters.currency(item.realizedExpense))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if parsedEstimated > 0 {
+                                        Text("• Restante projetado: \(BRLFormatters.currency(remaining))")
+                                            .font(.caption.weight(.medium))
+                                            .foregroundStyle(
+                                                item.realizedExpense >= parsedEstimated
+                                                    ? Color(hex: "#EF4444")
+                                                    : Color(hex: "#6366F1")
+                                            )
+                                    }
+                                }
+                            }
+
+                            Spacer()
+
+                            Toggle("Repetir esta previsão para os próximos meses", isOn: $item.repeatForFutureMonths)
+                                .toggleStyle(.checkbox)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            HStack(spacing: 6) {
+                                Text("R$")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                                TextField("0,00", text: $item.amountString)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 110)
+                                    .multilineTextAlignment(.trailing)
+                            }
+                        }
+                        .padding(12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .stroke(
+                                    parsedEstimated > 0
+                                        ? Color(hex: "#6366F1").opacity(0.35)
+                                        : Color.primary.opacity(0.07),
+                                    lineWidth: 1
+                                )
+                        )
+                    }
+                }
+                .padding(20)
+            }
+
+            Divider()
+
+            // Footer with live summary & Save button
+            let totalEstimatedDraft = draftItems.reduce(0.0) {
+                $0 + max(0.0, BRLFormatters.parseCurrencyInput($1.amountString))
+            }
+            let totalRemainingDraft = draftItems.reduce(0.0) { acc, item in
+                let est = max(0.0, BRLFormatters.parseCurrencyInput(item.amountString))
+                guard est > 0 else { return acc }
+                return acc + max(0.0, est - item.realizedExpense)
+            }
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Total Orçado: \(BRLFormatters.currency(totalEstimatedDraft))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Provisão de Gastos Variáveis: \(BRLFormatters.currency(totalRemainingDraft)) restantes")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                }
+
+                Spacer()
+
+                Button("Cancelar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button {
+                    saveProvisions()
+                    dismiss()
+                } label: {
+                    Label("Salvar Previsões", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#6366F1"))
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+        }
+        .frame(minWidth: 740, minHeight: 540)
+        .onAppear {
+            loadDrafts()
+        }
+    }
+
+    private func loadDrafts() {
+        let monthRef = store.selectedMonth
+        draftItems = store.expenseCategories.map { cat in
+            let realized = store.realizedMonthlyExpense(forCategory: cat.id, in: monthRef)
+            if let effective = store.effectiveProvision(forCategory: cat.id, in: monthRef) {
+                return DraftProvisionItem(
+                    category: cat,
+                    realizedExpense: realized,
+                    amountString: String(format: "%.2f", effective.provision.estimatedAmount).replacingOccurrences(of: ".", with: ","),
+                    repeatForFutureMonths: effective.provision.repeatForFutureMonths,
+                    wasInitiallyActive: true
+                )
+            } else {
+                return DraftProvisionItem(
+                    category: cat,
+                    realizedExpense: realized,
+                    amountString: "",
+                    repeatForFutureMonths: true,
+                    wasInitiallyActive: false
+                )
+            }
+        }
+    }
+
+    private func saveProvisions() {
+        let monthRef = store.selectedMonth
+        for item in draftItems {
+            let trimmed = item.amountString.trimmingCharacters(in: .whitespacesAndNewlines)
+            let amount = trimmed.isEmpty ? 0.0 : max(0.0, BRLFormatters.parseCurrencyInput(trimmed))
+            if amount > 0 || item.wasInitiallyActive {
+                store.setCategoryProvision(
+                    categoryId: item.category.id,
+                    estimatedAmount: amount,
+                    for: monthRef,
+                    repeatForFutureMonths: item.repeatForFutureMonths
+                )
+            }
+        }
     }
 }

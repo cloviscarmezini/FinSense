@@ -387,7 +387,8 @@ public final class LocalLLMService: ObservableObject {
             "financiamento", "investimento", "projecao", "debito", "futuro", "mes", "ano", "conta",
             "cartao", "mercado pago", "itau", "santander", "nubank", "categoria", "quitar", "pagar",
             "amortiza", "cofrinho", "cdb", "extrato", "pix", "boleto", "resumo", "quanto", "quando",
-            "01/", "2025", "2026", "2027", "r$", "dinheiro", "patrimonio", "economia", "sobra"
+            "01/", "2025", "2026", "2027", "r$", "dinheiro", "patrimonio", "economia", "sobra",
+            "reserv", "provis", "teto", "envelope", "orcamento", "gasolina", "combustivel", "lanche", "lazer"
         ]
         if nonFinancialKeywords.contains(where: { lower.contains($0) }) &&
            !financialSignalKeywords.contains(where: { lower.contains($0) }) {
@@ -396,10 +397,16 @@ public final class LocalLLMService: ObservableObject {
             Não respondo assuntos fora do escopo financeiro.
 
             Você pode me perguntar coisas como:
+            - *"Reserve R$ 500 para gasolina este mês"*
+            - *"Quanto ainda posso gastar com lanches em novembro?"*
             - *"Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro"*
             - *"Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida Cartão Mercado Pago?"*
-            - *"Qual é o meu maior gasto por categoria e quanto tenho em investimentos consolidados?"*
             """
+        }
+
+        // 1.5. Verifica comandos de configuração ou consulta de Provisão de Gastos Estimados (Orçamento por Envelopes Dinâmicos)
+        if let provisionResponse = handleProvisionIntentIfApplicable(prompt: prompt, normalizedPrompt: lower, store: store) {
+            return provisionResponse
         }
 
         // 2. Verifica se a pergunta é sobre em quanto tempo pagar uma dívida específica (ex: "Cartão Mercado Pago")
@@ -754,11 +761,24 @@ public final class LocalLLMService: ObservableObject {
             ? "• Nenhuma despesa registrada no mês selecionado."
             : topExpenses.map { "• **\($0.category.name):** \(BRLFormatters.currency($0.total)) (`\(String(format: "%.1f", $0.percentage))%`)" }.joined(separator: "\n")
 
+        let envelopes = store.provisionEnvelopes(for: store.selectedMonth)
+        let remainingTotal = store.totalRemainingProvision(for: store.selectedMonth)
+        let projectedEndOfMonth = store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
+        let envelopesList = envelopes.isEmpty
+            ? "• Nenhuma provisão/teto configurado para este mês."
+            : envelopes.map { env in
+                "• **\(env.category.name):** Gasto Real \(BRLFormatters.currency(env.realizedExpense)) de \(BRLFormatters.currency(env.estimatedAmount)) → Restante: **\(BRLFormatters.currency(env.remainingProvision))** (`\(String(format: "%.0f%%", env.clampedProgressPercentage))` • *\(env.status.rawValue)*)"
+            }.joined(separator: "\n")
+
         return """
         ## Panorama Completo da sua Base Financeira
         - **Saldo Disponível em Contas:** **\(BRLFormatters.currency(store.totalCheckingBalanceNow))**
         - **Total em Investimentos Consolidados:** **\(BRLFormatters.currency(store.consolidatedInvestmentsBalance))** *(Total geral investido: \(BRLFormatters.currency(store.totalInvestmentsBalance)))*
         - **Patrimônio Consolidado Atual:** **\(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))**
+        - **Saldo Projetado de Fim de Mês (\(BRLFormatters.monthYear(store.selectedMonth))):** **\(BRLFormatters.currency(projectedEndOfMonth))** *(Provisão de Gastos Variáveis: **\(BRLFormatters.currency(remainingTotal)) restantes**)*
+
+        ### Previsões & Tetos do Mês (Envelopes Dinâmicos)
+        \(envelopesList)
 
         ### Resumo de Dívidas e Compromissos
         - **Despesas pendentes no mês atual:** \(BRLFormatters.currency(debtSummary.currentMonthUnpaidTotal))
@@ -771,6 +791,276 @@ public final class LocalLLMService: ObservableObject {
         ### Maiores Despesas por Categoria (\(BRLFormatters.monthYear(store.selectedMonth)))
         \(topList)
         """
+    }
+
+    // MARK: - Specialized Analysis 3: Natural Language Provisions (Orçamento por Envelopes Dinâmicos)
+
+    private static func handleProvisionIntentIfApplicable(
+        prompt: String,
+        normalizedPrompt: String,
+        store: FinancialDataStore
+    ) -> String? {
+        let configVerbs = [
+            "reserve", "reservar", "provis", "provisione", "defina", "definir",
+            "configure", "configurar", "estime", "estimar", "coloque um teto",
+            "teto de", "orcamento de", "limite de"
+        ]
+        let isConfigIntent = configVerbs.contains(where: { normalizedPrompt.contains($0) })
+        let extractedAmount = extractFirstCurrencyAmount(from: prompt)
+
+        // 1) Intenção de Configurar / Definir Previsão (ex: "Reserve R$ 500 para gasolina este mês")
+        if isConfigIntent, let amount = extractedAmount, amount > 0 {
+            let targetMonth = resolveTargetMonth(from: normalizedPrompt, defaultDate: store.selectedMonth)
+            let monthTitle = BRLFormatters.monthYear(targetMonth)
+
+            guard let category = resolveExpenseCategory(from: normalizedPrompt, in: store) else {
+                let availableCats = store.expenseCategories.map(\.name).joined(separator: ", ")
+                return """
+                Identifiquei que você deseja reservar **\(BRLFormatters.currency(amount))** em **\(monthTitle)**, mas não reconheci a categoria informada.
+
+                Suas categorias de despesa disponíveis são: **\(availableCats)**.
+                Tente novamente especificando uma delas, por exemplo:
+                - *"Reserve \(BRLFormatters.currency(amount)) para gasolina este mês"*
+                - *"Reserve \(BRLFormatters.currency(amount)) para lanches este mês"*
+                """
+            }
+
+            let shouldRepeat = !(normalizedPrompt.contains("apenas este mes") ||
+                                 normalizedPrompt.contains("so neste mes") ||
+                                 normalizedPrompt.contains("sem repetir"))
+
+            store.setCategoryProvision(
+                categoryId: category.id,
+                estimatedAmount: amount,
+                for: targetMonth,
+                repeatForFutureMonths: shouldRepeat
+            )
+
+            let envelope = store.provisionEnvelope(forCategory: category.id, in: targetMonth)
+            let realized = envelope?.realizedExpense ?? 0.0
+            let remaining = envelope?.remainingProvision ?? max(0.0, amount - realized)
+            let progress = envelope?.clampedProgressPercentage ?? 0.0
+            let statusLabel = envelope?.status.rawValue ?? ProvisionStatusLevel.normal.rawValue
+            let projectedBalance = store.accumulatedConsolidatedBalance(throughMonth: targetMonth)
+
+            return """
+            ## Previsão Configurada com Sucesso!
+            Configurei o envelope de gastos estimados sem gerar transações fictícias no seu extrato:
+
+            - **Categoria:** **\(category.name)**
+            - **Mês de Referência:** \(monthTitle)
+            - **Teto Estimado:** **\(BRLFormatters.currency(amount))**
+            - **Gasto Realizado no Mês:** \(BRLFormatters.currency(realized))
+            - **Saldo Estimado Remanescente:** **\(BRLFormatters.currency(remaining))**
+            - **Progresso do Envelope:** `\(String(format: "%.1f%%", progress))` (*Status: \(statusLabel)*)
+            - **Recorrência Automática:** \(shouldRepeat ? "Ativada (repetirá para os próximos meses)" : "Apenas para \(monthTitle)")
+            - **Novo Saldo Projetado de Fim de Mês:** **\(BRLFormatters.currency(projectedBalance))**
+            """
+        }
+
+        // 2) Intenção de Consultar Previsão / Quanto ainda pode gastar (ex: "Quanto ainda posso gastar com lanches em novembro?")
+        let isHowMuchCanSpend = (normalizedPrompt.contains("quanto") &&
+                                 (normalizedPrompt.contains("posso gastar") ||
+                                  normalizedPrompt.contains("ainda posso") ||
+                                  normalizedPrompt.contains("resta") ||
+                                  normalizedPrompt.contains("disponivel") ||
+                                  normalizedPrompt.contains("sobra")))
+        let mentionsProvisionKeywords = normalizedPrompt.contains("provisao") ||
+                                        normalizedPrompt.contains("provisoes") ||
+                                        normalizedPrompt.contains("teto") ||
+                                        normalizedPrompt.contains("tetos") ||
+                                        normalizedPrompt.contains("envelope") ||
+                                        normalizedPrompt.contains("envelopes") ||
+                                        normalizedPrompt.contains("orcamento")
+
+        if isHowMuchCanSpend || mentionsProvisionKeywords {
+            let targetMonth = resolveTargetMonth(from: normalizedPrompt, defaultDate: store.selectedMonth)
+            let monthTitle = BRLFormatters.monthYear(targetMonth)
+
+            if let category = resolveExpenseCategory(from: normalizedPrompt, in: store) {
+                if let env = store.provisionEnvelope(forCategory: category.id, in: targetMonth) {
+                    let statusDetail: String
+                    switch env.status {
+                    case .normal:
+                        statusDetail = "🟢 **Normal** (abaixo de 80% do limite)"
+                    case .warning:
+                        statusDetail = "🟡 **Alerta** (entre 80% e 100% do limite)"
+                    case .exceeded:
+                        statusDetail = "🔴 **Estourado** (excedente de **+\(BRLFormatters.currency(env.exceededAmount))** acima do teto)"
+                    }
+
+                    return """
+                    ## Consulta de Envelope: **\(category.name)** (\(monthTitle))
+                    Você ainda pode gastar **\(BRLFormatters.currency(env.remainingProvision))** dentro do teto previsto para **\(category.name)** em **\(monthTitle)**.
+
+                    ### Detalhamento da Provisão
+                    - **Teto Estimado:** \(BRLFormatters.currency(env.estimatedAmount))
+                    - **Gasto Realizado:** \(BRLFormatters.currency(env.realizedExpense))
+                    - **Saldo Estimado Remanescente:** **\(BRLFormatters.currency(env.remainingProvision))**
+                    - **Progresso Utilizado:** `\(String(format: "%.1f%%", env.clampedProgressPercentage))`
+                    - **Status do Envelope:** \(statusDetail)
+                    - **Saldo Projetado de Fim de Mês:** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
+                    """
+                } else {
+                    let realized = store.realizedMonthlyExpense(forCategory: category.id, in: targetMonth)
+                    return """
+                    ## Consulta de Categoria: **\(category.name)** (\(monthTitle))
+                    Ainda **não há um teto estimado** configurado para **\(category.name)** em **\(monthTitle)**.
+
+                    - **Gasto Realizado até o momento:** **\(BRLFormatters.currency(realized))**
+                    - Para definir um teto agora mesmo pelo chat, basta enviar:
+                      *"Reserve R$ 300 para \(category.name.lowercased()) em \(monthTitle)"*
+                    """
+                }
+            } else {
+                let envelopes = store.provisionEnvelopes(for: targetMonth)
+                if envelopes.isEmpty {
+                    return """
+                    ## Previsões & Tetos do Mês (\(monthTitle))
+                    Você ainda não possui envelopes de gastos variáveis configurados para **\(monthTitle)**.
+
+                    Você pode configurar clicando no botão **"Previsões & Tetos do Mês"** no Dashboard ou pedindo aqui no chat:
+                    - *"Reserve R$ 500 para gasolina este mês"*
+                    - *"Reserve R$ 300 para lanches este mês"*
+                    """
+                }
+
+                let totalEstimated = store.totalEstimatedProvision(for: targetMonth)
+                let totalRemaining = store.totalRemainingProvision(for: targetMonth)
+                let lines = envelopes.map { env in
+                    let extra = env.status == .exceeded ? " (Excedente: +\(BRLFormatters.currency(env.exceededAmount)))" : ""
+                    return "- **\(env.category.name):** Restam **\(BRLFormatters.currency(env.remainingProvision))** de \(BRLFormatters.currency(env.estimatedAmount)) (Gasto real: \(BRLFormatters.currency(env.realizedExpense)) • `\(String(format: "%.0f%%", env.clampedProgressPercentage))` • *\(env.status.rawValue)*\(extra))"
+                }.joined(separator: "\n")
+
+                return """
+                ## Resumo de Previsões & Tetos (\(monthTitle))
+                - **Total Orçado nos Envelopes:** \(BRLFormatters.currency(totalEstimated))
+                - **Provisão de Gastos Variáveis Restante:** **\(BRLFormatters.currency(totalRemaining))**
+                - **Saldo Projetado de Fim de Mês:** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
+
+                ### Envelopes por Categoria
+                \(lines)
+                """
+            }
+        }
+
+        return nil
+    }
+
+    private static func extractFirstCurrencyAmount(from text: String) -> Double? {
+        let pattern = #"(?:r\$\s*)?(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        let nsText = text as NSString
+        let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsText.length))
+        for match in matches {
+            guard match.numberOfRanges >= 2 else { continue }
+            let rawNumber = nsText.substring(with: match.range(at: 1))
+            // Evita capturar anos isolados como 2025/2026/2027 caso não venham precedidos de R$
+            let fullMatch = nsText.substring(with: match.range(at: 0)).lowercased()
+            if !fullMatch.contains("r$") && (rawNumber == "2024" || rawNumber == "2025" || rawNumber == "2026" || rawNumber == "2027") {
+                continue
+            }
+            let val = BRLFormatters.parseCurrencyInput(rawNumber)
+            if val > 0 {
+                return val
+            }
+        }
+        return nil
+    }
+
+    private static func resolveTargetMonth(from normalizedPrompt: String, defaultDate: Date) -> Date {
+        let cal = Calendar.current
+        if normalizedPrompt.contains("proximo mes") || normalizedPrompt.contains("mes que vem") {
+            return cal.date(byAdding: .month, value: 1, to: defaultDate) ?? defaultDate
+        }
+        if normalizedPrompt.contains("mes passado") || normalizedPrompt.contains("mes anterior") {
+            return cal.date(byAdding: .month, value: -1, to: defaultDate) ?? defaultDate
+        }
+
+        let monthNames: [(name: String, month: Int)] = [
+            ("janeiro", 1), ("fevereiro", 2), ("marco", 3), ("abril", 4),
+            ("maio", 5), ("junho", 6), ("julho", 7), ("agosto", 8),
+            ("setembro", 9), ("outubro", 10), ("novembro", 11), ("dezembro", 12)
+        ]
+
+        let currentYear = cal.component(.year, from: defaultDate)
+        var targetYear = currentYear
+        for y in [2025, 2026, 2027, 2028] {
+            if normalizedPrompt.contains(String(y)) {
+                targetYear = y
+                break
+            }
+        }
+
+        for item in monthNames {
+            if normalizedPrompt.contains(item.name) {
+                var comps = DateComponents()
+                comps.year = targetYear
+                comps.month = item.month
+                comps.day = 15
+                if let resolved = cal.date(from: comps) {
+                    return resolved
+                }
+            }
+        }
+
+        return defaultDate
+    }
+
+    private static func resolveExpenseCategory(
+        from normalizedPrompt: String,
+        in store: FinancialDataStore
+    ) -> CategoryItem? {
+        let expenseCats = store.expenseCategories
+
+        // 1) Verifica correspondência direta pelo nome da categoria
+        for cat in expenseCats {
+            let normName = cat.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            if normalizedPrompt.contains(normName) {
+                return cat
+            }
+            // Verifica palavras-chave principais do nome da categoria (com mais de 3 letras)
+            let tokens = normName.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { $0.count >= 4 }
+            if tokens.contains(where: { normalizedPrompt.contains($0) }) {
+                return cat
+            }
+        }
+
+        // 2) Verifica sinônimos naturais mapeados para palavras-chave ou nomes
+        let synonymGroups: [(triggers: [String], categoryFragments: [String])] = [
+            (["gasolina", "combustivel", "etanol", "abastecimento", "posto", "carro", "automovel", "ipva", "oficina"], ["combustivel", "automovel", "gasolina"]),
+            (["uber", "99pop", "onibus", "metro", "passagem", "pedagio", "transporte", "mobilidade"], ["transporte", "mobilidade"]),
+            (["lanche", "lanches", "ifood", "delivery", "restaurante", "comida", "alimentacao", "hamburguer", "pizza", "padaria"], ["alimentacao", "delivery", "lanche", "restaurante"]),
+            (["lazer", "entretenimento", "cinema", "passeio", "show", "bar", "viagem"], ["lazer", "entretenimento", "viagem"]),
+            (["supermercado", "mercado", "feira", "compras do mes", "atacadao"], ["supermercado", "mercado"]),
+            (["farmacia", "remedio", "saude", "medico", "consulta", "exame"], ["saude", "farmacia"]),
+            (["luz", "energia", "agua", "internet", "aluguel", "condominio", "moradia"], ["moradia", "energia", "contas"])
+        ]
+
+        for group in synonymGroups {
+            if group.triggers.contains(where: { normalizedPrompt.contains($0) }) {
+                if let matched = expenseCats.first(where: { cat in
+                    let normName = cat.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                    return group.categoryFragments.contains(where: { normName.contains($0) })
+                }) {
+                    return matched
+                }
+            }
+        }
+
+        // 3) Verifica pelas keywords cadastradas na própria CategoryItem
+        for cat in expenseCats {
+            for kw in cat.keywords {
+                let normKw = kw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                if normKw.count >= 3 && normalizedPrompt.contains(normKw) {
+                    return cat
+                }
+            }
+        }
+
+        return nil
     }
 
     private static func extractDateRange(from text: String) -> (start: Date, end: Date)? {

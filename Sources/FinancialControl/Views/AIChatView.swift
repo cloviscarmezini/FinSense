@@ -9,6 +9,8 @@ public struct AIChatSheetView: View {
     @State private var showClearHistoryConfirmation: Bool = false
 
     private let suggestedPrompts: [String] = [
+        "Reserve R$ 500 para gasolina este mês",
+        "Quanto ainda posso gastar com lanches em novembro?",
         "Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro",
         "Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida Cartão Mercado Pago?",
         "Qual é o panorama completo das minhas dívidas, empréstimos, investimentos e maiores despesas?"

@@ -30,6 +30,10 @@ O diferencial revolucionário é a **IA Local Embarcada**: integrada a modelos d
   - **Visão Anual**: Visão macro consolidada com projeções de receitas, parcelamentos e recorrências até o último dia do ano.
 - **Total de Dívidas & Compromissos**: Visão centralizada das obrigações futuras (dívidas em aberto, cartões, empréstimos e financiamentos).
 - **Detalhamento por Categorias**: Gráficos e resumos de gastos percentuais e nominais por categoria.
+- **Previsões & Tetos do Mês (Orçamento por Envelopes Dinâmicos)**:
+  - Definição rápida de limites mensais para categorias variáveis (ex: Combustível, Alimentação, Lazer) com opção de recorrência automática (*"Repetir esta previsão para os próximos meses"*).
+  - Desacoplamento total do extrato real: impacta o **Saldo Projetado no Mês** apenas pelo saldo remanescente ($P_{\text{restante}} = \max(0, T_{\text{estimado}} - G_{\text{real}})$), abatendo despesas reais em tempo real sem gerar lançamentos fictícios ou duplicar saídas.
+  - Acompanhamento visual com barras de progresso e indicadores de status (**Normal** `< 80%`, **Alerta** `80%–100%` e **Estourado** `> 100%` exibindo o excedente), além de integração com comandos em linguagem natural via Chat IA Local.
 - **Status da IA Local**: Indicador dinâmico no topo informando o modelo LLM ativo e atalhos rápidos.
 
 ### 💳 2. Gestão Completa de Transações

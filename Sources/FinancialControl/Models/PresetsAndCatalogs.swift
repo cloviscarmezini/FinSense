@@ -188,7 +188,7 @@ public enum DefaultCategoriesCatalog {
                 type: .expense,
                 iconSymbol: "fork.knife",
                 colorHex: "#EF4444",
-                keywords: ["99 FOOD", "IFOOD", "KFC", "PIZZI", "DOCER", "ACAIF", "CACAU", "BACIO", "FRANG", "MACAR", "CEVAD", "SOPHI", "WANDO", "MR MI", "KCOWO", "MAJO", "CAPPT", "RESTAURANTE", "LANCHONETE", "PADARIA"],
+                keywords: ["99 FOOD", "IFOOD", "KFC", "PIZZI", "DOCER", "ACAIF", "CACAU", "BACIO", "FRANG", "MACAR", "CEVAD", "SOPHI", "WANDO", "MR MI", "KCOWO", "MAJO", "CAPPT", "RESTAURANTE", "LANCHONETE", "PADARIA", "LANCHE", "LANCHES", "HAMBURGUER"],
                 isSystemDefault: true
             ),
             CategoryItem(
@@ -233,7 +233,16 @@ public enum DefaultCategoriesCatalog {
                 type: .expense,
                 iconSymbol: "fuelpump.fill",
                 colorHex: "#0EA5E9",
-                keywords: ["AUTO", "AUTOZ", "POSTO", "IPIRANGA", "SHELL", "ESTACIONAMENTO", "OFICINA", "IPVA"],
+                keywords: ["AUTO", "AUTOZ", "POSTO", "IPIRANGA", "SHELL", "ESTACIONAMENTO", "OFICINA", "IPVA", "GASOLINA", "COMBUSTIVEL", "ETANOL", "ABASTECIMENTO"],
+                isSystemDefault: true
+            ),
+            CategoryItem(
+                id: UUID(uuidString: "10000000-0000-0000-0000-000000000019")!,
+                name: "Lazer & Entretenimento",
+                type: .expense,
+                iconSymbol: "gamecontroller.fill",
+                colorHex: "#A855F7",
+                keywords: ["LAZER", "CINEMA", "TEATRO", "SHOW", "PASSEIO", "PARQUE", "VIAGEM", "INGRESSO", "JOGOS", "ENTRETENIMENTO"],
                 isSystemDefault: true
             ),
             CategoryItem(
@@ -659,6 +668,10 @@ public enum BRLFormatters {
         } else {
             return Double(cleaned)
         }
+    }
+
+    public static func parseCurrencyInput(_ text: String) -> Double {
+        parseAmount(text) ?? 0.0
     }
 
     /// Formata qualquer entrada digitada mantendo apenas números e aplicando máscara de moeda Real (Ex: "450981" -> "R$ 4.509,81")
