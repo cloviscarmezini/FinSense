@@ -9,6 +9,14 @@ public struct DashboardView: View {
     @State private var showCreateIncomeSheet: Bool = false
     @State private var showImportStatementSheet: Bool = false
     @State private var showProvisionsSheet: Bool = false
+    @State private var showAddQuotaSheet: Bool = false
+    @State private var editingQuotaEnvelope: CategoryQuotaEnvelope? = nil
+    @State private var redeemingQuotaEnvelope: CategoryQuotaEnvelope? = nil
+    @State private var editingFreeBudgetEnvelope: CategoryProvisionEnvelope? = nil
+    @State private var pendingDeleteQuotaEnvelope: CategoryQuotaEnvelope? = nil
+    @State private var showDeleteQuotaScopeDialog: Bool = false
+    @State private var pendingDeleteFreeBudgetEnvelope: CategoryProvisionEnvelope? = nil
+    @State private var showDeleteFreeBudgetScopeDialog: Bool = false
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -231,10 +239,20 @@ public struct DashboardView: View {
                             }
 
                             Button {
+                                showAddQuotaSheet = true
+                            } label: {
+                                Label("Nova Cota Específica", systemImage: "plus.square.on.square")
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(Color(hex: "#0EA5E9"))
+                            .controlSize(.small)
+                            .help("Cadastrar cota de item específico (ex: Galão de Água, 4 unidades a R$ 30,00)")
+
+                            Button {
                                 showProvisionsSheet = true
                             } label: {
                                 Label(
-                                    monthEnvelopes.isEmpty ? "Configurar Previsões" : "Editar Tetos",
+                                    monthEnvelopes.isEmpty ? "Configurar Previsões" : "Gerenciar Verbas & Cotas",
                                     systemImage: "slider.horizontal.3"
                                 )
                             }
@@ -249,9 +267,9 @@ public struct DashboardView: View {
                                     .font(.system(size: 22))
                                     .foregroundStyle(Color(hex: "#6366F1").opacity(0.8))
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Nenhum teto estimado configurado para \(periodFullLabel).")
+                                    Text("Nenhum teto ou cota configurada para \(periodFullLabel).")
                                         .font(.subheadline.weight(.medium))
-                                    Text("Defina limites para categorias variáveis (ex: Combustível, Alimentação, Lazer) ou peça no Chat IA: \"Reserve R$ 500 para gasolina este mês\".")
+                                    Text("Defina verbas livres (ex: Combustível, Lazer) e cotas específicas (ex: 4 galões de água a R$ 30) ou peça no Chat IA: \"Reserve R$ 500 para gasolina este mês\".")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -263,7 +281,7 @@ public struct DashboardView: View {
                                     .fill(Color.primary.opacity(0.03))
                             )
                         } else {
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 2), spacing: 14) {
                                 ForEach(monthEnvelopes) { env in
                                     provisionEnvelopeCard(env)
                                 }
@@ -642,6 +660,110 @@ public struct DashboardView: View {
         .sheet(isPresented: $showProvisionsSheet) {
             MonthlyProvisionsSheet(store: store)
         }
+        .sheet(isPresented: $showAddQuotaSheet) {
+            QuotaItemEditorSheet(store: store, existingQuota: nil)
+        }
+        .sheet(item: $editingQuotaEnvelope) { quotaEnv in
+            QuotaItemEditorSheet(store: store, existingQuota: quotaEnv)
+        }
+        .sheet(item: $redeemingQuotaEnvelope) { quotaEnv in
+            QuotaRedemptionSheet(store: store, quotaEnvelope: quotaEnv)
+        }
+        .sheet(item: $editingFreeBudgetEnvelope) { env in
+            FreeBudgetEditorSheet(store: store, envelope: env)
+        }
+        .confirmationDialog(
+            pendingDeleteQuotaEnvelope?.repeatForFutureMonths == true
+                ? "Excluir Cota Recorrente: \(pendingDeleteQuotaEnvelope?.name ?? "")"
+                : "Confirmar Exclusão da Cota: \(pendingDeleteQuotaEnvelope?.name ?? "")",
+            isPresented: $showDeleteQuotaScopeDialog,
+            titleVisibility: .visible
+        ) {
+            if let q = pendingDeleteQuotaEnvelope {
+                if q.repeatForFutureMonths {
+                    Button("Excluir somente deste mês") {
+                        store.deleteCategoryQuota(
+                            seriesId: q.seriesId,
+                            for: store.selectedMonth,
+                            scope: .onlyThisMonth
+                        )
+                        pendingDeleteQuotaEnvelope = nil
+                    }
+                    Button("Excluir todas as ocorrências", role: .destructive) {
+                        store.deleteCategoryQuota(
+                            seriesId: q.seriesId,
+                            for: store.selectedMonth,
+                            scope: .allOccurrences
+                        )
+                        pendingDeleteQuotaEnvelope = nil
+                    }
+                } else {
+                    Button("Excluir deste mês", role: .destructive) {
+                        store.deleteCategoryQuota(
+                            seriesId: q.seriesId,
+                            for: store.selectedMonth,
+                            scope: .onlyThisMonth
+                        )
+                        pendingDeleteQuotaEnvelope = nil
+                    }
+                }
+            }
+            Button("Cancelar", role: .cancel) {
+                pendingDeleteQuotaEnvelope = nil
+            }
+        } message: {
+            if pendingDeleteQuotaEnvelope?.repeatForFutureMonths == true {
+                Text("Esta cota possui recorrência ativa. Deseja removê-la apenas deste mês (mantendo nos meses anteriores e futuros) ou excluir todas as ocorrências definitivamente?")
+            } else {
+                Text("Deseja remover esta cota específica do mês selecionado?")
+            }
+        }
+        .confirmationDialog(
+            pendingDeleteFreeBudgetEnvelope?.provision.repeatForFutureMonths == true
+                ? "Excluir Verba Livre Recorrente: \(pendingDeleteFreeBudgetEnvelope?.category.name ?? "")"
+                : "Confirmar Exclusão da Verba Livre: \(pendingDeleteFreeBudgetEnvelope?.category.name ?? "")",
+            isPresented: $showDeleteFreeBudgetScopeDialog,
+            titleVisibility: .visible
+        ) {
+            if let env = pendingDeleteFreeBudgetEnvelope {
+                if env.provision.repeatForFutureMonths {
+                    Button("Excluir somente deste mês") {
+                        store.deleteCategoryProvision(
+                            categoryId: env.category.id,
+                            for: store.selectedMonth,
+                            scope: .onlyThisMonth
+                        )
+                        pendingDeleteFreeBudgetEnvelope = nil
+                    }
+                    Button("Excluir todas as ocorrências", role: .destructive) {
+                        store.deleteCategoryProvision(
+                            categoryId: env.category.id,
+                            for: store.selectedMonth,
+                            scope: .allOccurrences
+                        )
+                        pendingDeleteFreeBudgetEnvelope = nil
+                    }
+                } else {
+                    Button("Excluir deste mês", role: .destructive) {
+                        store.deleteCategoryProvision(
+                            categoryId: env.category.id,
+                            for: store.selectedMonth,
+                            scope: .onlyThisMonth
+                        )
+                        pendingDeleteFreeBudgetEnvelope = nil
+                    }
+                }
+            }
+            Button("Cancelar", role: .cancel) {
+                pendingDeleteFreeBudgetEnvelope = nil
+            }
+        } message: {
+            if pendingDeleteFreeBudgetEnvelope?.provision.repeatForFutureMonths == true {
+                Text("A verba livre desta categoria é recorrente. Deseja removê-la somente deste mês (mantendo nos meses anteriores e futuros) ou excluir todas as ocorrências?")
+            } else {
+                Text("Deseja remover a verba livre desta categoria no mês atual?")
+            }
+        }
     }
 
     @ViewBuilder
@@ -663,20 +785,29 @@ public struct DashboardView: View {
                         Text(env.category.name)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
-                        if env.provision.repeatForFutureMonths {
+                        if env.repeatForFutureMonths {
                             Image(systemName: "arrow.triangle.2.circlepath")
                                 .font(.system(size: 10, weight: .semibold))
                                 .foregroundStyle(.secondary)
                                 .help("Repetir automaticamente para os próximos meses")
                         }
                     }
-                    Text("Gasto Real: \(BRLFormatters.currency(env.realizedExpense)) de \(BRLFormatters.currency(env.estimatedAmount))")
+                    Text("Orçado Total: \(BRLFormatters.currency(env.estimatedAmount)) • Realizado: \(BRLFormatters.currency(env.realizedExpense))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
 
                 Spacer()
+
+                Button {
+                    showAddQuotaSheet = true
+                } label: {
+                    Image(systemName: "plus.circle")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Adicionar cota específica nesta categoria")
 
                 Text(env.status.rawValue)
                     .font(.system(size: 10.5, weight: .bold))
@@ -686,7 +817,7 @@ public struct DashboardView: View {
                     .foregroundStyle(Color(hex: statusColorHex))
             }
 
-            // Progress Bar: min(100, (G_real / T_estimado) * 100)
+            // Progress Bar consolidada da categoria
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule()
@@ -702,6 +833,117 @@ public struct DashboardView: View {
             }
             .frame(height: 8)
 
+            // 1. Sub-bloco de Verba Livre (Genérica), caso ativa
+            if env.freeBudgetEstimated > 0 {
+                HStack(spacing: 8) {
+                    Image(systemName: "wallet.pass.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 4) {
+                            Text("Verba Livre: \(BRLFormatters.currency(env.freeBudgetRemaining)) restantes")
+                                .font(.caption.weight(.semibold))
+                            if env.isFreeBudgetLocalOverride {
+                                Text("(Exceção do mês)")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(Color(hex: "#F59E0B"))
+                            }
+                        }
+                        Text("Despesas avulsas: \(BRLFormatters.currency(env.freeBudgetRealizedExpense)) de \(BRLFormatters.currency(env.freeBudgetEstimated))")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+
+                    Button {
+                        editingFreeBudgetEnvelope = env
+                    } label: {
+                        Image(systemName: "pencil")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Editar Verba Livre")
+
+                    Button(role: .destructive) {
+                        pendingDeleteFreeBudgetEnvelope = env
+                        showDeleteFreeBudgetScopeDialog = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.caption2)
+                            .foregroundStyle(Color(hex: "#EF4444"))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Excluir Verba Livre")
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.035)))
+            }
+
+            // 2. Painel de Controle de Cotas de Itens Específicos
+            if !env.quotaEnvelopes.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(env.quotaEnvelopes) { quota in
+                        HStack(spacing: 8) {
+                            Image(systemName: quota.iconSymbol)
+                                .font(.caption)
+                                .foregroundStyle(Color(hex: "#0EA5E9"))
+                                .frame(width: 16)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                HStack(spacing: 4) {
+                                    Text("\(quota.name): \(quota.consumedUnits) de \(quota.plannedQuantity) consumidos • \(BRLFormatters.currency(quota.remainingProvision)) restantes")
+                                        .font(.caption.weight(.semibold))
+                                        .lineLimit(1)
+                                    if quota.isLocalMonthOverride {
+                                        Text("(Mês)")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundStyle(Color(hex: "#F59E0B"))
+                                    }
+                                }
+                                Text("Unitário est.: \(BRLFormatters.currency(quota.estimatedUnitPrice)) • Pendentes: \(quota.pendingUnits) un.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                redeemingQuotaEnvelope = quota
+                            } label: {
+                                Label("Dar Baixa", systemImage: "plus.circle.fill")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(hex: "#0EA5E9"))
+                            .controlSize(.mini)
+                            .help("Registrar compra real e abater 1 unidade desta cota sem consumir a Verba Livre")
+
+                            Button {
+                                editingQuotaEnvelope = quota
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.caption2)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Editar cota específica")
+
+                            Button(role: .destructive) {
+                                pendingDeleteQuotaEnvelope = quota
+                                showDeleteQuotaScopeDialog = true
+                            } label: {
+                                Image(systemName: "trash")
+                                    .font(.caption2)
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Excluir cota específica")
+                        }
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#0EA5E9").opacity(0.07)))
+                    }
+                }
+            }
+
             HStack {
                 Text(String(format: "%.0f%% utilizado", env.clampedProgressPercentage))
                     .font(.caption2.weight(.medium))
@@ -709,12 +951,12 @@ public struct DashboardView: View {
 
                 Spacer()
 
-                if env.status == .exceeded {
-                    Text("Excedente: +\(BRLFormatters.currency(env.exceededAmount))")
+                if env.status == .exceeded && env.exceededAmount > 0 {
+                    Text("Excedente: +\(BRLFormatters.currency(env.exceededAmount)) • Provisão Restante: \(BRLFormatters.currency(env.remainingProvision))")
                         .font(.caption2.bold())
                         .foregroundStyle(Color(hex: "#EF4444"))
                 } else {
-                    Text("Restante: \(BRLFormatters.currency(env.remainingProvision))")
+                    Text("Provisão da Categoria: \(BRLFormatters.currency(env.remainingProvision)) restantes")
                         .font(.caption2.bold())
                         .foregroundStyle(.primary)
                 }
@@ -779,7 +1021,7 @@ public struct DashboardView: View {
     }
 }
 
-// MARK: - Modal: Previsões & Tetos do Mês (Orçamento por Envelopes Dinâmicos)
+// MARK: - Modal: Previsões & Tetos do Mês (Verba Livre + Cotas Específicas)
 
 public struct MonthlyProvisionsSheet: View {
     @ObservedObject public var store: FinancialDataStore
@@ -788,14 +1030,20 @@ public struct MonthlyProvisionsSheet: View {
     private struct DraftProvisionItem: Identifiable {
         var id: UUID { category.id }
         let category: CategoryItem
-        let realizedExpense: Double
+        let realizedFreeExpense: Double
         var amountString: String
+        let initialAmount: Double
         var repeatForFutureMonths: Bool
-        var wasInitiallyActive: Bool
+        let wasInitiallyActive: Bool
+        let wasInitiallyRecurring: Bool
     }
 
     @State private var draftItems: [DraftProvisionItem] = []
     @State private var globalRepeatToggle: Bool = true
+    @State private var addQuotaForCategory: CategoryItem? = nil
+    @State private var editingQuota: CategoryQuotaEnvelope? = nil
+    @State private var redeemingQuota: CategoryQuotaEnvelope? = nil
+    @State private var showRecurringEditScopeDialog: Bool = false
 
     public init(store: FinancialDataStore) {
         self.store = store
@@ -819,7 +1067,7 @@ public struct MonthlyProvisionsSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Previsões & Tetos do Mês")
                         .font(.title3.bold())
-                    Text("Defina tetos de gastos variáveis para \(monthTitle) sem criar lançamentos fictícios no extrato")
+                    Text("Configure Verbas Livres e Cotas de Itens Específicos para \(monthTitle) sem criar lançamentos fictícios")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -845,7 +1093,7 @@ public struct MonthlyProvisionsSheet: View {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.triangle.2.circlepath")
                             .foregroundStyle(Color(hex: "#6366F1"))
-                        Text("Repetir esta previsão para os próximos meses")
+                        Text("Repetir previsões para os próximos meses")
                             .font(.subheadline.weight(.medium))
                     }
                 }
@@ -858,7 +1106,7 @@ public struct MonthlyProvisionsSheet: View {
 
                 Spacer()
 
-                Text("Deixe em R$ 0,00 ou vazio para categorias sem teto estimado.")
+                Text("Verba Livre (genérica) coexiste com Cotas de Itens Específicos na mesma categoria.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -870,48 +1118,102 @@ public struct MonthlyProvisionsSheet: View {
 
             // Category List
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(spacing: 12) {
                     ForEach($draftItems) { $item in
                         let parsedEstimated = BRLFormatters.parseCurrencyInput(item.amountString)
-                        let remaining = max(0.0, parsedEstimated - item.realizedExpense)
+                        let freeRemaining = max(0.0, parsedEstimated - item.realizedFreeExpense)
+                        let catQuotas = store.quotaEnvelopes(forCategory: item.category.id, in: store.selectedMonth)
+                        let quotasRemaining = catQuotas.reduce(0.0) { $0 + $1.remainingProvision }
 
-                        HStack(spacing: 14) {
-                            CategoryBadgeView(category: item.category, size: 36)
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 14) {
+                                CategoryBadgeView(category: item.category, size: 36)
 
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.category.name)
-                                    .font(.subheadline.weight(.semibold))
-                                HStack(spacing: 8) {
-                                    Text("Gasto realizado no mês: \(BRLFormatters.currency(item.realizedExpense))")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    if parsedEstimated > 0 {
-                                        Text("• Restante projetado: \(BRLFormatters.currency(remaining))")
-                                            .font(.caption.weight(.medium))
-                                            .foregroundStyle(
-                                                item.realizedExpense >= parsedEstimated
-                                                    ? Color(hex: "#EF4444")
-                                                    : Color(hex: "#6366F1")
-                                            )
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.category.name)
+                                        .font(.subheadline.weight(.semibold))
+                                    HStack(spacing: 8) {
+                                        Text("Despesas avulsas no mês: \(BRLFormatters.currency(item.realizedFreeExpense))")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        if parsedEstimated > 0 || quotasRemaining > 0 {
+                                            Text("• Provisão da categoria: \(BRLFormatters.currency(freeRemaining + quotasRemaining))")
+                                                .font(.caption.weight(.medium))
+                                                .foregroundStyle(Color(hex: "#6366F1"))
+                                        }
                                     }
+                                }
+
+                                Spacer()
+
+                                Button {
+                                    addQuotaForCategory = item.category
+                                } label: {
+                                    Label("Adicionar Cota", systemImage: "plus.square.on.square")
+                                        .font(.caption)
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+
+                                Toggle("Repetir", isOn: $item.repeatForFutureMonths)
+                                    .toggleStyle(.checkbox)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .help("Repetir esta Verba Livre para os próximos meses")
+
+                                HStack(spacing: 6) {
+                                    Text("Verba Livre R$")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.secondary)
+                                    TextField("0,00", text: $item.amountString)
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(width: 105)
+                                        .multilineTextAlignment(.trailing)
                                 }
                             }
 
-                            Spacer()
+                            if !catQuotas.isEmpty {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    ForEach(catQuotas) { q in
+                                        HStack(spacing: 10) {
+                                            Image(systemName: q.iconSymbol)
+                                                .font(.caption)
+                                                .foregroundStyle(Color(hex: "#0EA5E9"))
+                                                .frame(width: 18)
 
-                            Toggle("Repetir esta previsão para os próximos meses", isOn: $item.repeatForFutureMonths)
-                                .toggleStyle(.checkbox)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                            Text("\(q.name): \(q.consumedUnits) de \(q.plannedQuantity) consumidos • \(BRLFormatters.currency(q.remainingProvision)) restantes")
+                                                .font(.caption.weight(.semibold))
 
-                            HStack(spacing: 6) {
-                                Text("R$")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.secondary)
-                                TextField("0,00", text: $item.amountString)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 110)
-                                    .multilineTextAlignment(.trailing)
+                                            Text("(\(q.plannedQuantity) un. × \(BRLFormatters.currency(q.estimatedUnitPrice)))")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+
+                                            Spacer()
+
+                                            Button {
+                                                redeemingQuota = q
+                                            } label: {
+                                                Label("Dar Baixa", systemImage: "plus.circle.fill")
+                                                    .font(.caption2.bold())
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .tint(Color(hex: "#0EA5E9"))
+                                            .controlSize(.mini)
+
+                                            Button {
+                                                editingQuota = q
+                                            } label: {
+                                                Image(systemName: "pencil")
+                                                    .font(.caption2)
+                                            }
+                                            .buttonStyle(.borderless)
+                                        }
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 6)
+                                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#0EA5E9").opacity(0.08)))
+                                    }
+                                }
+                                .padding(.leading, 48)
                             }
                         }
                         .padding(12)
@@ -922,7 +1224,7 @@ public struct MonthlyProvisionsSheet: View {
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
                                 .stroke(
-                                    parsedEstimated > 0
+                                    (parsedEstimated > 0 || !catQuotas.isEmpty)
                                         ? Color(hex: "#6366F1").opacity(0.35)
                                         : Color.primary.opacity(0.07),
                                     lineWidth: 1
@@ -936,18 +1238,23 @@ public struct MonthlyProvisionsSheet: View {
             Divider()
 
             // Footer with live summary & Save button
+            let allQuotas = store.allQuotaEnvelopes(for: store.selectedMonth)
+            let quotasEstimatedSum = allQuotas.reduce(0.0) { $0 + $1.totalEstimatedAmount }
+            let quotasRemainingSum = allQuotas.reduce(0.0) { $0 + $1.remainingProvision }
+
             let totalEstimatedDraft = draftItems.reduce(0.0) {
                 $0 + max(0.0, BRLFormatters.parseCurrencyInput($1.amountString))
-            }
+            } + quotasEstimatedSum
+
             let totalRemainingDraft = draftItems.reduce(0.0) { acc, item in
                 let est = max(0.0, BRLFormatters.parseCurrencyInput(item.amountString))
                 guard est > 0 else { return acc }
-                return acc + max(0.0, est - item.realizedExpense)
-            }
+                return acc + max(0.0, est - item.realizedFreeExpense)
+            } + quotasRemainingSum
 
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Total Orçado: \(BRLFormatters.currency(totalEstimatedDraft))")
+                    Text("Total Orçado (Verbas Livres + Cotas): \(BRLFormatters.currency(totalEstimatedDraft))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text("Provisão de Gastos Variáveis: \(BRLFormatters.currency(totalRemainingDraft)) restantes")
@@ -963,8 +1270,12 @@ public struct MonthlyProvisionsSheet: View {
                 .keyboardShortcut(.cancelAction)
 
                 Button {
-                    saveProvisions()
-                    dismiss()
+                    if hasModifiedExistingRecurringProvision() {
+                        showRecurringEditScopeDialog = true
+                    } else {
+                        saveProvisions(scope: .thisAndFutureMonths)
+                        dismiss()
+                    }
                 } label: {
                     Label("Salvar Previsões", systemImage: "checkmark.circle.fill")
                 }
@@ -974,49 +1285,546 @@ public struct MonthlyProvisionsSheet: View {
             }
             .padding(20)
         }
-        .frame(minWidth: 740, minHeight: 540)
+        .frame(minWidth: 820, minHeight: 580)
         .onAppear {
             loadDrafts()
+        }
+        .sheet(item: $addQuotaForCategory) { category in
+            QuotaItemEditorSheet(store: store, existingQuota: nil, preselectedCategoryId: category.id)
+        }
+        .sheet(item: $editingQuota) { quota in
+            QuotaItemEditorSheet(store: store, existingQuota: quota)
+        }
+        .sheet(item: $redeemingQuota) { quota in
+            QuotaRedemptionSheet(store: store, quotaEnvelope: quota)
+        }
+        .confirmationDialog(
+            "Escopo da Alteração de Previsão Recorrente",
+            isPresented: $showRecurringEditScopeDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Salvar apenas para este mês") {
+                saveProvisions(scope: .onlyThisMonth)
+                dismiss()
+            }
+            Button("Aplicar a todos os meses futuros") {
+                saveProvisions(scope: .thisAndFutureMonths)
+                dismiss()
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Você alterou o valor de uma ou mais previsões com recorrência ativa. Deseja manter a alteração apenas como exceção deste mês ou atualizar o modelo base para os próximos meses?")
         }
     }
 
     private func loadDrafts() {
         let monthRef = store.selectedMonth
         draftItems = store.expenseCategories.map { cat in
-            let realized = store.realizedMonthlyExpense(forCategory: cat.id, in: monthRef)
+            let realizedFree = store.realizedFreeBudgetExpense(forCategory: cat.id, in: monthRef)
             if let effective = store.effectiveProvision(forCategory: cat.id, in: monthRef) {
                 return DraftProvisionItem(
                     category: cat,
-                    realizedExpense: realized,
+                    realizedFreeExpense: realizedFree,
                     amountString: String(format: "%.2f", effective.provision.estimatedAmount).replacingOccurrences(of: ".", with: ","),
+                    initialAmount: effective.provision.estimatedAmount,
                     repeatForFutureMonths: effective.provision.repeatForFutureMonths,
-                    wasInitiallyActive: true
+                    wasInitiallyActive: true,
+                    wasInitiallyRecurring: effective.provision.repeatForFutureMonths
                 )
             } else {
                 return DraftProvisionItem(
                     category: cat,
-                    realizedExpense: realized,
+                    realizedFreeExpense: realizedFree,
                     amountString: "",
+                    initialAmount: 0.0,
                     repeatForFutureMonths: true,
-                    wasInitiallyActive: false
+                    wasInitiallyActive: false,
+                    wasInitiallyRecurring: false
                 )
             }
         }
     }
 
-    private func saveProvisions() {
+    private func hasModifiedExistingRecurringProvision() -> Bool {
+        for item in draftItems where item.wasInitiallyActive && item.wasInitiallyRecurring {
+            let trimmed = item.amountString.trimmingCharacters(in: .whitespacesAndNewlines)
+            let newAmount = trimmed.isEmpty ? 0.0 : max(0.0, BRLFormatters.parseCurrencyInput(trimmed))
+            if abs(newAmount - item.initialAmount) > 0.01 {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func saveProvisions(scope: ProvisionEditScope) {
         let monthRef = store.selectedMonth
         for item in draftItems {
             let trimmed = item.amountString.trimmingCharacters(in: .whitespacesAndNewlines)
             let amount = trimmed.isEmpty ? 0.0 : max(0.0, BRLFormatters.parseCurrencyInput(trimmed))
             if amount > 0 || item.wasInitiallyActive {
+                let effectiveScope: ProvisionEditScope = (item.wasInitiallyActive && item.wasInitiallyRecurring && abs(amount - item.initialAmount) > 0.01)
+                    ? scope
+                    : .thisAndFutureMonths
                 store.setCategoryProvision(
                     categoryId: item.category.id,
                     estimatedAmount: amount,
                     for: monthRef,
-                    repeatForFutureMonths: item.repeatForFutureMonths
+                    repeatForFutureMonths: item.repeatForFutureMonths,
+                    editScope: effectiveScope
                 )
             }
+        }
+    }
+}
+
+// MARK: - Modal: Editar Verba Livre Individual com Escopo Temporal
+
+public struct FreeBudgetEditorSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    public let envelope: CategoryProvisionEnvelope
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var amountString: String = ""
+    @State private var repeatForFutureMonths: Bool = true
+    @State private var showScopeDialog: Bool = false
+
+    public var body: some View {
+        let monthTitle = BRLFormatters.monthYear(store.selectedMonth)
+
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                CategoryBadgeView(category: envelope.category, size: 38)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Editar Verba Livre: \(envelope.category.name)")
+                        .font(.title3.bold())
+                    Text("Mês de referência: \(monthTitle)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Valor da Verba Livre Mensal (R$)")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                TextField("Ex: 300,00", text: $amountString)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            Toggle("Repetir esta previsão para os próximos meses", isOn: $repeatForFutureMonths)
+                .toggleStyle(.checkbox)
+
+            Divider()
+
+            HStack {
+                Button("Cancelar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    if envelope.provision.repeatForFutureMonths {
+                        showScopeDialog = true
+                    } else {
+                        applySave(scope: .onlyThisMonth)
+                    }
+                } label: {
+                    Label("Salvar Alterações", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#6366F1"))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 440)
+        .onAppear {
+            amountString = String(format: "%.2f", envelope.freeBudgetEstimated).replacingOccurrences(of: ".", with: ",")
+            repeatForFutureMonths = envelope.provision.repeatForFutureMonths
+        }
+        .confirmationDialog(
+            "Aplicar Alteração na Verba Livre Recorrente",
+            isPresented: $showScopeDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Salvar apenas para este mês") {
+                applySave(scope: .onlyThisMonth)
+            }
+            Button("Aplicar a todos os meses futuros") {
+                applySave(scope: .thisAndFutureMonths)
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Deseja manter o novo valor apenas como exceção para \(monthTitle) ou atualizar a previsão para todos os meses futuros?")
+        }
+    }
+
+    private func applySave(scope: ProvisionEditScope) {
+        let value = max(0.0, BRLFormatters.parseCurrencyInput(amountString))
+        store.setCategoryProvision(
+            categoryId: envelope.category.id,
+            estimatedAmount: value,
+            for: store.selectedMonth,
+            repeatForFutureMonths: repeatForFutureMonths,
+            editScope: scope
+        )
+        dismiss()
+    }
+}
+
+// MARK: - Modal: Cadastrar / Editar Cota de Item Específico (ex: Galão de Água)
+
+public struct QuotaItemEditorSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    public let existingQuota: CategoryQuotaEnvelope?
+    public var preselectedCategoryId: UUID? = nil
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var selectedCategoryId: UUID = UUID()
+    @State private var itemName: String = ""
+    @State private var iconSymbol: String = "drop.fill"
+    @State private var plannedQuantityString: String = "4"
+    @State private var unitPriceString: String = "30,00"
+    @State private var repeatForFutureMonths: Bool = true
+    @State private var showEditScopeDialog: Bool = false
+
+    private let suggestedIcons: [String] = [
+        "drop.fill", "flame.fill", "shippingbox.fill", "cart.fill",
+        "fuelpump.fill", "pills.fill", "pawprint.fill", "cup.and.saucer.fill",
+        "bag.fill", "bolt.fill", "leaf.fill", "sparkles"
+    ]
+
+    public var body: some View {
+        let monthTitle = BRLFormatters.monthYear(store.selectedMonth)
+        let qty = max(1, Int(plannedQuantityString.filter(\.isNumber)) ?? 1)
+        let unitPrice = max(0.0, BRLFormatters.parseCurrencyInput(unitPriceString))
+        let totalEstimated = Double(qty) * unitPrice
+
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: "#0EA5E9").opacity(0.16))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: iconSymbol)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Color(hex: "#0EA5E9"))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(existingQuota == nil ? "Nova Cota de Item Específico" : "Editar Cota: \(existingQuota?.name ?? "")")
+                        .font(.title3.bold())
+                    Text("Coexiste com a Verba Livre da categoria em \(monthTitle)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Categoria Vinculada")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    Picker("Categoria", selection: $selectedCategoryId) {
+                        ForEach(store.expenseCategories) { cat in
+                            Text(cat.name).tag(cat.id)
+                        }
+                    }
+                    .labelsHidden()
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Nome do Item Específico")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    TextField("Ex: Galão de Água, Botijão de Gás, Ração...", text: $itemName)
+                        .textFieldStyle(.roundedBorder)
+                        .onChange(of: itemName) { _, newValue in
+                            if existingQuota == nil {
+                                iconSymbol = FinancialDataStore.defaultIconForQuotaName(newValue)
+                            }
+                        }
+                }
+
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Quantidade Prevista no Mês")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        TextField("Ex: 4", text: $plannedQuantityString)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Valor Unitário Estimado (R$)")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        TextField("Ex: 30,00", text: $unitPriceString)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Ícone do Item")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        ForEach(suggestedIcons, id: \.self) { sym in
+                            Button {
+                                iconSymbol = sym
+                            } label: {
+                                Image(systemName: sym)
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .frame(width: 28, height: 28)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(iconSymbol == sym ? Color(hex: "#0EA5E9").opacity(0.22) : Color.primary.opacity(0.05))
+                                    )
+                                    .foregroundStyle(iconSymbol == sym ? Color(hex: "#0EA5E9") : .primary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Toggle("Repetir esta cota automaticamente para os próximos meses", isOn: $repeatForFutureMonths)
+                    .toggleStyle(.checkbox)
+
+                HStack {
+                    Text("Provisão Total da Cota (\(qty) un. × \(BRLFormatters.currency(unitPrice))):")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(BRLFormatters.currency(totalEstimated))
+                        .font(.subheadline.bold())
+                        .foregroundStyle(Color(hex: "#0EA5E9"))
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#0EA5E9").opacity(0.08)))
+            }
+
+            Divider()
+
+            HStack {
+                Button("Cancelar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    if let existing = existingQuota, existing.repeatForFutureMonths {
+                        showEditScopeDialog = true
+                    } else {
+                        saveQuota(scope: .thisAndFutureMonths)
+                    }
+                } label: {
+                    Label(existingQuota == nil ? "Adicionar Cota" : "Salvar Cota", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#0EA5E9"))
+                .disabled(itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || unitPrice <= 0)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 480)
+        .onAppear {
+            if let existing = existingQuota {
+                selectedCategoryId = existing.categoryId
+                itemName = existing.name
+                iconSymbol = existing.iconSymbol
+                plannedQuantityString = String(existing.plannedQuantity)
+                unitPriceString = String(format: "%.2f", existing.estimatedUnitPrice).replacingOccurrences(of: ".", with: ",")
+                repeatForFutureMonths = existing.repeatForFutureMonths
+            } else {
+                selectedCategoryId = preselectedCategoryId ?? store.expenseCategories.first?.id ?? UUID()
+            }
+        }
+        .confirmationDialog(
+            "Escopo da Alteração da Cota Recorrente",
+            isPresented: $showEditScopeDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Salvar apenas para este mês") {
+                saveQuota(scope: .onlyThisMonth)
+            }
+            Button("Aplicar a todos os meses futuros") {
+                saveQuota(scope: .thisAndFutureMonths)
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Esta cota possui recorrência ativa. Deseja aplicar as alterações apenas ao mês selecionado (\(monthTitle)) ou atualizar todos os meses futuros?")
+        }
+    }
+
+    private func saveQuota(scope: ProvisionEditScope) {
+        let qty = max(1, Int(plannedQuantityString.filter(\.isNumber)) ?? 1)
+        let unitPrice = max(0.0, BRLFormatters.parseCurrencyInput(unitPriceString))
+        store.saveCategoryQuota(
+            seriesId: existingQuota?.seriesId,
+            categoryId: selectedCategoryId,
+            name: itemName,
+            iconSymbol: iconSymbol,
+            plannedQuantity: qty,
+            estimatedUnitPrice: unitPrice,
+            for: store.selectedMonth,
+            repeatForFutureMonths: repeatForFutureMonths,
+            editScope: scope
+        )
+        dismiss()
+    }
+}
+
+// MARK: - Mini-Diálogo: Dar Baixa / Registrar Compra de Cota Específica
+
+public struct QuotaRedemptionSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    public let quotaEnvelope: CategoryQuotaEnvelope
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var unitsString: String = "1"
+    @State private var actualUnitPriceString: String = ""
+    @State private var selectedAccountId: UUID = UUID()
+    @State private var notes: String = ""
+
+    public var body: some View {
+        let units = max(1, Int(unitsString.filter(\.isNumber)) ?? 1)
+        let actualUnitPrice = max(0.0, BRLFormatters.parseCurrencyInput(actualUnitPriceString))
+        let totalRealAmount = Double(units) * actualUnitPrice
+        let categoryName = store.category(for: quotaEnvelope.categoryId)?.name ?? "Despesa"
+
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: "#0EA5E9").opacity(0.16))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: quotaEnvelope.iconSymbol)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Color(hex: "#0EA5E9"))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Dar Baixa: \(quotaEnvelope.name)")
+                        .font(.title3.bold())
+                    Text("Categoria vinculada: \(categoryName) • Consumidos: \(quotaEnvelope.consumedUnits) de \(quotaEnvelope.plannedQuantity)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Quantidade Comprada")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        TextField("1", text: $unitsString)
+                            .textFieldStyle(.roundedBorder)
+                    }
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Valor Unitário Real (R$)")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                        TextField("0,00", text: $actualUnitPriceString)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Conta de Débito")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    if store.accounts.isEmpty {
+                        Text("Cadastre uma conta bancária em Configurações → Contas para debitar.")
+                            .font(.caption)
+                            .foregroundStyle(Color(hex: "#EF4444"))
+                    } else {
+                        Picker("Conta", selection: $selectedAccountId) {
+                            ForEach(store.accounts) { acc in
+                                Text(acc.name).tag(acc.id)
+                            }
+                        }
+                        .labelsHidden()
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Observação (Opcional)")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                    TextField("Ex: Entrega rápida", text: $notes)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Valor Total a Debitar no Extrato:")
+                            .font(.caption.weight(.medium))
+                        Spacer()
+                        Text(BRLFormatters.currency(totalRealAmount))
+                            .font(.subheadline.bold())
+                            .foregroundStyle(Color(hex: "#EF4444"))
+                    }
+                    Text("Esta baixa incrementará o contador da cota e criará a transação real com a data atual, sem abater da Verba Livre da categoria.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+            }
+
+            Divider()
+
+            HStack {
+                Button("Cancelar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    store.redeemCategoryQuota(
+                        seriesId: quotaEnvelope.seriesId,
+                        units: units,
+                        unitPriceOverride: actualUnitPrice,
+                        accountId: selectedAccountId,
+                        in: store.selectedMonth,
+                        transactionDate: Date(),
+                        details: notes
+                    )
+                    dismiss()
+                } label: {
+                    Label("Confirmar Compra & Dar Baixa", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#0EA5E9"))
+                .disabled(store.accounts.isEmpty || actualUnitPrice <= 0)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 460)
+        .onAppear {
+            actualUnitPriceString = String(format: "%.2f", quotaEnvelope.estimatedUnitPrice).replacingOccurrences(of: ".", with: ",")
+            selectedAccountId = store.accounts.first?.id ?? UUID()
         }
     }
 }

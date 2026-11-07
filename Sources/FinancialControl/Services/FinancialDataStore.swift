@@ -12,6 +12,7 @@ public struct FinancialDatabaseSnapshot: Codable {
     public var debts: [DebtItem]
     public var contracts: [CreditContract]
     public var provisions: [CategoryProvision]?
+    public var categoryQuotas: [CategoryQuotaRule]?
     public var llmConfig: LLMConfiguration
     public var chatHistory: [ChatMessage]
     public var hasSeededInitialStatement: Bool
@@ -25,6 +26,7 @@ public struct FinancialDatabaseSnapshot: Codable {
         debts: [DebtItem] = [],
         contracts: [CreditContract] = [],
         provisions: [CategoryProvision]? = [],
+        categoryQuotas: [CategoryQuotaRule]? = [],
         llmConfig: LLMConfiguration = LLMConfiguration(),
         chatHistory: [ChatMessage] = [],
         hasSeededInitialStatement: Bool = false
@@ -37,6 +39,7 @@ public struct FinancialDatabaseSnapshot: Codable {
         self.debts = debts
         self.contracts = contracts
         self.provisions = provisions
+        self.categoryQuotas = categoryQuotas
         self.llmConfig = llmConfig
         self.chatHistory = chatHistory
         self.hasSeededInitialStatement = hasSeededInitialStatement
@@ -105,6 +108,7 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var debts: [DebtItem] = []
     @Published public var contracts: [CreditContract] = []
     @Published public var provisions: [CategoryProvision] = []
+    @Published public var categoryQuotas: [CategoryQuotaRule] = []
     @Published public var llmConfig: LLMConfiguration = LLMConfiguration()
     @Published public var chatHistory: [ChatMessage] = []
     @Published public var selectedMonth: Date = Date()
@@ -116,10 +120,12 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var isLLMInstallAlertPresented: Bool = false
     @Published public var pendingAIFeatureName: String = ""
 
+    public let persistenceEnvironment: PersistenceEnvironment
     public let storageDirectory: URL
     public let databaseFileURL: URL
     public let attachmentsDirectoryURL: URL
     public let modelsDirectoryURL: URL
+    private let legacyReleaseDatabaseFileURL: URL?
 
     private var hasSeededInitialStatement: Bool = false
     private let calendar: Calendar = {
@@ -128,14 +134,36 @@ public final class FinancialDataStore: ObservableObject {
         return cal
     }()
 
-    public init(customDirectory: URL? = nil, seedStatementOnFirstLaunch: Bool = false) {
+    public init(
+        customDirectory: URL? = nil,
+        environment: PersistenceEnvironment = .current,
+        baseAppSupportDirectory: URL? = nil,
+        seedStatementOnFirstLaunch: Bool = false
+    ) {
+        self.persistenceEnvironment = environment
         if let customDirectory {
             self.storageDirectory = customDirectory
+            self.databaseFileURL = customDirectory.appendingPathComponent(environment.databaseFileName)
+            self.legacyReleaseDatabaseFileURL = environment == .release
+                ? customDirectory.appendingPathComponent("database.json")
+                : nil
         } else {
-            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            self.storageDirectory = appSupport.appendingPathComponent("FinancialControl", isDirectory: true)
+            let appSupport = baseAppSupportDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            switch environment {
+            case .release:
+                // Produção (Release): mantém exatamente ~/Library/Application Support/FinancialControl/financial_database.json
+                let prodDir = appSupport.appendingPathComponent("FinancialControl", isDirectory: true)
+                self.storageDirectory = prodDir
+                self.databaseFileURL = prodDir.appendingPathComponent("financial_database.json")
+                self.legacyReleaseDatabaseFileURL = prodDir.appendingPathComponent("database.json")
+            case .debug:
+                // Desenvolvimento (Debug): diretório e arquivo 100% isolados, sem tocar no banco de produção
+                let debugDir = appSupport.appendingPathComponent("FinancialControl-Debug", isDirectory: true)
+                self.storageDirectory = debugDir
+                self.databaseFileURL = debugDir.appendingPathComponent("financial_database_debug.json")
+                self.legacyReleaseDatabaseFileURL = nil
+            }
         }
-        self.databaseFileURL = storageDirectory.appendingPathComponent("database.json")
         self.attachmentsDirectoryURL = storageDirectory.appendingPathComponent("Attachments", isDirectory: true)
         self.modelsDirectoryURL = storageDirectory.appendingPathComponent("Models", isDirectory: true)
 
@@ -152,8 +180,20 @@ public final class FinancialDataStore: ObservableObject {
 
     public func loadOrInitialize(seedStatementOnFirstLaunch: Bool = false) {
         let fm = FileManager.default
-        if fm.fileExists(atPath: databaseFileURL.path),
-           let data = try? Data(contentsOf: databaseFileURL),
+        let sourceURL: URL? = {
+            if fm.fileExists(atPath: databaseFileURL.path) {
+                return databaseFileURL
+            }
+            if persistenceEnvironment == .release,
+               let legacyURL = legacyReleaseDatabaseFileURL,
+               fm.fileExists(atPath: legacyURL.path) {
+                return legacyURL
+            }
+            return nil
+        }()
+
+        if let url = sourceURL,
+           let data = try? Data(contentsOf: url),
            let decoded = try? JSONDecoder().decode(FinancialDatabaseSnapshot.self, from: data),
            decoded.schemaVersion == 2 {
             self.accounts = decoded.accounts
@@ -163,6 +203,7 @@ public final class FinancialDataStore: ObservableObject {
             self.debts = decoded.debts
             self.contracts = decoded.contracts
             self.provisions = decoded.provisions ?? []
+            self.categoryQuotas = decoded.categoryQuotas ?? []
             self.llmConfig = decoded.llmConfig
             self.chatHistory = decoded.chatHistory
             self.hasSeededInitialStatement = decoded.hasSeededInitialStatement
@@ -175,6 +216,7 @@ public final class FinancialDataStore: ObservableObject {
             self.debts = []
             self.contracts = []
             self.provisions = []
+            self.categoryQuotas = []
             self.llmConfig = LLMConfiguration()
             self.chatHistory = [
                 ChatMessage(
@@ -202,6 +244,7 @@ public final class FinancialDataStore: ObservableObject {
             debts: debts,
             contracts: contracts,
             provisions: provisions,
+            categoryQuotas: categoryQuotas,
             llmConfig: llmConfig,
             chatHistory: chatHistory,
             hasSeededInitialStatement: hasSeededInitialStatement
@@ -257,6 +300,7 @@ public final class FinancialDataStore: ObservableObject {
         if targets.contains(.categories) {
             categories.removeAll()
             provisions.removeAll()
+            categoryQuotas.removeAll()
         }
         if targets.contains(.investments) {
             investments.removeAll()
@@ -629,6 +673,7 @@ public final class FinancialDataStore: ObservableObject {
     public func deleteCategory(_ categoryId: UUID) {
         categories.removeAll(where: { $0.id == categoryId })
         provisions.removeAll(where: { $0.categoryId == categoryId })
+        categoryQuotas.removeAll(where: { $0.categoryId == categoryId })
         save()
     }
 
@@ -1952,26 +1997,85 @@ public final class FinancialDataStore: ObservableObject {
         monthlyIncome(for: monthReference, onlyPaid: onlyPaid) - monthlyExpense(for: monthReference, onlyPaid: onlyPaid)
     }
 
-    // MARK: - Category Provisions (Orçamento por Envelopes Dinâmicos)
+    // MARK: - Category Provisions & Specific Quotas (Orçamento por Envelopes Dinâmicos)
 
-    /// Define ou atualiza o teto estimado para uma categoria em um mês específico.
-    /// Se `estimatedAmount <= 0`, desativa/zera a provisão daquele mês em diante.
+    /// Define ou atualiza a Verba Livre (`CategoryProvision`) para uma categoria em um mês específico,
+    /// suportando controle de escopo temporal (`.onlyThisMonth` vs `.thisAndFutureMonths`).
     public func setCategoryProvision(
         categoryId: UUID,
         estimatedAmount: Double,
         for monthReference: Date,
-        repeatForFutureMonths: Bool = true
+        repeatForFutureMonths: Bool = true,
+        editScope: ProvisionEditScope = .thisAndFutureMonths
     ) {
         let year = calendar.component(.year, from: monthReference)
         let month = calendar.component(.month, from: monthReference)
+        let targetKey = year * 100 + month
         let sanitizedAmount = max(0.0, estimatedAmount)
+
+        if editScope == .onlyThisMonth {
+            let candidates = provisions
+                .enumerated()
+                .filter { $0.element.categoryId == categoryId && $0.element.yearMonthKey <= targetKey }
+                .sorted { a, b in
+                    if a.element.yearMonthKey == b.element.yearMonthKey {
+                        return a.element.createdAt < b.element.createdAt
+                    }
+                    return a.element.yearMonthKey < b.element.yearMonthKey
+                }
+
+            if let latest = candidates.last {
+                let idx = latest.offset
+                if provisions[idx].yearMonthKey == targetKey && !provisions[idx].repeatForFutureMonths {
+                    if sanitizedAmount <= 0 {
+                        provisions.remove(at: idx)
+                    } else {
+                        provisions[idx].estimatedAmount = sanitizedAmount
+                    }
+                } else {
+                    var overrides = provisions[idx].monthlyOverrides ?? [:]
+                    if sanitizedAmount <= 0 {
+                        overrides.removeValue(forKey: targetKey)
+                        var excluded = provisions[idx].excludedYearMonthKeys ?? []
+                        excluded.insert(targetKey)
+                        provisions[idx].excludedYearMonthKeys = excluded
+                    } else {
+                        overrides[targetKey] = sanitizedAmount
+                        provisions[idx].excludedYearMonthKeys?.remove(targetKey)
+                    }
+                    provisions[idx].monthlyOverrides = overrides
+                }
+            } else if sanitizedAmount > 0 {
+                let singleMonthProvision = CategoryProvision(
+                    categoryId: categoryId,
+                    year: year,
+                    month: month,
+                    estimatedAmount: sanitizedAmount,
+                    repeatForFutureMonths: false
+                )
+                provisions.append(singleMonthProvision)
+            }
+            save()
+            return
+        }
+
+        // Escopo: .thisAndFutureMonths (atualiza modelo base daquele mês em diante)
+        provisions.removeAll { $0.categoryId == categoryId && $0.yearMonthKey > targetKey }
+        for idx in provisions.indices where provisions[idx].categoryId == categoryId {
+            if var overrides = provisions[idx].monthlyOverrides {
+                overrides = overrides.filter { $0.key < targetKey }
+                provisions[idx].monthlyOverrides = overrides.isEmpty ? nil : overrides
+            }
+            if var excluded = provisions[idx].excludedYearMonthKeys {
+                excluded = excluded.filter { $0 < targetKey }
+                provisions[idx].excludedYearMonthKeys = excluded.isEmpty ? nil : excluded
+            }
+        }
 
         if let existingIndex = provisions.firstIndex(where: {
             $0.categoryId == categoryId && $0.year == year && $0.month == month
         }) {
             if sanitizedAmount <= 0 {
-                // Verifica se existe uma provisão recorrente anterior que seria herdada caso removêssemos o registro.
-                let targetKey = year * 100 + month
                 let hasPriorRecurring = provisions.contains {
                     $0.categoryId == categoryId &&
                     $0.yearMonthKey < targetKey &&
@@ -1999,7 +2103,6 @@ public final class FinancialDataStore: ObservableObject {
                 )
                 provisions.append(newProvision)
             } else {
-                let targetKey = year * 100 + month
                 let hasPriorRecurring = provisions.contains {
                     $0.categoryId == categoryId &&
                     $0.yearMonthKey < targetKey &&
@@ -2022,22 +2125,63 @@ public final class FinancialDataStore: ObservableObject {
         save()
     }
 
+    /// Exclui a Verba Livre de uma categoria respeitando o escopo temporal:
+    /// - `.onlyThisMonth`: remove apenas do mês corrente (a regra recorrente continua nos meses anteriores e reaparece nos futuros).
+    /// - `.allOccurrences`: remove o registro e interrompe a recorrência definitivamente para frente e para trás.
+    public func deleteCategoryProvision(
+        categoryId: UUID,
+        for monthReference: Date,
+        scope: ProvisionDeleteScope = .allOccurrences
+    ) {
+        let year = calendar.component(.year, from: monthReference)
+        let month = calendar.component(.month, from: monthReference)
+        let targetKey = year * 100 + month
+
+        switch scope {
+        case .allOccurrences:
+            provisions.removeAll { $0.categoryId == categoryId }
+        case .onlyThisMonth:
+            let candidates = provisions
+                .enumerated()
+                .filter { $0.element.categoryId == categoryId && $0.element.yearMonthKey <= targetKey }
+                .sorted { a, b in
+                    if a.element.yearMonthKey == b.element.yearMonthKey {
+                        return a.element.createdAt < b.element.createdAt
+                    }
+                    return a.element.yearMonthKey < b.element.yearMonthKey
+                }
+            if let latest = candidates.last {
+                let idx = latest.offset
+                if provisions[idx].repeatForFutureMonths {
+                    var excluded = provisions[idx].excludedYearMonthKeys ?? []
+                    excluded.insert(targetKey)
+                    provisions[idx].excludedYearMonthKeys = excluded
+                    provisions[idx].monthlyOverrides?.removeValue(forKey: targetKey)
+                } else if provisions[idx].yearMonthKey == targetKey {
+                    provisions.remove(at: idx)
+                }
+            }
+        }
+
+        save()
+    }
+
     /// Remove ou zera a provisão de uma categoria a partir do mês informado.
     public func removeCategoryProvision(categoryId: UUID, for monthReference: Date) {
         setCategoryProvision(
             categoryId: categoryId,
             estimatedAmount: 0,
             for: monthReference,
-            repeatForFutureMonths: true
+            repeatForFutureMonths: true,
+            editScope: .thisAndFutureMonths
         )
     }
 
-    /// Retorna a provisão efetiva vigente para a categoria no mês (`monthReference`),
-    /// respeitando a configuração de recorrência (`repeatForFutureMonths`) de meses anteriores.
-    public func effectiveProvision(
+    /// Retorna detalhes da Verba Livre efetiva vigente para a categoria no mês (`monthReference`).
+    public func effectiveProvisionDetails(
         forCategory categoryId: UUID,
         in monthReference: Date
-    ) -> (provision: CategoryProvision, isInherited: Bool)? {
+    ) -> (provision: CategoryProvision, isInherited: Bool, isLocalOverride: Bool)? {
         let targetYear = calendar.component(.year, from: monthReference)
         let targetMonth = calendar.component(.month, from: monthReference)
         let targetKey = targetYear * 100 + targetMonth
@@ -2053,36 +2197,435 @@ public final class FinancialDataStore: ObservableObject {
 
         guard let latest = candidates.last else { return nil }
 
+        if latest.excludedYearMonthKeys?.contains(targetKey) == true {
+            return nil
+        }
+
+        if let overrideAmount = latest.monthlyOverrides?[targetKey] {
+            guard overrideAmount > 0 else { return nil }
+            var resolved = latest
+            resolved.estimatedAmount = overrideAmount
+            return (resolved, latest.yearMonthKey < targetKey, true)
+        }
+
         if latest.yearMonthKey == targetKey {
             guard latest.estimatedAmount > 0 else { return nil }
-            return (latest, false)
+            return (latest, false, false)
         } else {
             guard latest.repeatForFutureMonths && latest.estimatedAmount > 0 else { return nil }
-            return (latest, true)
+            return (latest, true, false)
         }
     }
 
-    /// Gasto Realizado ($G_{real}$): Soma de todas as despesas reais confirmadas ou pendentes vinculadas à categoria no mês.
+    /// Retorna a provisão efetiva vigente para a categoria no mês (`monthReference`),
+    /// respeitando a configuração de recorrência (`repeatForFutureMonths`) e exceções mensais.
+    public func effectiveProvision(
+        forCategory categoryId: UUID,
+        in monthReference: Date
+    ) -> (provision: CategoryProvision, isInherited: Bool)? {
+        guard let details = effectiveProvisionDetails(forCategory: categoryId, in: monthReference) else {
+            return nil
+        }
+        return (details.provision, details.isInherited)
+    }
+
+    // MARK: - Specific Item Quotas CRUD & Redemption ("Cotas de Itens Específicos")
+
+    public static func defaultIconForQuotaName(_ name: String) -> String {
+        let lower = name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+        if lower.contains("agua") || lower.contains("galao") {
+            return "drop.fill"
+        } else if lower.contains("gas") || lower.contains("botijao") {
+            return "flame.fill"
+        } else if lower.contains("combustivel") || lower.contains("gasolina") || lower.contains("tanque") {
+            return "fuelpump.fill"
+        } else if lower.contains("feira") || lower.contains("mercado") || lower.contains("cesta") {
+            return "cart.fill"
+        } else if lower.contains("remedio") || lower.contains("farmacia") {
+            return "pills.fill"
+        } else if lower.contains("racao") || lower.contains("pet") {
+            return "pawprint.fill"
+        }
+        return "shippingbox.fill"
+    }
+
+    /// Cria ou atualiza uma Cota de Item Específico (ex: "Galão de Água", 4 unidades a R$ 30,00 cada)
+    /// com suporte a escopo temporal (`.onlyThisMonth` vs `.thisAndFutureMonths`).
+    @discardableResult
+    public func saveCategoryQuota(
+        seriesId: UUID? = nil,
+        categoryId: UUID,
+        name: String,
+        iconSymbol: String? = nil,
+        plannedQuantity: Int,
+        estimatedUnitPrice: Double,
+        for monthReference: Date,
+        repeatForFutureMonths: Bool = true,
+        editScope: ProvisionEditScope = .thisAndFutureMonths
+    ) -> CategoryQuotaRule {
+        let year = calendar.component(.year, from: monthReference)
+        let month = calendar.component(.month, from: monthReference)
+        let targetKey = year * 100 + month
+        let cleanQty = max(1, plannedQuantity)
+        let cleanPrice = max(0.0, estimatedUnitPrice)
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanName = trimmedName.isEmpty ? "Item Provisionado" : trimmedName
+        let resolvedIcon = iconSymbol ?? Self.defaultIconForQuotaName(cleanName)
+
+        if let existingSeriesId = seriesId,
+           categoryQuotas.contains(where: { $0.seriesId == existingSeriesId }) {
+            if editScope == .onlyThisMonth {
+                let candidates = categoryQuotas
+                    .enumerated()
+                    .filter { $0.element.seriesId == existingSeriesId && $0.element.yearMonthKey <= targetKey }
+                    .sorted { a, b in
+                        if a.element.yearMonthKey == b.element.yearMonthKey {
+                            return a.element.createdAt < b.element.createdAt
+                        }
+                        return a.element.yearMonthKey < b.element.yearMonthKey
+                    }
+
+                if let latest = candidates.last {
+                    let idx = latest.offset
+                    if categoryQuotas[idx].yearMonthKey == targetKey && !categoryQuotas[idx].repeatForFutureMonths {
+                        categoryQuotas[idx].name = cleanName
+                        categoryQuotas[idx].iconSymbol = resolvedIcon
+                        categoryQuotas[idx].plannedQuantity = cleanQty
+                        categoryQuotas[idx].estimatedUnitPrice = cleanPrice
+                    } else {
+                        var overrides = categoryQuotas[idx].monthlyOverrides ?? [:]
+                        overrides[targetKey] = CategoryQuotaMonthlyOverride(
+                            name: cleanName,
+                            plannedQuantity: cleanQty,
+                            estimatedUnitPrice: cleanPrice
+                        )
+                        categoryQuotas[idx].monthlyOverrides = overrides
+                        categoryQuotas[idx].excludedYearMonthKeys?.remove(targetKey)
+                    }
+                    save()
+                    return categoryQuotas[idx]
+                }
+            }
+
+            // Escopo: .thisAndFutureMonths
+            categoryQuotas.removeAll { $0.seriesId == existingSeriesId && $0.yearMonthKey > targetKey }
+            for idx in categoryQuotas.indices where categoryQuotas[idx].seriesId == existingSeriesId {
+                if var overrides = categoryQuotas[idx].monthlyOverrides {
+                    overrides = overrides.filter { $0.key < targetKey }
+                    categoryQuotas[idx].monthlyOverrides = overrides.isEmpty ? nil : overrides
+                }
+                if var excluded = categoryQuotas[idx].excludedYearMonthKeys {
+                    excluded = excluded.filter { $0 < targetKey }
+                    categoryQuotas[idx].excludedYearMonthKeys = excluded.isEmpty ? nil : excluded
+                }
+            }
+
+            if let exactIdx = categoryQuotas.firstIndex(where: {
+                $0.seriesId == existingSeriesId && $0.year == year && $0.month == month
+            }) {
+                categoryQuotas[exactIdx].name = cleanName
+                categoryQuotas[exactIdx].iconSymbol = resolvedIcon
+                categoryQuotas[exactIdx].plannedQuantity = cleanQty
+                categoryQuotas[exactIdx].estimatedUnitPrice = cleanPrice
+                categoryQuotas[exactIdx].repeatForFutureMonths = repeatForFutureMonths
+                save()
+                return categoryQuotas[exactIdx]
+            } else {
+                let updatedFutureRule = CategoryQuotaRule(
+                    seriesId: existingSeriesId,
+                    categoryId: categoryId,
+                    name: cleanName,
+                    iconSymbol: resolvedIcon,
+                    year: year,
+                    month: month,
+                    plannedQuantity: cleanQty,
+                    estimatedUnitPrice: cleanPrice,
+                    repeatForFutureMonths: repeatForFutureMonths
+                )
+                categoryQuotas.append(updatedFutureRule)
+                save()
+                return updatedFutureRule
+            }
+        }
+
+        let newRule = CategoryQuotaRule(
+            seriesId: seriesId,
+            categoryId: categoryId,
+            name: cleanName,
+            iconSymbol: resolvedIcon,
+            year: year,
+            month: month,
+            plannedQuantity: cleanQty,
+            estimatedUnitPrice: cleanPrice,
+            repeatForFutureMonths: repeatForFutureMonths
+        )
+        categoryQuotas.append(newRule)
+        save()
+        return newRule
+    }
+
+    /// Exclui uma Cota de Item Específico respeitando o escopo temporal:
+    /// - `.onlyThisMonth`: remove do mês corrente; continua nos meses anteriores e reaparece nos futuros.
+    /// - `.allOccurrences`: remove o registro e interrompe a recorrência definitivamente para frente e para trás.
+    public func deleteCategoryQuota(
+        seriesId: UUID,
+        for monthReference: Date,
+        scope: ProvisionDeleteScope
+    ) {
+        let year = calendar.component(.year, from: monthReference)
+        let month = calendar.component(.month, from: monthReference)
+        let targetKey = year * 100 + month
+
+        switch scope {
+        case .allOccurrences:
+            categoryQuotas.removeAll { $0.seriesId == seriesId }
+        case .onlyThisMonth:
+            let candidates = categoryQuotas
+                .enumerated()
+                .filter { $0.element.seriesId == seriesId && $0.element.yearMonthKey <= targetKey }
+                .sorted { a, b in
+                    if a.element.yearMonthKey == b.element.yearMonthKey {
+                        return a.element.createdAt < b.element.createdAt
+                    }
+                    return a.element.yearMonthKey < b.element.yearMonthKey
+                }
+            if let latest = candidates.last {
+                let idx = latest.offset
+                if categoryQuotas[idx].repeatForFutureMonths {
+                    var excluded = categoryQuotas[idx].excludedYearMonthKeys ?? []
+                    excluded.insert(targetKey)
+                    categoryQuotas[idx].excludedYearMonthKeys = excluded
+                    categoryQuotas[idx].monthlyOverrides?.removeValue(forKey: targetKey)
+                } else if categoryQuotas[idx].yearMonthKey == targetKey {
+                    categoryQuotas.remove(at: idx)
+                }
+            }
+        }
+
+        save()
+    }
+
+    /// Retorna os envelopes de Cotas Específicas ativas para uma categoria no mês informado.
+    public func quotaEnvelopes(
+        forCategory categoryId: UUID,
+        in monthReference: Date
+    ) -> [CategoryQuotaEnvelope] {
+        let targetYear = calendar.component(.year, from: monthReference)
+        let targetMonth = calendar.component(.month, from: monthReference)
+        let targetKey = targetYear * 100 + targetMonth
+
+        let rulesForCat = categoryQuotas.filter { $0.categoryId == categoryId }
+        guard !rulesForCat.isEmpty else { return [] }
+
+        let groupedBySeries = Dictionary(grouping: rulesForCat, by: \.seriesId)
+        var envelopes: [CategoryQuotaEnvelope] = []
+
+        for (seriesId, rules) in groupedBySeries {
+            let candidates = rules
+                .filter { $0.yearMonthKey <= targetKey }
+                .sorted { a, b in
+                    if a.yearMonthKey == b.yearMonthKey {
+                        return a.createdAt < b.createdAt
+                    }
+                    return a.yearMonthKey < b.yearMonthKey
+                }
+
+            guard let latest = candidates.last else { continue }
+
+            let isExcluded = rules.contains { $0.excludedYearMonthKeys?.contains(targetKey) == true }
+            if isExcluded {
+                continue
+            }
+
+            let effectiveName: String
+            let effectiveQty: Int
+            let effectiveUnitPrice: Double
+            let isLocalOverride: Bool
+            let isInherited = latest.yearMonthKey < targetKey
+
+            if let override = latest.monthlyOverrides?[targetKey] {
+                effectiveName = override.name ?? latest.name
+                effectiveQty = override.plannedQuantity
+                effectiveUnitPrice = override.estimatedUnitPrice
+                isLocalOverride = true
+            } else {
+                if isInherited && !latest.repeatForFutureMonths {
+                    continue
+                }
+                effectiveName = latest.name
+                effectiveQty = latest.plannedQuantity
+                effectiveUnitPrice = latest.estimatedUnitPrice
+                isLocalOverride = false
+            }
+
+            guard effectiveQty > 0 && effectiveUnitPrice > 0 else { continue }
+
+            let redemptionTxs = transactions.filter { tx in
+                guard !tx.ignoreInConsolidated, tx.type == .expense else { return false }
+                guard tx.linkedQuotaId == seriesId else { return false }
+                if let quotaMonthKey = tx.linkedQuotaYearMonthKey {
+                    return quotaMonthKey == targetKey
+                }
+                return isInMonth(tx.date, monthReference: monthReference)
+            }
+
+            let consumedUnits = redemptionTxs.reduce(0) { $0 + max(1, $1.linkedQuotaUnits ?? 1) }
+            let realizedSpend = redemptionTxs.reduce(0.0) { $0 + $1.amount }
+
+            envelopes.append(
+                CategoryQuotaEnvelope(
+                    rule: latest,
+                    name: effectiveName,
+                    iconSymbol: latest.iconSymbol,
+                    plannedQuantity: effectiveQty,
+                    consumedUnits: consumedUnits,
+                    estimatedUnitPrice: effectiveUnitPrice,
+                    realizedExpense: realizedSpend,
+                    repeatForFutureMonths: latest.repeatForFutureMonths,
+                    isInheritedFromPreviousMonth: isInherited,
+                    isLocalMonthOverride: isLocalOverride
+                )
+            )
+        }
+
+        return envelopes.sorted { a, b in
+            if a.rule.createdAt == b.rule.createdAt {
+                return a.name < b.name
+            }
+            return a.rule.createdAt < b.rule.createdAt
+        }
+    }
+
+    /// Lista todas as cotas específicas ativas em todas as categorias de despesa no mês informado.
+    public func allQuotaEnvelopes(for monthReference: Date) -> [CategoryQuotaEnvelope] {
+        expenseCategories.flatMap { cat in
+            quotaEnvelopes(forCategory: cat.id, in: monthReference)
+        }
+    }
+
+    /// Dá baixa em uma Cota Específica (ex: "+ Registrar Compra" / "Dar Baixa"),
+    /// incrementando as unidades consumidas e inserindo automaticamente a transação real no extrato
+    /// sem abater da Verba Livre da categoria.
+    @discardableResult
+    public func redeemCategoryQuota(
+        seriesId: UUID,
+        units: Int = 1,
+        unitPriceOverride: Double? = nil,
+        accountId: UUID,
+        in monthReference: Date? = nil,
+        transactionDate: Date = Date(),
+        details: String = ""
+    ) -> FinancialTransaction? {
+        let targetMonth = monthReference ?? selectedMonth
+        let targetYear = calendar.component(.year, from: targetMonth)
+        let targetMonthNum = calendar.component(.month, from: targetMonth)
+        let targetKey = targetYear * 100 + targetMonthNum
+
+        let allActiveQuotas = allQuotaEnvelopes(for: targetMonth)
+        let activeEnvelope = allActiveQuotas.first(where: { $0.seriesId == seriesId })
+        let fallbackRule = categoryQuotas.first(where: { $0.seriesId == seriesId })
+
+        guard let catId = activeEnvelope?.categoryId ?? fallbackRule?.categoryId else {
+            return nil
+        }
+
+        let quotaName = activeEnvelope?.name ?? fallbackRule?.name ?? "Item de Cota"
+        let defaultUnitPrice = activeEnvelope?.estimatedUnitPrice ?? fallbackRule?.estimatedUnitPrice ?? 0.0
+        let cleanUnits = max(1, units)
+        let actualUnitPrice = max(0.0, unitPriceOverride ?? defaultUnitPrice)
+        let totalAmount = Double(cleanUnits) * actualUnitPrice
+
+        // Se a data da transação pertence ao mês de referência (ou se monthReference não foi fixado em outro mês),
+        // usa a data atual (`transactionDate`); caso contrário, alinha ao mês de referência para manter consistência no extrato mensal.
+        let effectiveDate: Date = {
+            if isInMonth(transactionDate, monthReference: targetMonth) {
+                return transactionDate
+            } else if monthReference == nil {
+                return transactionDate
+            } else {
+                return targetMonth
+            }
+        }()
+
+        let txTitle = cleanUnits > 1 ? "\(quotaName) (\(cleanUnits) un.)" : quotaName
+        let txDetails = details.isEmpty
+            ? "Baixa de cota específica: \(cleanUnits) un. × \(BRLFormatters.currency(actualUnitPrice))"
+            : details
+
+        let tx = FinancialTransaction(
+            name: txTitle,
+            details: txDetails,
+            amount: totalAmount,
+            date: effectiveDate,
+            type: .expense,
+            isPaid: true,
+            categoryId: catId,
+            accountId: accountId,
+            ignoreInConsolidated: false,
+            recurrenceMode: .single,
+            linkedQuotaId: seriesId,
+            linkedQuotaUnits: cleanUnits,
+            linkedQuotaYearMonthKey: targetKey
+        )
+        transactions.append(tx)
+        save()
+        return tx
+    }
+
+    /// Despesas Avulsas Realizadas: Soma das despesas reais confirmadas ou pendentes na categoria no mês
+    /// que NÃO são baixas de cotas específicas (`linkedQuotaId == nil`). Consomem apenas a Verba Livre.
+    public func realizedFreeBudgetExpense(forCategory categoryId: UUID, in monthReference: Date) -> Double {
+        transactionsForMonth(monthReference)
+            .filter {
+                $0.type == .expense &&
+                !$0.ignoreInConsolidated &&
+                $0.categoryId == categoryId &&
+                $0.linkedQuotaId == nil
+            }
+            .reduce(0.0) { $0 + $1.amount }
+    }
+
+    /// Gasto Realizado Total ($G_{real}$) na categoria no mês (Despesas Avulsas + Baixas de Cotas).
     public func realizedMonthlyExpense(forCategory categoryId: UUID, in monthReference: Date) -> Double {
         transactionsForMonth(monthReference)
             .filter { $0.type == .expense && !$0.ignoreInConsolidated && $0.categoryId == categoryId }
             .reduce(0.0) { $0 + $1.amount }
     }
 
-    /// Envelope calculado para uma categoria específica no mês de referência, caso possua teto ativo.
+    /// Envelope calculado para uma categoria específica no mês de referência,
+    /// coexistindo Verba Livre + Cotas de Itens Específicos.
     public func provisionEnvelope(
         forCategory categoryId: UUID,
         in monthReference: Date
     ) -> CategoryProvisionEnvelope? {
         guard let cat = category(for: categoryId), cat.type == .expense else { return nil }
-        guard let effective = effectiveProvision(forCategory: categoryId, in: monthReference) else { return nil }
-        let realized = realizedMonthlyExpense(forCategory: categoryId, in: monthReference)
+        let freeDetails = effectiveProvisionDetails(forCategory: categoryId, in: monthReference)
+        let activeQuotas = quotaEnvelopes(forCategory: categoryId, in: monthReference)
+
+        if freeDetails == nil && activeQuotas.isEmpty {
+            return nil
+        }
+
+        let year = calendar.component(.year, from: monthReference)
+        let month = calendar.component(.month, from: monthReference)
+        let resolvedProvision = freeDetails?.provision ?? CategoryProvision(
+            categoryId: categoryId,
+            year: year,
+            month: month,
+            estimatedAmount: 0.0,
+            repeatForFutureMonths: activeQuotas.first?.repeatForFutureMonths ?? true
+        )
+
+        let freeRealized = realizedFreeBudgetExpense(forCategory: categoryId, in: monthReference)
+
         return CategoryProvisionEnvelope(
             category: cat,
-            provision: effective.provision,
-            isInheritedFromPreviousMonth: effective.isInherited,
-            estimatedAmount: effective.provision.estimatedAmount,
-            realizedExpense: realized
+            provision: resolvedProvision,
+            isInheritedFromPreviousMonth: freeDetails?.isInherited ?? (activeQuotas.first?.isInheritedFromPreviousMonth ?? false),
+            estimatedAmount: resolvedProvision.estimatedAmount,
+            realizedExpense: freeRealized,
+            quotaEnvelopes: activeQuotas,
+            isFreeBudgetLocalOverride: freeDetails?.isLocalOverride ?? false
         )
     }
 
@@ -2099,13 +2642,13 @@ public final class FinancialDataStore: ObservableObject {
         }
     }
 
-    /// Soma total dos tetos estimados ($\sum T_{estimado}$) configurados para o mês.
+    /// Soma total dos tetos estimados ($\sum T_{estimado}$) configurados para o mês (Verba Livre + Cotas).
     public func totalEstimatedProvision(for monthReference: Date) -> Double {
         provisionEnvelopes(for: monthReference)
             .reduce(0.0) { $0 + $1.estimatedAmount }
     }
 
-    /// Soma total do saldo estimado remanescente ($\sum P_{restante}$) no mês.
+    /// Soma total do saldo estimado remanescente ($\sum P_{restante}$) no mês (Verba Livre restante + Cotas restantes).
     public func totalRemainingProvision(for monthReference: Date) -> Double {
         provisionEnvelopes(for: monthReference)
             .reduce(0.0) { $0 + $1.remainingProvision }

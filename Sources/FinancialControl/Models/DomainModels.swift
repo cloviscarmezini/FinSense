@@ -494,6 +494,9 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
     public var linkedContractId: UUID?
     public var linkedInvestmentId: UUID?
     public var linkedDebtId: UUID?
+    public var linkedQuotaId: UUID?
+    public var linkedQuotaUnits: Int?
+    public var linkedQuotaYearMonthKey: Int?
     public var createdAt: Date
 
     public init(
@@ -520,6 +523,9 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         linkedContractId: UUID? = nil,
         linkedInvestmentId: UUID? = nil,
         linkedDebtId: UUID? = nil,
+        linkedQuotaId: UUID? = nil,
+        linkedQuotaUnits: Int? = nil,
+        linkedQuotaYearMonthKey: Int? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -545,6 +551,9 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         self.linkedContractId = linkedContractId
         self.linkedInvestmentId = linkedInvestmentId
         self.linkedDebtId = linkedDebtId
+        self.linkedQuotaId = linkedQuotaId
+        self.linkedQuotaUnits = linkedQuotaUnits
+        self.linkedQuotaYearMonthKey = linkedQuotaYearMonthKey
         self.createdAt = createdAt
     }
 
@@ -1008,7 +1017,79 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
     }
 }
 
-// MARK: - Provisão de Gastos Estimados (Orçamento por Envelopes Dinâmicos)
+// MARK: - Isolamento de Ambientes de Persistência (Debug vs Release)
+
+public enum PersistenceEnvironment: String, Codable, CaseIterable, Hashable {
+    case debug
+    case release
+
+    public static var current: PersistenceEnvironment {
+        #if DEBUG
+        return .debug
+        #else
+        return .release
+        #endif
+    }
+
+    public var isDebug: Bool {
+        self == .debug
+    }
+
+    public var badgeTitle: String {
+        switch self {
+        case .debug: return "[DEBUG DB]"
+        case .release: return "RELEASE DB"
+        }
+    }
+
+    public var folderName: String {
+        switch self {
+        case .debug: return "FinancialControl-Debug"
+        case .release: return "FinancialControl"
+        }
+    }
+
+    public var databaseFileName: String {
+        switch self {
+        case .debug: return "financial_database_debug.json"
+        case .release: return "financial_database.json"
+        }
+    }
+}
+
+// MARK: - Provisão de Gastos Estimados & Cotas Específicas (Orçamento por Envelopes Dinâmicos)
+
+public enum ProvisionEditScope: String, Codable, CaseIterable, Identifiable, Hashable {
+    case onlyThisMonth
+    case thisAndFutureMonths
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .onlyThisMonth:
+            return "Salvar apenas para este mês"
+        case .thisAndFutureMonths:
+            return "Aplicar a todos os meses futuros"
+        }
+    }
+}
+
+public enum ProvisionDeleteScope: String, Codable, CaseIterable, Identifiable, Hashable {
+    case onlyThisMonth
+    case allOccurrences
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .onlyThisMonth:
+            return "Excluir somente deste mês"
+        case .allOccurrences:
+            return "Excluir todas as ocorrências"
+        }
+    }
+}
 
 public enum ProvisionStatusLevel: String, Codable, CaseIterable, Hashable {
     case normal = "Normal"      // Abaixo de 80%
@@ -1041,6 +1122,8 @@ public struct CategoryProvision: Identifiable, Codable, Hashable {
     public var month: Int
     public var estimatedAmount: Double
     public var repeatForFutureMonths: Bool
+    public var monthlyOverrides: [Int: Double]?
+    public var excludedYearMonthKeys: Set<Int>?
     public var createdAt: Date
 
     public init(
@@ -1050,6 +1133,8 @@ public struct CategoryProvision: Identifiable, Codable, Hashable {
         month: Int,
         estimatedAmount: Double,
         repeatForFutureMonths: Bool = true,
+        monthlyOverrides: [Int: Double]? = nil,
+        excludedYearMonthKeys: Set<Int>? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -1058,6 +1143,8 @@ public struct CategoryProvision: Identifiable, Codable, Hashable {
         self.month = min(max(month, 1), 12)
         self.estimatedAmount = max(0, estimatedAmount)
         self.repeatForFutureMonths = repeatForFutureMonths
+        self.monthlyOverrides = monthlyOverrides
+        self.excludedYearMonthKeys = excludedYearMonthKeys
         self.createdAt = createdAt
     }
 
@@ -1066,19 +1153,165 @@ public struct CategoryProvision: Identifiable, Codable, Hashable {
     }
 }
 
+public struct CategoryQuotaMonthlyOverride: Codable, Hashable {
+    public var name: String?
+    public var plannedQuantity: Int
+    public var estimatedUnitPrice: Double
+
+    public init(
+        name: String? = nil,
+        plannedQuantity: Int,
+        estimatedUnitPrice: Double
+    ) {
+        self.name = name
+        self.plannedQuantity = max(0, plannedQuantity)
+        self.estimatedUnitPrice = max(0, estimatedUnitPrice)
+    }
+}
+
+public struct CategoryQuotaRule: Identifiable, Codable, Hashable {
+    public var id: UUID
+    public var seriesId: UUID
+    public var categoryId: UUID
+    public var name: String
+    public var iconSymbol: String
+    public var year: Int
+    public var month: Int
+    public var plannedQuantity: Int
+    public var estimatedUnitPrice: Double
+    public var repeatForFutureMonths: Bool
+    public var monthlyOverrides: [Int: CategoryQuotaMonthlyOverride]?
+    public var excludedYearMonthKeys: Set<Int>?
+    public var createdAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        seriesId: UUID? = nil,
+        categoryId: UUID,
+        name: String,
+        iconSymbol: String = "shippingbox.fill",
+        year: Int,
+        month: Int,
+        plannedQuantity: Int,
+        estimatedUnitPrice: Double,
+        repeatForFutureMonths: Bool = true,
+        monthlyOverrides: [Int: CategoryQuotaMonthlyOverride]? = nil,
+        excludedYearMonthKeys: Set<Int>? = nil,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.seriesId = seriesId ?? id
+        self.categoryId = categoryId
+        self.name = name
+        self.iconSymbol = iconSymbol
+        self.year = year
+        self.month = min(max(month, 1), 12)
+        self.plannedQuantity = max(0, plannedQuantity)
+        self.estimatedUnitPrice = max(0, estimatedUnitPrice)
+        self.repeatForFutureMonths = repeatForFutureMonths
+        self.monthlyOverrides = monthlyOverrides
+        self.excludedYearMonthKeys = excludedYearMonthKeys
+        self.createdAt = createdAt
+    }
+
+    public var yearMonthKey: Int {
+        year * 100 + month
+    }
+}
+
+public struct CategoryQuotaEnvelope: Identifiable, Hashable {
+    public var id: UUID { rule.seriesId }
+    public let rule: CategoryQuotaRule
+    public var seriesId: UUID { rule.seriesId }
+    public var categoryId: UUID { rule.categoryId }
+    public let name: String
+    public let iconSymbol: String
+    public let plannedQuantity: Int             // Quantidade Prevista_i
+    public let consumedUnits: Int               // Unidades Baixadas_i
+    public let pendingUnits: Int                // Unidades Pendentes_i = max(0, Quantidade Prevista_i - Unidades Baixadas_i)
+    public let estimatedUnitPrice: Double       // Preço Unitário Estimado_i
+    public let totalEstimatedAmount: Double     // Quantidade Prevista_i * Preço Unitário Estimado_i
+    public let remainingProvision: Double       // Provisão Restante_i = Unidades Pendentes_i * Preço Unitário Estimado_i
+    public let realizedExpense: Double          // Soma das transações reais geradas pela baixa desta cota no mês
+    public let repeatForFutureMonths: Bool
+    public let isInheritedFromPreviousMonth: Bool
+    public let isLocalMonthOverride: Bool
+
+    public var progressRatio: Double {
+        guard plannedQuantity > 0 else { return 0.0 }
+        return min(1.0, max(0.0, Double(consumedUnits) / Double(plannedQuantity)))
+    }
+
+    public var status: ProvisionStatusLevel {
+        if consumedUnits > plannedQuantity {
+            return .exceeded
+        } else if plannedQuantity > 0 && Double(consumedUnits) / Double(plannedQuantity) >= 0.8 - 0.001 {
+            return .warning
+        } else {
+            return .normal
+        }
+    }
+
+    public init(
+        rule: CategoryQuotaRule,
+        name: String,
+        iconSymbol: String,
+        plannedQuantity: Int,
+        consumedUnits: Int,
+        estimatedUnitPrice: Double,
+        realizedExpense: Double,
+        repeatForFutureMonths: Bool,
+        isInheritedFromPreviousMonth: Bool,
+        isLocalMonthOverride: Bool = false
+    ) {
+        self.rule = rule
+        self.name = name
+        self.iconSymbol = iconSymbol
+        let cleanPlanned = max(0, plannedQuantity)
+        let cleanConsumed = max(0, consumedUnits)
+        let cleanUnit = max(0.0, estimatedUnitPrice)
+        self.plannedQuantity = cleanPlanned
+        self.consumedUnits = cleanConsumed
+        self.pendingUnits = max(0, cleanPlanned - cleanConsumed)
+        self.estimatedUnitPrice = cleanUnit
+        self.totalEstimatedAmount = Double(cleanPlanned) * cleanUnit
+        self.remainingProvision = Double(max(0, cleanPlanned - cleanConsumed)) * cleanUnit
+        self.realizedExpense = max(0.0, realizedExpense)
+        self.repeatForFutureMonths = repeatForFutureMonths
+        self.isInheritedFromPreviousMonth = isInheritedFromPreviousMonth
+        self.isLocalMonthOverride = isLocalMonthOverride
+    }
+}
+
 public struct CategoryProvisionEnvelope: Identifiable, Hashable {
     public var id: UUID { category.id }
     public let category: CategoryItem
     public let provision: CategoryProvision
     public var provisionId: UUID { provision.id }
-    public let estimatedAmount: Double          // T_estimado
-    public let realizedExpense: Double          // G_real (soma das despesas reais confirmadas ou pendentes na categoria no mês)
-    public let remainingProvision: Double       // P_restante = max(0, T_estimado - G_real)
-    public let exceededAmount: Double           // max(0, G_real - T_estimado)
-    public let rawProgressPercentage: Double    // (G_real / T_estimado) * 100
-    public let clampedProgressPercentage: Double // min(100, (G_real / T_estimado) * 100)
+
+    // 1. Verba Livre (Genérica)
+    public let freeBudgetEstimated: Double          // Verba Livre orçada
+    public let freeBudgetRealizedExpense: Double    // Despesas Avulsas Realizadas (sem vínculo com cota)
+    public let freeBudgetRemaining: Double          // max(0, Verba Livre - Despesas Avulsas Realizadas)
+    public let isFreeBudgetLocalOverride: Bool
+
+    // 2. Cotas de Itens Específicos
+    public let quotaEnvelopes: [CategoryQuotaEnvelope]
+    public let quotasEstimatedTotal: Double         // Soma (Qtd Prevista_i * Preço Unitário_i)
+    public let quotasRealizedExpense: Double        // Soma das baixas reais de cotas no mês
+    public let quotasRemainingTotal: Double         // Soma Provisão Restante_i
+
+    // 3. Consolidado da Categoria
+    public let estimatedAmount: Double              // Verba Livre + Soma Cotas Estimadas
+    public let realizedExpense: Double              // Despesas Avulsas + Despesas de Cotas Baixadas
+    public let remainingProvision: Double           // max(0, Verba Livre - Despesas Avulsas) + Soma Provisão Restante_i
+    public let exceededAmount: Double               // Excedente sobre a Verba Livre / Cotas
+    public let rawProgressPercentage: Double        // Progresso percentual consolidado
+    public let clampedProgressPercentage: Double    // min(100, rawProgressPercentage)
     public let status: ProvisionStatusLevel
-    public var repeatForFutureMonths: Bool { provision.repeatForFutureMonths }
+    public var repeatForFutureMonths: Bool {
+        provision.estimatedAmount > 0 ? provision.repeatForFutureMonths : (quotaEnvelopes.first?.repeatForFutureMonths ?? false)
+    }
     public let isInheritedFromPreviousMonth: Bool
 
     public init(
@@ -1086,29 +1319,67 @@ public struct CategoryProvisionEnvelope: Identifiable, Hashable {
         provision: CategoryProvision,
         isInheritedFromPreviousMonth: Bool,
         estimatedAmount: Double,
-        realizedExpense: Double
+        realizedExpense: Double,
+        quotaEnvelopes: [CategoryQuotaEnvelope] = [],
+        isFreeBudgetLocalOverride: Bool = false
     ) {
         self.category = category
         self.provision = provision
-        let cleanEstimate = max(0.0, estimatedAmount)
-        let cleanRealized = max(0.0, realizedExpense)
-        self.estimatedAmount = cleanEstimate
-        self.realizedExpense = cleanRealized
-        self.remainingProvision = max(0.0, cleanEstimate - cleanRealized)
-        self.exceededAmount = max(0.0, cleanRealized - cleanEstimate)
+        self.isInheritedFromPreviousMonth = isInheritedFromPreviousMonth
+        self.isFreeBudgetLocalOverride = isFreeBudgetLocalOverride
 
-        let rawPct = cleanEstimate > 0.0001 ? ((cleanRealized / cleanEstimate) * 100.0) : 0.0
+        let cleanFreeEst = max(0.0, estimatedAmount)
+        let cleanFreeRealized = max(0.0, realizedExpense)
+        let cleanFreeRem = max(0.0, cleanFreeEst - cleanFreeRealized)
+
+        self.freeBudgetEstimated = cleanFreeEst
+        self.freeBudgetRealizedExpense = cleanFreeRealized
+        self.freeBudgetRemaining = cleanFreeRem
+
+        self.quotaEnvelopes = quotaEnvelopes
+        let qEst = quotaEnvelopes.reduce(0.0) { $0 + $1.totalEstimatedAmount }
+        let qReal = quotaEnvelopes.reduce(0.0) { $0 + $1.realizedExpense }
+        let qRem = quotaEnvelopes.reduce(0.0) { $0 + $1.remainingProvision }
+
+        self.quotasEstimatedTotal = qEst
+        self.quotasRealizedExpense = qReal
+        self.quotasRemainingTotal = qRem
+
+        // Consolidação matemática:
+        // Provisão da Categoria = max(0, Verba Livre - Despesas Avulsas Realizadas) + \sum Provisão Restante_i
+        let totalEst = cleanFreeEst + qEst
+        let totalReal = cleanFreeRealized + qReal
+        let totalRem = cleanFreeRem + qRem
+
+        self.estimatedAmount = totalEst
+        self.realizedExpense = totalReal
+        self.remainingProvision = totalRem
+
+        let freeExceeded = cleanFreeEst > 0 ? max(0.0, cleanFreeRealized - cleanFreeEst) : 0.0
+        let quotasExceeded = quotaEnvelopes.reduce(0.0) { acc, q in
+            let extraUnits = max(0, q.consumedUnits - q.plannedQuantity)
+            return acc + Double(extraUnits) * q.estimatedUnitPrice
+        }
+        self.exceededAmount = freeExceeded + quotasExceeded
+
+        // Para cálculo da barra de progresso, considera o consumo efetivo da verba livre + valor das unidades de cota já consumidas
+        let consumedQuotasNominal = quotaEnvelopes.reduce(0.0) {
+            $0 + (Double($1.consumedUnits) * $1.estimatedUnitPrice)
+        }
+        let effectiveConsumedForProgress = cleanFreeRealized + consumedQuotasNominal
+        let rawPct = totalEst > 0.0001 ? ((effectiveConsumedForProgress / totalEst) * 100.0) : 0.0
         self.rawProgressPercentage = rawPct
         self.clampedProgressPercentage = min(100.0, max(0.0, rawPct))
 
-        if cleanRealized > cleanEstimate + 0.001 {
+        let hasExceededFree = cleanFreeEst > 0 && cleanFreeRealized > cleanFreeEst + 0.001
+        let hasExceededQuota = quotaEnvelopes.contains { $0.consumedUnits > $0.plannedQuantity }
+
+        if hasExceededFree || hasExceededQuota || effectiveConsumedForProgress > totalEst + 0.001 {
             self.status = .exceeded
         } else if rawPct >= 80.0 - 0.001 {
             self.status = .warning
         } else {
             self.status = .normal
         }
-
-        self.isInheritedFromPreviousMonth = isInheritedFromPreviousMonth
     }
 }

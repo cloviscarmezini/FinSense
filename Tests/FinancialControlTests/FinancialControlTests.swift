@@ -1173,4 +1173,192 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertTrue(queryReply.localizedCaseInsensitiveContains("Alimentação"))
         XCTAssertTrue(queryReply.localizedCaseInsensitiveContains("Estourado"))
     }
+
+    func testAdvancedCategoryQuotasLifecycleScopesAndEnvironmentIsolation() throws {
+        // 1. Isolamento de Ambientes (Debug vs. Release)
+        let tempAppSupport = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FinancialControlEnvTest-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempAppSupport, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempAppSupport) }
+
+        let releaseStore = FinancialDataStore(
+            environment: .release,
+            baseAppSupportDirectory: tempAppSupport,
+            seedStatementOnFirstLaunch: false
+        )
+        releaseStore.addAccount(
+            name: "Conta Produção",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 5000.0
+        )
+
+        let debugStore = FinancialDataStore(
+            environment: .debug,
+            baseAppSupportDirectory: tempAppSupport,
+            seedStatementOnFirstLaunch: false
+        )
+
+        // Verifica que os diretórios e arquivos de banco são estritamente separados
+        XCTAssertEqual(releaseStore.storageDirectory.lastPathComponent, "FinancialControl")
+        XCTAssertEqual(releaseStore.databaseFileURL.lastPathComponent, "financial_database.json")
+        XCTAssertEqual(debugStore.storageDirectory.lastPathComponent, "FinancialControl-Debug")
+        XCTAssertEqual(debugStore.databaseFileURL.lastPathComponent, "financial_database_debug.json")
+        XCTAssertNotEqual(releaseStore.databaseFileURL, debugStore.databaseFileURL)
+        // Debug inicia limpo sem ler nem modificar os dados de produção
+        XCTAssertEqual(releaseStore.accounts.count, 1)
+        XCTAssertTrue(debugStore.accounts.isEmpty)
+
+        // 2. Coexistência de Verba Livre + Cotas de Itens Específicos na mesma categoria
+        debugStore.addAccount(
+            name: "Conta Debug",
+            bankPresetId: "nubank",
+            customImagePath: nil,
+            iconSymbol: "creditcard.fill",
+            colorHex: "#820AD1",
+            initialBalance: 1000.0
+        )
+        let debugAcc = debugStore.accounts.first!
+        let housingCat = debugStore.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Moradia") })!
+        let oct2026 = BRLFormatters.shortDateFormatter.date(from: "10/10/2026")!
+        let nov2026 = BRLFormatters.shortDateFormatter.date(from: "10/11/2026")!
+        let dec2026 = BRLFormatters.shortDateFormatter.date(from: "10/12/2026")!
+        debugStore.selectedMonth = oct2026
+
+        // Cadastra cota específica ("Galão de Água", 4 un. × R$ 30,00 = R$ 120,00) SEM verba livre inicialmente
+        let waterQuota = debugStore.saveCategoryQuota(
+            categoryId: housingCat.id,
+            name: "Galão de Água",
+            iconSymbol: "drop.fill",
+            plannedQuantity: 4,
+            estimatedUnitPrice: 30.0,
+            for: oct2026,
+            repeatForFutureMonths: true
+        )
+        let octEnvOnlyQuota = debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026)!
+        XCTAssertEqual(octEnvOnlyQuota.freeBudgetEstimated, 0.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvOnlyQuota.quotasRemainingTotal, 120.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvOnlyQuota.remainingProvision, 120.0, accuracy: 0.01)
+        XCTAssertEqual(debugStore.accumulatedConsolidatedBalance(throughMonth: oct2026, includeProjectedUnpaid: true), 880.0, accuracy: 0.01)
+
+        // Agora adiciona Verba Livre de R$ 200,00 na mesma categoria (Moradia)
+        debugStore.setCategoryProvision(
+            categoryId: housingCat.id,
+            estimatedAmount: 200.0,
+            for: oct2026,
+            repeatForFutureMonths: true
+        )
+        let octEnvBoth = debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026)!
+        XCTAssertEqual(octEnvBoth.freeBudgetEstimated, 200.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvBoth.quotasRemainingTotal, 120.0, accuracy: 0.01)
+        // Provisão da Categoria = max(0, 200 - 0) + 120 = 320
+        XCTAssertEqual(octEnvBoth.remainingProvision, 320.0, accuracy: 0.01)
+        // Saldo Projetado = 1000 - 320 = 680
+        XCTAssertEqual(debugStore.accumulatedConsolidatedBalance(throughMonth: oct2026, includeProjectedUnpaid: true), 680.0, accuracy: 0.01)
+
+        // 3. Dar baixa em 1 unidade da cota (com ajuste real para R$ 32,00):
+        // Deve gerar despesa real no extrato, deduzir 1 unidade pendente (restam 3 × R$ 30 = R$ 90) e NÃO subtrair da Verba Livre (continua R$ 200)!
+        let redeemedTx = debugStore.redeemCategoryQuota(
+            seriesId: waterQuota.seriesId,
+            units: 1,
+            unitPriceOverride: 32.0,
+            accountId: debugAcc.id,
+            in: oct2026,
+            transactionDate: oct2026
+        )
+        XCTAssertNotNil(redeemedTx)
+        XCTAssertEqual(debugStore.transactions.count, 1)
+        XCTAssertEqual(debugStore.totalCheckingBalanceNow, 968.0, accuracy: 0.01)
+
+        let octEnvAfterRedeem = debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026)!
+        XCTAssertEqual(octEnvAfterRedeem.freeBudgetRealizedExpense, 0.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterRedeem.freeBudgetRemaining, 200.0, accuracy: 0.01) // Verba Livre intacta!
+        XCTAssertEqual(octEnvAfterRedeem.quotaEnvelopes.first?.consumedUnits, 1)
+        XCTAssertEqual(octEnvAfterRedeem.quotaEnvelopes.first?.pendingUnits, 3)
+        XCTAssertEqual(octEnvAfterRedeem.quotasRemainingTotal, 90.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterRedeem.remainingProvision, 290.0, accuracy: 0.01)
+        // Saldo Projetado = 968 (saldo atual) - 290 (provisão restante) = 678
+        XCTAssertEqual(debugStore.accumulatedConsolidatedBalance(throughMonth: oct2026, includeProjectedUnpaid: true), 678.0, accuracy: 0.01)
+
+        // 4. Despesa avulsa normal lançada na categoria consome APENAS a Verba Livre, sem alterar as cotas pendentes
+        _ = debugStore.createTransaction(
+            name: "Lâmpada LED",
+            amount: 50.0,
+            date: oct2026,
+            type: .expense,
+            isPaid: true,
+            categoryId: housingCat.id,
+            accountId: debugAcc.id,
+            ignoreInConsolidated: false
+        )
+        let octEnvAfterAvulsa = debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026)!
+        XCTAssertEqual(octEnvAfterAvulsa.freeBudgetRealizedExpense, 50.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterAvulsa.freeBudgetRemaining, 150.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterAvulsa.quotaEnvelopes.first?.pendingUnits, 3)
+        XCTAssertEqual(octEnvAfterAvulsa.quotasRemainingTotal, 90.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterAvulsa.remainingProvision, 240.0, accuracy: 0.01)
+
+        // 5. O encerramento do mês sem consumo total de uma cota não gera resíduos ou transações forçadas no extrato
+        XCTAssertEqual(debugStore.transactions.count, 2)
+        let novEnvInitial = debugStore.provisionEnvelope(forCategory: housingCat.id, in: nov2026)!
+        XCTAssertEqual(novEnvInitial.quotaEnvelopes.first?.consumedUnits, 0)
+        XCTAssertEqual(novEnvInitial.quotaEnvelopes.first?.pendingUnits, 4)
+        XCTAssertEqual(novEnvInitial.quotasRemainingTotal, 120.0, accuracy: 0.01)
+
+        // 6. Edição de item recorrente com escopo .onlyThisMonth vs .thisAndFutureMonths
+        // Em Nov/2026, altera a cota para 5 galões APENAS para Nov/2026 (.onlyThisMonth)
+        debugStore.saveCategoryQuota(
+            seriesId: waterQuota.seriesId,
+            categoryId: housingCat.id,
+            name: "Galão de Água",
+            iconSymbol: "drop.fill",
+            plannedQuantity: 5,
+            estimatedUnitPrice: 30.0,
+            for: nov2026,
+            repeatForFutureMonths: true,
+            editScope: .onlyThisMonth
+        )
+        XCTAssertEqual(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: oct2026).first?.plannedQuantity, 4)
+        XCTAssertEqual(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: nov2026).first?.plannedQuantity, 5)
+        XCTAssertEqual(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: dec2026).first?.plannedQuantity, 4) // Dezembro continua herdando 4!
+
+        // Agora altera em Nov/2026 para 6 galões aplicando a TODOS os meses futuros (.thisAndFutureMonths)
+        debugStore.saveCategoryQuota(
+            seriesId: waterQuota.seriesId,
+            categoryId: housingCat.id,
+            name: "Galão de Água",
+            iconSymbol: "drop.fill",
+            plannedQuantity: 6,
+            estimatedUnitPrice: 30.0,
+            for: nov2026,
+            repeatForFutureMonths: true,
+            editScope: .thisAndFutureMonths
+        )
+        XCTAssertEqual(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: oct2026).first?.plannedQuantity, 4) // Passado preservado
+        XCTAssertEqual(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: nov2026).first?.plannedQuantity, 6)
+        XCTAssertEqual(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: dec2026).first?.plannedQuantity, 6) // Futuro atualizado
+
+        // 7. Exclusão de item recorrente com escopo .onlyThisMonth vs .allOccurrences
+        // Excluir somente de Nov/2026 (.onlyThisMonth): continua em Out/2026 e reaparece em Dez/2026!
+        debugStore.deleteCategoryQuota(
+            seriesId: waterQuota.seriesId,
+            for: nov2026,
+            scope: .onlyThisMonth
+        )
+        XCTAssertEqual(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: oct2026).count, 1)
+        XCTAssertTrue(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: nov2026).isEmpty)
+        XCTAssertEqual(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: dec2026).count, 1)
+
+        // Excluir todas as ocorrências (.allOccurrences): remove definitivamente para trás e para frente
+        debugStore.deleteCategoryQuota(
+            seriesId: waterQuota.seriesId,
+            for: dec2026,
+            scope: .allOccurrences
+        )
+        XCTAssertTrue(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: oct2026).isEmpty)
+        XCTAssertTrue(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: nov2026).isEmpty)
+        XCTAssertTrue(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: dec2026).isEmpty)
+    }
 }

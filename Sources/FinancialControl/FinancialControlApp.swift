@@ -40,8 +40,19 @@ public struct MainContentView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Financial Control")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                        HStack(spacing: 5) {
+                            Text("Financial Control")
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                            if store.persistenceEnvironment.isDebug {
+                                Text(store.persistenceEnvironment.badgeTitle)
+                                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Capsule().fill(Color(hex: "#F59E0B").opacity(0.18)))
+                                    .foregroundStyle(Color(hex: "#F59E0B"))
+                                    .help("Ambiente de Desenvolvimento isolado: \(store.databaseFileURL.path)")
+                            }
+                        }
                         Text("macOS Native • IA Local")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -192,6 +203,18 @@ public struct MainContentView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     }
                     .buttonStyle(.plain)
+
+                    if store.persistenceEnvironment.isDebug {
+                        HStack(spacing: 4) {
+                            Image(systemName: "hammer.fill")
+                                .font(.system(size: 9))
+                            Text("\(store.persistenceEnvironment.badgeTitle) • \(store.databaseFileURL.lastPathComponent)")
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Color(hex: "#F59E0B"))
+                        .help("Banco de desenvolvimento isolado em: \(store.databaseFileURL.path)")
+                    }
                 }
                 .padding(14)
             }
@@ -280,7 +303,7 @@ public struct FinancialControlApp: App {
     }
 
     public var body: some Scene {
-        WindowGroup("Controle Financeiro macOS") {
+        WindowGroup(PersistenceEnvironment.current.isDebug ? "Controle Financeiro macOS [DEBUG DB]" : "Controle Financeiro macOS") {
             MainContentView(store: store, llmService: llmService)
                 .frame(minWidth: 1120, minHeight: 740)
                 .onAppear {
