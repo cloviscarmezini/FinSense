@@ -57,10 +57,207 @@ public struct GeneralSettingsSectionView: View {
     @State private var showResetFromScratchSheet: Bool = false
     @State private var lastResetBanner: String? = nil
 
+    // Exportação Granular
+    @State private var selectedExportTargets: Set<ExportDataTarget> = Set(ExportDataTarget.allCases)
+    @State private var exportStatusBanner: String? = nil
+    @State private var exportIsError: Bool = false
+
+    // Importação de Gastos / Transações (JSON)
+    @State private var importedDraftsForReview: [ImportableExpenseDraft] = []
+    @State private var importedFileName: String = ""
+    @State private var showExpenseImportReviewSheet: Bool = false
+    @State private var importStatusBanner: String? = nil
+    @State private var importIsError: Bool = false
+
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Card: Recomeçar do zero
+                // Card 1: Exportação Granular da Base de Dados & Importação de Gastos (JSON)
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color(hex: "#6366F1").opacity(0.14))
+                                .frame(width: 46, height: 46)
+                            Image(systemName: "externaldrive.badge.timemachine")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundStyle(Color(hex: "#6366F1"))
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Exportação Granular da Base de Dados")
+                                .font(.title3.bold())
+                            Text("Escolha seletivamente quais entidades da base local deseja exportar em formato JSON Estruturado (backup compatível com o schema do app, contendo apenas as entidades marcadas).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        HStack(spacing: 8) {
+                            Button("Selecionar Todos") {
+                                selectedExportTargets = Set(ExportDataTarget.allCases)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+
+                            Button("Limpar Seleção") {
+                                selectedExportTargets.removeAll()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+
+                    Divider()
+
+                    // Grade de seleção com checkboxes das 8 entidades
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2), spacing: 10) {
+                        ForEach(ExportDataTarget.allCases) { target in
+                            let isChecked = selectedExportTargets.contains(target)
+                            Button {
+                                if isChecked {
+                                    selectedExportTargets.remove(target)
+                                } else {
+                                    selectedExportTargets.insert(target)
+                                }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: isChecked ? "checkmark.square.fill" : "square")
+                                        .font(.title3)
+                                        .foregroundStyle(isChecked ? Color(hex: "#6366F1") : .secondary)
+
+                                    Image(systemName: target.icon)
+                                        .font(.subheadline)
+                                        .frame(width: 20)
+                                        .foregroundStyle(isChecked ? Color(hex: "#6366F1") : .secondary)
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(target.title)
+                                            .font(.subheadline.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text(target.subtitle)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+
+                                    Spacer()
+
+                                    Text(exportCountLabel(for: target))
+                                        .font(.caption.bold())
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Capsule().fill(Color.primary.opacity(0.07)))
+                                }
+                                .padding(10)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(isChecked ? Color(hex: "#6366F1").opacity(0.08) : Color.primary.opacity(0.025))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(isChecked ? Color(hex: "#6366F1").opacity(0.35) : Color.primary.opacity(0.06), lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    HStack {
+                        HStack(spacing: 6) {
+                            Image(systemName: "curlybraces.square.fill")
+                                .foregroundStyle(Color(hex: "#6366F1"))
+                            Text("Formato de Saída: JSON Estruturado (schema v2)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            exportSelectedDatabaseEntities()
+                        } label: {
+                            Label("Exportar Entidades Selecionadas (\(selectedExportTargets.count))", systemImage: "square.and.arrow.up.fill")
+                                .fontWeight(.semibold)
+                                .padding(.horizontal, 6)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#6366F1"))
+                        .disabled(selectedExportTargets.isEmpty)
+                    }
+
+                    if let exportBanner = exportStatusBanner {
+                        HStack {
+                            Image(systemName: exportIsError ? "xmark.octagon.fill" : "checkmark.circle.fill")
+                                .foregroundStyle(exportIsError ? Color(hex: "#EF4444") : .green)
+                            Text(exportBanner)
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill((exportIsError ? Color(hex: "#EF4444") : Color.green).opacity(0.12))
+                        )
+                    }
+                }
+                .padding(20)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+
+                // Card 2: Importação de Gastos / Transações (.json)
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(alignment: .top, spacing: 14) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color(hex: "#10B981").opacity(0.14))
+                                .frame(width: 46, height: 46)
+                            Image(systemName: "tray.and.arrow.down.fill")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundStyle(Color(hex: "#10B981"))
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Importação de Gastos / Transações")
+                                .font(.title3.bold())
+                            Text("Importe lotes de gastos ou transações a partir de um arquivo JSON externo. Inclui tela de pré-visualização, validação de campos (Data, Descrição, Valor, Categoria, Conta) e verificação automática anti-duplicidade.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            pickAndPreviewJSONExpenses()
+                        } label: {
+                            Label("Importar Gastos", systemImage: "doc.badge.plus")
+                                .fontWeight(.semibold)
+                                .padding(.horizontal, 8)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#10B981"))
+                    }
+
+                    if let importBanner = importStatusBanner {
+                        HStack {
+                            Image(systemName: importIsError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                                .foregroundStyle(importIsError ? Color(hex: "#EF4444") : .green)
+                            Text(importBanner)
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill((importIsError ? Color(hex: "#EF4444") : Color.green).opacity(0.12))
+                        )
+                    }
+                }
+                .padding(20)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+
+                // Card 3: Recomeçar do zero
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .top, spacing: 14) {
                         ZStack {
@@ -108,7 +305,7 @@ public struct GeneralSettingsSectionView: View {
                         summaryBadge(title: "Empréstimos", count: store.contracts.filter { $0.kind == .loan }.count, icon: "banknote.fill")
                         summaryBadge(title: "Financiamentos", count: store.contracts.filter { $0.kind == .financing }.count, icon: "house.and.flag.fill")
                         summaryBadge(title: "Dívidas", count: store.debts.count, icon: "exclamationmark.shield.fill")
-                        summaryBadge(title: "Modelos IA", count: store.llmConfig.downloadedModels.count, icon: "cpu.fill")
+                        summaryBadge(title: "Previsões & Cotas", count: store.provisions.count + store.categoryQuotas.count, icon: "tray.full.fill")
                     }
 
                     if store.categories.isEmpty {
@@ -147,6 +344,77 @@ public struct GeneralSettingsSectionView: View {
                 lastResetBanner = "Operação concluída: \(deletedCount) grupo(s) de dados foram removidos da base."
             }
         }
+        .sheet(isPresented: $showExpenseImportReviewSheet) {
+            ExpenseJSONImportReviewSheet(
+                store: store,
+                fileName: importedFileName,
+                initialDrafts: importedDraftsForReview
+            ) { importedCount, skippedDuplicates in
+                importIsError = false
+                if skippedDuplicates > 0 {
+                    importStatusBanner = "Importação concluída: \(importedCount) lançamento(s) adicionado(s) e \(skippedDuplicates) duplicata(s) ignorada(s)."
+                } else {
+                    importStatusBanner = "Importação concluída: \(importedCount) lançamento(s) mesclado(s) com sucesso na base ativa."
+                }
+            }
+        }
+    }
+
+    private func exportCountLabel(for target: ExportDataTarget) -> String {
+        switch target {
+        case .transactions: return "\(store.transactions.count)"
+        case .accounts: return "\(store.accounts.count)"
+        case .categories: return "\(store.categories.count)"
+        case .investments: return "\(store.investments.count)"
+        case .loans: return "\(store.contracts.filter { $0.kind == .loan }.count)"
+        case .financings: return "\(store.contracts.filter { $0.kind == .financing }.count)"
+        case .debts: return "\(store.debts.count)"
+        case .provisions: return "\(store.provisions.count + store.categoryQuotas.count)"
+        }
+    }
+
+    private func exportSelectedDatabaseEntities() {
+        guard !selectedExportTargets.isEmpty else { return }
+        let dateStamp = BRLFormatters.shortDate(Date()).replacingOccurrences(of: "/", with: "-")
+        let defaultName = "financial_export_\(dateStamp).json"
+
+        guard let destinationURL = MacFilePicker.saveJSONFile(defaultFileName: defaultName) else {
+            return
+        }
+
+        guard let data = store.exportGranularDatabaseJSON(targets: selectedExportTargets) else {
+            exportIsError = true
+            exportStatusBanner = "Erro ao serializar as entidades selecionadas para JSON."
+            return
+        }
+
+        do {
+            try data.write(to: destinationURL, options: .atomic)
+            exportIsError = false
+            exportStatusBanner = "Arquivo exportado com sucesso (\(selectedExportTargets.count) grupo(s)) em: \(destinationURL.lastPathComponent)"
+        } catch {
+            exportIsError = true
+            exportStatusBanner = "Falha ao salvar o arquivo: \(error.localizedDescription)"
+        }
+    }
+
+    private func pickAndPreviewJSONExpenses() {
+        guard let url = MacFilePicker.pickJSONImportFile() else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let drafts = try store.parseImportableExpensesFromJSON(data: data)
+            if drafts.isEmpty {
+                importIsError = true
+                importStatusBanner = "Nenhuma transação ou gasto válido foi encontrado no arquivo '\(url.lastPathComponent)'."
+                return
+            }
+            importedFileName = url.lastPathComponent
+            importedDraftsForReview = drafts
+            showExpenseImportReviewSheet = true
+        } catch {
+            importIsError = true
+            importStatusBanner = "Erro ao ler arquivo JSON: \(error.localizedDescription)"
+        }
     }
 
     @ViewBuilder
@@ -165,6 +433,204 @@ public struct GeneralSettingsSectionView: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.035)))
+    }
+}
+
+// MARK: - Modal de Revisão Pré-Importação de Gastos / Transações (JSON)
+
+public struct ExpenseJSONImportReviewSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    public let fileName: String
+    @State private var drafts: [ImportableExpenseDraft]
+    public var onCompleted: ((Int, Int) -> Void)? = nil
+    @Environment(\.dismiss) private var dismiss
+
+    public init(
+        store: FinancialDataStore,
+        fileName: String,
+        initialDrafts: [ImportableExpenseDraft],
+        onCompleted: ((Int, Int) -> Void)? = nil
+    ) {
+        self.store = store
+        self.fileName = fileName
+        self._drafts = State(initialValue: initialDrafts)
+        self.onCompleted = onCompleted
+    }
+
+    public var body: some View {
+        let duplicateCount = drafts.filter(\.isDuplicate).count
+        let selectedCount = drafts.filter(\.isSelected).count
+        let selectedTotalAmount = drafts.filter(\.isSelected).reduce(0.0) { $0 + $1.amount }
+
+        VStack(alignment: .leading, spacing: 16) {
+            // Header
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: "#10B981").opacity(0.16))
+                        .frame(width: 42, height: 42)
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(Color(hex: "#10B981"))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Revisão Pré-Importação de Gastos")
+                        .font(.title3.bold())
+                    Text("Arquivo: \(fileName) • \(drafts.count) registro(s) encontrado(s) • Valide Data, Descrição, Valor, Categoria e Conta antes de confirmar")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button("Selecionar Não-Duplicados") {
+                    for idx in drafts.indices {
+                        drafts[idx].isSelected = !drafts[idx].isDuplicate
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                Button("Limpar Seleção") {
+                    for idx in drafts.indices {
+                        drafts[idx].isSelected = false
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+
+            if duplicateCount > 0 {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Color(hex: "#F59E0B"))
+                    Text("Verificação Anti-Duplicidade: \(duplicateCount) lançamento(s) idêntico(s) já existe(m) na base ativa e foram desmarcados automaticamente para evitar duplicação.")
+                        .font(.caption.weight(.medium))
+                    Spacer()
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#F59E0B").opacity(0.14)))
+            }
+
+            Divider()
+
+            // Lista revisável com mapeamento de Data, Descrição, Valor, Categoria e Conta
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach($drafts) { $draft in
+                        HStack(spacing: 10) {
+                            Toggle("", isOn: $draft.isSelected)
+                                .toggleStyle(.checkbox)
+                                .labelsHidden()
+
+                            DatePicker(
+                                "",
+                                selection: $draft.date,
+                                displayedComponents: .date
+                            )
+                            .labelsHidden()
+                            .frame(width: 105)
+
+                            TextField("Descrição", text: $draft.description)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 160)
+
+                            HStack(spacing: 4) {
+                                Text("R$")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                                TextField(
+                                    "0,00",
+                                    value: $draft.amount,
+                                    format: .number.precision(.fractionLength(2))
+                                )
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 90)
+                                .multilineTextAlignment(.trailing)
+                            }
+
+                            Picker("Categoria", selection: $draft.categoryId) {
+                                ForEach(store.categories.filter { $0.type == draft.type }) { cat in
+                                    Text(cat.name).tag(cat.id)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(width: 150)
+
+                            if !store.accounts.isEmpty {
+                                Picker("Conta", selection: $draft.accountId) {
+                                    ForEach(store.accounts) { acc in
+                                        Text(acc.name).tag(acc.id)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(width: 140)
+                            }
+
+                            if draft.isDuplicate {
+                                Text("Duplicado")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Capsule().fill(Color(hex: "#F59E0B").opacity(0.18)))
+                                    .foregroundStyle(Color(hex: "#F59E0B"))
+                            } else {
+                                Text("Novo")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                            }
+                        }
+                        .padding(10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(draft.isDuplicate ? Color(hex: "#F59E0B").opacity(0.05) : Color(nsColor: .controlBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(draft.isSelected ? Color(hex: "#10B981").opacity(0.35) : Color.primary.opacity(0.06), lineWidth: 1)
+                        )
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Selecionados para importar: \(selectedCount) de \(drafts.count)")
+                        .font(.caption.weight(.semibold))
+                    Text("Soma dos itens selecionados: \(BRLFormatters.currency(selectedTotalAmount))")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(Color(hex: "#10B981"))
+                }
+
+                Spacer()
+
+                Button("Cancelar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button {
+                    let result = store.importReviewedExpenseDrafts(drafts, skipDuplicates: true)
+                    onCompleted?(result.importedCount, result.skippedDuplicatesCount + drafts.filter { $0.isDuplicate && !$0.isSelected }.count)
+                    dismiss()
+                } label: {
+                    Label("Confirmar e Mesclar na Base Ativa (\(selectedCount))", systemImage: "checkmark.circle.fill")
+                        .fontWeight(.semibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#10B981"))
+                .disabled(selectedCount == 0)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(minWidth: 880, minHeight: 540)
     }
 }
 

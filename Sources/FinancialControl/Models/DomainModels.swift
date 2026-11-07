@@ -1068,9 +1068,9 @@ public enum ProvisionEditScope: String, Codable, CaseIterable, Identifiable, Has
     public var title: String {
         switch self {
         case .onlyThisMonth:
-            return "Salvar apenas para este mês"
+            return "Aplicar somente a este mês"
         case .thisAndFutureMonths:
-            return "Aplicar a todos os meses futuros"
+            return "Aplicar a este e a todos os meses futuros"
         }
     }
 }
@@ -1289,30 +1289,24 @@ public struct CategoryProvisionEnvelope: Identifiable, Hashable {
     public let provision: CategoryProvision
     public var provisionId: UUID { provision.id }
 
-    // 1. Verba Livre (Genérica)
-    public let freeBudgetEstimated: Double          // Verba Livre orçada
-    public let freeBudgetRealizedExpense: Double    // Despesas Avulsas Realizadas (sem vínculo com cota)
-    public let freeBudgetRemaining: Double          // max(0, Verba Livre - Despesas Avulsas Realizadas)
-    public let isFreeBudgetLocalOverride: Bool
-
-    // 2. Cotas de Itens Específicos
-    public let quotaEnvelopes: [CategoryQuotaEnvelope]
-    public let quotasEstimatedTotal: Double         // Soma (Qtd Prevista_i * Preço Unitário_i)
-    public let quotasRealizedExpense: Double        // Soma das baixas reais de cotas no mês
-    public let quotasRemainingTotal: Double         // Soma Provisão Restante_i
-
-    // 3. Consolidado da Categoria
-    public let estimatedAmount: Double              // Verba Livre + Soma Cotas Estimadas
-    public let realizedExpense: Double              // Despesas Avulsas + Despesas de Cotas Baixadas
-    public let remainingProvision: Double           // max(0, Verba Livre - Despesas Avulsas) + Soma Provisão Restante_i
-    public let exceededAmount: Double               // Excedente sobre a Verba Livre / Cotas
-    public let rawProgressPercentage: Double        // Progresso percentual consolidado
+    // Previsão por Categoria (Teto Geral Mensal) — 100% desacoplado das Cotas de Itens Específicos
+    public let estimatedAmount: Double              // Teto Definido_c
+    public let realizedExpense: Double              // Gasto Real Avulso da Categoria_c (ignora baixas de cotas)
+    public let remainingProvision: Double           // Teto Restante_c = max(0, Teto Definido_c - Gasto Real Avulso_c)
+    public let exceededAmount: Double               // max(0, Gasto Real Avulso_c - Teto Definido_c)
+    public let rawProgressPercentage: Double        // (Gasto Real Avulso_c / Teto Definido_c) * 100
     public let clampedProgressPercentage: Double    // min(100, rawProgressPercentage)
     public let status: ProvisionStatusLevel
+    public let isFreeBudgetLocalOverride: Bool
     public var repeatForFutureMonths: Bool {
-        provision.estimatedAmount > 0 ? provision.repeatForFutureMonths : (quotaEnvelopes.first?.repeatForFutureMonths ?? false)
+        provision.repeatForFutureMonths
     }
     public let isInheritedFromPreviousMonth: Bool
+
+    // Aliases semânticos de conveniência para o Teto Geral / Verba Livre da Categoria
+    public var freeBudgetEstimated: Double { estimatedAmount }
+    public var freeBudgetRealizedExpense: Double { realizedExpense }
+    public var freeBudgetRemaining: Double { remainingProvision }
 
     public init(
         category: CategoryItem,
@@ -1320,7 +1314,6 @@ public struct CategoryProvisionEnvelope: Identifiable, Hashable {
         isInheritedFromPreviousMonth: Bool,
         estimatedAmount: Double,
         realizedExpense: Double,
-        quotaEnvelopes: [CategoryQuotaEnvelope] = [],
         isFreeBudgetLocalOverride: Bool = false
     ) {
         self.category = category
@@ -1328,58 +1321,138 @@ public struct CategoryProvisionEnvelope: Identifiable, Hashable {
         self.isInheritedFromPreviousMonth = isInheritedFromPreviousMonth
         self.isFreeBudgetLocalOverride = isFreeBudgetLocalOverride
 
-        let cleanFreeEst = max(0.0, estimatedAmount)
-        let cleanFreeRealized = max(0.0, realizedExpense)
-        let cleanFreeRem = max(0.0, cleanFreeEst - cleanFreeRealized)
+        let cleanEst = max(0.0, estimatedAmount)
+        let cleanRealized = max(0.0, realizedExpense)
+        let cleanRem = max(0.0, cleanEst - cleanRealized)
 
-        self.freeBudgetEstimated = cleanFreeEst
-        self.freeBudgetRealizedExpense = cleanFreeRealized
-        self.freeBudgetRemaining = cleanFreeRem
+        self.estimatedAmount = cleanEst
+        self.realizedExpense = cleanRealized
+        self.remainingProvision = cleanRem
+        self.exceededAmount = cleanEst > 0 ? max(0.0, cleanRealized - cleanEst) : 0.0
 
-        self.quotaEnvelopes = quotaEnvelopes
-        let qEst = quotaEnvelopes.reduce(0.0) { $0 + $1.totalEstimatedAmount }
-        let qReal = quotaEnvelopes.reduce(0.0) { $0 + $1.realizedExpense }
-        let qRem = quotaEnvelopes.reduce(0.0) { $0 + $1.remainingProvision }
-
-        self.quotasEstimatedTotal = qEst
-        self.quotasRealizedExpense = qReal
-        self.quotasRemainingTotal = qRem
-
-        // Consolidação matemática:
-        // Provisão da Categoria = max(0, Verba Livre - Despesas Avulsas Realizadas) + \sum Provisão Restante_i
-        let totalEst = cleanFreeEst + qEst
-        let totalReal = cleanFreeRealized + qReal
-        let totalRem = cleanFreeRem + qRem
-
-        self.estimatedAmount = totalEst
-        self.realizedExpense = totalReal
-        self.remainingProvision = totalRem
-
-        let freeExceeded = cleanFreeEst > 0 ? max(0.0, cleanFreeRealized - cleanFreeEst) : 0.0
-        let quotasExceeded = quotaEnvelopes.reduce(0.0) { acc, q in
-            let extraUnits = max(0, q.consumedUnits - q.plannedQuantity)
-            return acc + Double(extraUnits) * q.estimatedUnitPrice
-        }
-        self.exceededAmount = freeExceeded + quotasExceeded
-
-        // Para cálculo da barra de progresso, considera o consumo efetivo da verba livre + valor das unidades de cota já consumidas
-        let consumedQuotasNominal = quotaEnvelopes.reduce(0.0) {
-            $0 + (Double($1.consumedUnits) * $1.estimatedUnitPrice)
-        }
-        let effectiveConsumedForProgress = cleanFreeRealized + consumedQuotasNominal
-        let rawPct = totalEst > 0.0001 ? ((effectiveConsumedForProgress / totalEst) * 100.0) : 0.0
+        let rawPct = cleanEst > 0.0001 ? ((cleanRealized / cleanEst) * 100.0) : 0.0
         self.rawProgressPercentage = rawPct
         self.clampedProgressPercentage = min(100.0, max(0.0, rawPct))
 
-        let hasExceededFree = cleanFreeEst > 0 && cleanFreeRealized > cleanFreeEst + 0.001
-        let hasExceededQuota = quotaEnvelopes.contains { $0.consumedUnits > $0.plannedQuantity }
-
-        if hasExceededFree || hasExceededQuota || effectiveConsumedForProgress > totalEst + 0.001 {
+        if cleanEst > 0 && cleanRealized > cleanEst + 0.001 {
             self.status = .exceeded
         } else if rawPct >= 80.0 - 0.001 {
             self.status = .warning
         } else {
             self.status = .normal
         }
+    }
+}
+
+// MARK: - Exportação Granular & Importação de Gastos (Configurações)
+
+public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Codable {
+    case transactions = "transactions"
+    case accounts = "accounts"
+    case categories = "categories"
+    case investments = "investments"
+    case loans = "loans"
+    case financings = "financings"
+    case debts = "debts"
+    case provisions = "provisions"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .transactions:
+            return "Transações (Receitas e Despesas)"
+        case .accounts:
+            return "Contas Bancárias e Carteiras"
+        case .categories:
+            return "Categorias"
+        case .investments:
+            return "Investimentos"
+        case .loans:
+            return "Empréstimos"
+        case .financings:
+            return "Financiamentos"
+        case .debts:
+            return "Dívidas"
+        case .provisions:
+            return "Previsões"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .transactions:
+            return "Lançamentos de receitas e despesas do extrato"
+        case .accounts:
+            return "Contas correntes, carteiras e saldos iniciais"
+        case .categories:
+            return "Categorias personalizadas e padrões de receitas/despesas"
+        case .investments:
+            return "Aplicações, CDBs, cofrinhos e carteiras de investimento"
+        case .loans:
+            return "Contratos de empréstimo pessoal e consignado"
+        case .financings:
+            return "Contratos de financiamento imobiliário e veicular"
+        case .debts:
+            return "Dívidas em aberto e histórico de acordos"
+        case .provisions:
+            return "Tetos mensais por categoria e cotas de itens específicos"
+        }
+    }
+
+    public var icon: String {
+        switch self {
+        case .transactions: return "arrow.left.arrow.right.circle.fill"
+        case .accounts: return "building.columns.fill"
+        case .categories: return "square.grid.2x2.fill"
+        case .investments: return "chart.line.uptrend.xyaxis.circle.fill"
+        case .loans: return "banknote.fill"
+        case .financings: return "house.and.flag.fill"
+        case .debts: return "exclamationmark.shield.fill"
+        case .provisions: return "tray.full.fill"
+        }
+    }
+}
+
+public struct ImportableExpenseDraft: Identifiable, Hashable {
+    public var id: UUID
+    public var originalTransactionId: UUID?
+    public var date: Date
+    public var description: String
+    public var details: String
+    public var amount: Double
+    public var type: TransactionType
+    public var isPaid: Bool
+    public var categoryId: UUID
+    public var accountId: UUID
+    public var isDuplicate: Bool
+    public var isSelected: Bool
+
+    public init(
+        id: UUID = UUID(),
+        originalTransactionId: UUID? = nil,
+        date: Date,
+        description: String,
+        details: String = "",
+        amount: Double,
+        type: TransactionType = .expense,
+        isPaid: Bool = true,
+        categoryId: UUID,
+        accountId: UUID,
+        isDuplicate: Bool = false,
+        isSelected: Bool = true
+    ) {
+        self.id = id
+        self.originalTransactionId = originalTransactionId
+        self.date = date
+        self.description = description
+        self.details = details
+        self.amount = abs(amount)
+        self.type = type
+        self.isPaid = isPaid
+        self.categoryId = categoryId
+        self.accountId = accountId
+        self.isDuplicate = isDuplicate
+        self.isSelected = isSelected
     }
 }

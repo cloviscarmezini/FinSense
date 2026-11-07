@@ -1227,7 +1227,7 @@ final class FinancialControlTests: XCTestCase {
         let dec2026 = BRLFormatters.shortDateFormatter.date(from: "10/12/2026")!
         debugStore.selectedMonth = oct2026
 
-        // Cadastra cota específica ("Galão de Água", 4 un. × R$ 30,00 = R$ 120,00) SEM verba livre inicialmente
+        // Cadastra cota específica ("Galão de Água", 4 un. × R$ 30,00 = R$ 120,00) SEM teto de categoria inicialmente
         let waterQuota = debugStore.saveCategoryQuota(
             categoryId: housingCat.id,
             name: "Galão de Água",
@@ -1237,13 +1237,14 @@ final class FinancialControlTests: XCTestCase {
             for: oct2026,
             repeatForFutureMonths: true
         )
-        let octEnvOnlyQuota = debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026)!
-        XCTAssertEqual(octEnvOnlyQuota.freeBudgetEstimated, 0.0, accuracy: 0.01)
-        XCTAssertEqual(octEnvOnlyQuota.quotasRemainingTotal, 120.0, accuracy: 0.01)
-        XCTAssertEqual(octEnvOnlyQuota.remainingProvision, 120.0, accuracy: 0.01)
+        // Sem teto de categoria configurado, Moradia NÃO possui CategoryProvisionEnvelope (desacoplamento total!)
+        XCTAssertNil(debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026))
+        XCTAssertEqual(debugStore.totalQuotasRemaining(for: oct2026), 120.0, accuracy: 0.01)
+        XCTAssertEqual(debugStore.totalCategoryProvisionsRemaining(for: oct2026), 0.0, accuracy: 0.01)
+        XCTAssertEqual(debugStore.totalRemainingProvision(for: oct2026), 120.0, accuracy: 0.01)
         XCTAssertEqual(debugStore.accumulatedConsolidatedBalance(throughMonth: oct2026, includeProjectedUnpaid: true), 880.0, accuracy: 0.01)
 
-        // Agora adiciona Verba Livre de R$ 200,00 na mesma categoria (Moradia)
+        // Agora adiciona Teto Mensal (Verba Livre) de R$ 200,00 na categoria Moradia
         debugStore.setCategoryProvision(
             categoryId: housingCat.id,
             estimatedAmount: 200.0,
@@ -1251,15 +1252,16 @@ final class FinancialControlTests: XCTestCase {
             repeatForFutureMonths: true
         )
         let octEnvBoth = debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026)!
-        XCTAssertEqual(octEnvBoth.freeBudgetEstimated, 200.0, accuracy: 0.01)
-        XCTAssertEqual(octEnvBoth.quotasRemainingTotal, 120.0, accuracy: 0.01)
-        // Provisão da Categoria = max(0, 200 - 0) + 120 = 320
-        XCTAssertEqual(octEnvBoth.remainingProvision, 320.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvBoth.estimatedAmount, 200.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvBoth.remainingProvision, 200.0, accuracy: 0.01)
+        XCTAssertEqual(debugStore.totalQuotasRemaining(for: oct2026), 120.0, accuracy: 0.01)
+        // Provisão Total Futura = Soma Cotas Restantes (120) + Soma Tetos de Categoria Restantes (200) = 320
+        XCTAssertEqual(debugStore.totalRemainingProvision(for: oct2026), 320.0, accuracy: 0.01)
         // Saldo Projetado = 1000 - 320 = 680
         XCTAssertEqual(debugStore.accumulatedConsolidatedBalance(throughMonth: oct2026, includeProjectedUnpaid: true), 680.0, accuracy: 0.01)
 
         // 3. Dar baixa em 1 unidade da cota (com ajuste real para R$ 32,00):
-        // Deve gerar despesa real no extrato, deduzir 1 unidade pendente (restam 3 × R$ 30 = R$ 90) e NÃO subtrair da Verba Livre (continua R$ 200)!
+        // Deve gerar despesa real no extrato, deduzir 1 unidade pendente (restam 3 × R$ 30 = R$ 90) e NÃO subtrair do Teto da Categoria (continua R$ 200)!
         let redeemedTx = debugStore.redeemCategoryQuota(
             seriesId: waterQuota.seriesId,
             units: 1,
@@ -1273,16 +1275,17 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertEqual(debugStore.totalCheckingBalanceNow, 968.0, accuracy: 0.01)
 
         let octEnvAfterRedeem = debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026)!
-        XCTAssertEqual(octEnvAfterRedeem.freeBudgetRealizedExpense, 0.0, accuracy: 0.01)
-        XCTAssertEqual(octEnvAfterRedeem.freeBudgetRemaining, 200.0, accuracy: 0.01) // Verba Livre intacta!
-        XCTAssertEqual(octEnvAfterRedeem.quotaEnvelopes.first?.consumedUnits, 1)
-        XCTAssertEqual(octEnvAfterRedeem.quotaEnvelopes.first?.pendingUnits, 3)
-        XCTAssertEqual(octEnvAfterRedeem.quotasRemainingTotal, 90.0, accuracy: 0.01)
-        XCTAssertEqual(octEnvAfterRedeem.remainingProvision, 290.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterRedeem.realizedExpense, 0.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterRedeem.remainingProvision, 200.0, accuracy: 0.01) // Teto da categoria intacto!
+        let octQuotaAfterRedeem = debugStore.quotaEnvelopes(forCategory: housingCat.id, in: oct2026).first!
+        XCTAssertEqual(octQuotaAfterRedeem.consumedUnits, 1)
+        XCTAssertEqual(octQuotaAfterRedeem.pendingUnits, 3)
+        XCTAssertEqual(octQuotaAfterRedeem.remainingProvision, 90.0, accuracy: 0.01)
+        XCTAssertEqual(debugStore.totalRemainingProvision(for: oct2026), 290.0, accuracy: 0.01)
         // Saldo Projetado = 968 (saldo atual) - 290 (provisão restante) = 678
         XCTAssertEqual(debugStore.accumulatedConsolidatedBalance(throughMonth: oct2026, includeProjectedUnpaid: true), 678.0, accuracy: 0.01)
 
-        // 4. Despesa avulsa normal lançada na categoria consome APENAS a Verba Livre, sem alterar as cotas pendentes
+        // 4. Despesa avulsa normal lançada na categoria consome APENAS o Teto da Categoria, sem alterar as cotas pendentes
         _ = debugStore.createTransaction(
             name: "Lâmpada LED",
             amount: 50.0,
@@ -1294,18 +1297,19 @@ final class FinancialControlTests: XCTestCase {
             ignoreInConsolidated: false
         )
         let octEnvAfterAvulsa = debugStore.provisionEnvelope(forCategory: housingCat.id, in: oct2026)!
-        XCTAssertEqual(octEnvAfterAvulsa.freeBudgetRealizedExpense, 50.0, accuracy: 0.01)
-        XCTAssertEqual(octEnvAfterAvulsa.freeBudgetRemaining, 150.0, accuracy: 0.01)
-        XCTAssertEqual(octEnvAfterAvulsa.quotaEnvelopes.first?.pendingUnits, 3)
-        XCTAssertEqual(octEnvAfterAvulsa.quotasRemainingTotal, 90.0, accuracy: 0.01)
-        XCTAssertEqual(octEnvAfterAvulsa.remainingProvision, 240.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterAvulsa.realizedExpense, 50.0, accuracy: 0.01)
+        XCTAssertEqual(octEnvAfterAvulsa.remainingProvision, 150.0, accuracy: 0.01)
+        let octQuotaAfterAvulsa = debugStore.quotaEnvelopes(forCategory: housingCat.id, in: oct2026).first!
+        XCTAssertEqual(octQuotaAfterAvulsa.pendingUnits, 3)
+        XCTAssertEqual(octQuotaAfterAvulsa.remainingProvision, 90.0, accuracy: 0.01)
+        XCTAssertEqual(debugStore.totalRemainingProvision(for: oct2026), 240.0, accuracy: 0.01)
 
         // 5. O encerramento do mês sem consumo total de uma cota não gera resíduos ou transações forçadas no extrato
         XCTAssertEqual(debugStore.transactions.count, 2)
-        let novEnvInitial = debugStore.provisionEnvelope(forCategory: housingCat.id, in: nov2026)!
-        XCTAssertEqual(novEnvInitial.quotaEnvelopes.first?.consumedUnits, 0)
-        XCTAssertEqual(novEnvInitial.quotaEnvelopes.first?.pendingUnits, 4)
-        XCTAssertEqual(novEnvInitial.quotasRemainingTotal, 120.0, accuracy: 0.01)
+        let novQuotaInitial = debugStore.quotaEnvelopes(forCategory: housingCat.id, in: nov2026).first!
+        XCTAssertEqual(novQuotaInitial.consumedUnits, 0)
+        XCTAssertEqual(novQuotaInitial.pendingUnits, 4)
+        XCTAssertEqual(novQuotaInitial.remainingProvision, 120.0, accuracy: 0.01)
 
         // 6. Edição de item recorrente com escopo .onlyThisMonth vs .thisAndFutureMonths
         // Em Nov/2026, altera a cota para 5 galões APENAS para Nov/2026 (.onlyThisMonth)
@@ -1360,5 +1364,149 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertTrue(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: oct2026).isEmpty)
         XCTAssertTrue(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: nov2026).isEmpty)
         XCTAssertTrue(debugStore.quotaEnvelopes(forCategory: housingCat.id, in: dec2026).isEmpty)
+    }
+
+    func testDecoupledQuotasCategoryCeilingsGranularExportAndExpenseImport() throws {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Itaú Principal",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 3000.0
+        )
+        let account = store.accounts.first!
+        let housingCat = store.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Moradia") })!
+        let fuelCat = store.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Combustível") })!
+        let nov2026 = BRLFormatters.shortDateFormatter.date(from: "10/11/2026")!
+        store.selectedMonth = nov2026
+
+        // 1. Critério de Aceite 1 & 2:
+        // Cadastra cota "Galão de Água" (7 un. × R$ 13,00 = R$ 91,00) vinculada a Moradia, SEM teto geral em Moradia.
+        // Lança despesa genérica de Aluguel de R$ 886,00 em Moradia.
+        // A cota "Galão de Água" NUNCA entra em estado "Estourado" por conta do aluguel, e Moradia não exibe barra de teto!
+        let waterQuota = store.saveCategoryQuota(
+            categoryId: housingCat.id,
+            name: "Galão de Água",
+            iconSymbol: "drop.fill",
+            plannedQuantity: 7,
+            estimatedUnitPrice: 13.0,
+            for: nov2026,
+            repeatForFutureMonths: true
+        )
+        _ = store.createTransaction(
+            name: "Aluguel Apartamento",
+            amount: 886.0,
+            date: nov2026,
+            type: .expense,
+            isPaid: true,
+            categoryId: housingCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+
+        // Moradia não tem teto configurado -> provisionEnvelope deve ser nil
+        XCTAssertNil(store.provisionEnvelope(forCategory: housingCat.id, in: nov2026))
+        XCTAssertTrue(store.provisionEnvelopes(for: nov2026).isEmpty)
+
+        // Cota de água continua intacta: 0 de 7 consumidos • R$ 91,00 restantes • status .normal
+        let activeWaterQuota = store.allQuotaEnvelopes(for: nov2026).first!
+        XCTAssertEqual(activeWaterQuota.consumedUnits, 0)
+        XCTAssertEqual(activeWaterQuota.plannedQuantity, 7)
+        XCTAssertEqual(activeWaterQuota.remainingProvision, 91.0, accuracy: 0.01)
+        XCTAssertEqual(activeWaterQuota.status, .normal)
+
+        // Configura Teto Geral de R$ 1.000,00 para Combustível
+        store.setCategoryProvision(
+            categoryId: fuelCat.id,
+            estimatedAmount: 1000.0,
+            for: nov2026,
+            repeatForFutureMonths: true
+        )
+        _ = store.createTransaction(
+            name: "Abastecimento Posto",
+            amount: 300.0,
+            date: nov2026,
+            type: .expense,
+            isPaid: true,
+            categoryId: fuelCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+        // Provisão Total Futura = Cota Restante (91) + Teto Combustível Restante (700) = 791
+        XCTAssertEqual(store.totalQuotasRemaining(for: nov2026), 91.0, accuracy: 0.01)
+        XCTAssertEqual(store.totalCategoryProvisionsRemaining(for: nov2026), 700.0, accuracy: 0.01)
+        XCTAssertEqual(store.totalRemainingProvision(for: nov2026), 791.0, accuracy: 0.01)
+
+        // Cota só entra em .exceeded se as unidades baixadas superarem o planejado (ex: 8 de 7)
+        _ = store.redeemCategoryQuota(
+            seriesId: waterQuota.seriesId,
+            units: 8,
+            unitPriceOverride: 13.0,
+            accountId: account.id,
+            in: nov2026,
+            transactionDate: nov2026
+        )
+        let exceededWaterQuota = store.allQuotaEnvelopes(for: nov2026).first!
+        XCTAssertEqual(exceededWaterQuota.consumedUnits, 8)
+        XCTAssertEqual(exceededWaterQuota.plannedQuantity, 7)
+        XCTAssertEqual(exceededWaterQuota.remainingProvision, 0.0, accuracy: 0.01)
+        XCTAssertEqual(exceededWaterQuota.status, .exceeded)
+
+        // 2. Critério de Aceite 4: Exportação Granular da Base de Dados
+        store.addDebt(
+            name: "Cartão Antigo",
+            customImagePath: nil,
+            bankPresetId: nil,
+            iconSymbol: "creditcard.fill",
+            colorHex: "#EF4444",
+            originalAmount: 500.0,
+            contractedDate: nov2026
+        )
+        // Exporta APENAS Transações ePrevisões (sem contas, sem dívidas, sem categorias)
+        let granularData = try XCTUnwrap(store.exportGranularDatabaseJSON(targets: [.transactions, .provisions]))
+        let decodedGranular = try JSONDecoder().decode(FinancialDatabaseSnapshot.self, from: granularData)
+        XCTAssertEqual(decodedGranular.transactions.count, 3)
+        XCTAssertEqual(decodedGranular.provisions?.count, 1)
+        XCTAssertEqual(decodedGranular.categoryQuotas?.count, 1)
+        XCTAssertTrue(decodedGranular.accounts.isEmpty)
+        XCTAssertTrue(decodedGranular.categories.isEmpty)
+        XCTAssertTrue(decodedGranular.debts.isEmpty)
+
+        // 3. Critério de Aceite 5: Importação de Gastos / Transações com Revisão e Anti-Duplicidade
+        let externalJSON = """
+        [
+          {
+            "date": "10/11/2026",
+            "description": "Abastecimento Posto",
+            "amount": 300.00,
+            "type": "Despesa",
+            "category": "Combustível"
+          },
+          {
+            "date": "15/11/2026",
+            "description": "Manutenção Filtro de Água",
+            "amount": 65.50,
+            "type": "Despesa",
+            "category": "Moradia"
+          }
+        ]
+        """.data(using: .utf8)!
+
+        let parsedDrafts = try store.parseImportableExpensesFromJSON(data: externalJSON)
+        XCTAssertEqual(parsedDrafts.count, 2)
+        // O primeiro item ("Abastecimento Posto", 300.00 em 10/11/2026) deve ser detectado como duplicado!
+        XCTAssertTrue(parsedDrafts[0].isDuplicate)
+        XCTAssertFalse(parsedDrafts[0].isSelected)
+        // O segundo item ("Manutenção Filtro de Água", 65.50) é novo e vem selecionado para importação
+        XCTAssertFalse(parsedDrafts[1].isDuplicate)
+        XCTAssertTrue(parsedDrafts[1].isSelected)
+
+        let txCountBeforeImport = store.transactions.count
+        let importSummary = store.importReviewedExpenseDrafts(parsedDrafts, skipDuplicates: true)
+        XCTAssertEqual(importSummary.importedCount, 1)
+        XCTAssertEqual(store.transactions.count, txCountBeforeImport + 1)
+        XCTAssertTrue(store.transactions.contains(where: { $0.name == "Manutenção Filtro de Água" && abs($0.amount - 65.50) < 0.01 }))
     }
 }

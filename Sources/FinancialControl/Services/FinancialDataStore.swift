@@ -355,6 +355,313 @@ public final class FinancialDataStore: ObservableObject {
         save()
     }
 
+    // MARK: - Granular Database Export & Expense JSON Import (Configurações)
+
+    /// Constrói um snapshot contendo exclusivamente as entidades selecionadas pelo usuário para exportação granular.
+    public func buildGranularExportSnapshot(targets: Set<ExportDataTarget>) -> FinancialDatabaseSnapshot {
+        let exportedContracts = contracts.filter { contract in
+            switch contract.kind {
+            case .loan:
+                return targets.contains(.loans)
+            case .financing:
+                return targets.contains(.financings)
+            }
+        }
+
+        return FinancialDatabaseSnapshot(
+            schemaVersion: 2,
+            accounts: targets.contains(.accounts) ? accounts : [],
+            categories: targets.contains(.categories) ? categories : [],
+            transactions: targets.contains(.transactions) ? transactions : [],
+            investments: targets.contains(.investments) ? investments : [],
+            debts: targets.contains(.debts) ? debts : [],
+            contracts: exportedContracts,
+            provisions: targets.contains(.provisions) ? provisions : [],
+            categoryQuotas: targets.contains(.provisions) ? categoryQuotas : [],
+            llmConfig: LLMConfiguration(),
+            chatHistory: [],
+            hasSeededInitialStatement: false
+        )
+    }
+
+    /// Gera os bytes JSON estruturados da exportação granular contendo apenas as entidades marcadas.
+    public func exportGranularDatabaseJSON(targets: Set<ExportDataTarget>) -> Data? {
+        let snapshot = buildGranularExportSnapshot(targets: targets)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try? encoder.encode(snapshot)
+    }
+
+    /// Verifica se uma transação candidata já existe no banco de dados ativo (anti-duplicidade).
+    public func isDuplicateTransaction(
+        originalId: UUID? = nil,
+        description: String,
+        amount: Double,
+        date: Date,
+        type: TransactionType
+    ) -> Bool {
+        if let originalId, transactions.contains(where: { $0.id == originalId }) {
+            return true
+        }
+        let normCandidate = description
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return transactions.contains { existing in
+            guard existing.type == type else { return false }
+            guard abs(existing.amount - abs(amount)) < 0.01 else { return false }
+            guard calendar.isDate(existing.date, inSameDayAs: date) else { return false }
+            let normExisting = existing.name
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return normExisting == normCandidate
+        }
+    }
+
+    /// Analisa um arquivo JSON de gastos/transações (suportando tanto o formato de backup `FinancialDatabaseSnapshot`
+    /// quanto um array direto de `[FinancialTransaction]` ou objetos JSON equivalentes) e retorna rascunhos para revisão.
+    public func parseImportableExpensesFromJSON(data: Data) throws -> [ImportableExpenseDraft] {
+        var rawTransactions: [FinancialTransaction] = []
+        var sourceCategoriesById: [UUID: String] = [:]
+        var sourceAccountsById: [UUID: String] = [:]
+
+        let decoder = JSONDecoder()
+        if let snapshot = try? decoder.decode(FinancialDatabaseSnapshot.self, from: data) {
+            rawTransactions = snapshot.transactions
+            for cat in snapshot.categories {
+                sourceCategoriesById[cat.id] = cat.name
+            }
+            for acc in snapshot.accounts {
+                sourceAccountsById[acc.id] = acc.name
+            }
+        } else if let directArray = try? decoder.decode([FinancialTransaction].self, from: data) {
+            rawTransactions = directArray
+        } else if let jsonObj = try? JSONSerialization.jsonObject(with: data, options: []) {
+            let dictArray: [[String: Any]]
+            if let arr = jsonObj as? [[String: Any]] {
+                dictArray = arr
+            } else if let root = jsonObj as? [String: Any],
+                      let nested = (root["transactions"] ?? root["expenses"] ?? root["gastos"]) as? [[String: Any]] {
+                dictArray = nested
+            } else {
+                throw NSError(
+                    domain: "FinancialDataStore.Import",
+                    code: 400,
+                    userInfo: [NSLocalizedDescriptionKey: "Formato JSON inválido. Forneça um backup JSON do aplicativo ou uma lista JSON de transações."]
+                )
+            }
+
+            let isoFormatter = ISO8601DateFormatter()
+            for item in dictArray {
+                let desc = (item["name"] as? String)
+                    ?? (item["description"] as? String)
+                    ?? (item["descricao"] as? String)
+                    ?? (item["title"] as? String)
+                    ?? "Gasto Importado"
+                let details = (item["details"] as? String)
+                    ?? (item["detalhes"] as? String)
+                    ?? (item["notes"] as? String)
+                    ?? ""
+                let rawAmount: Double = {
+                    if let d = item["amount"] as? Double { return abs(d) }
+                    if let d = item["valor"] as? Double { return abs(d) }
+                    if let i = item["amount"] as? Int { return Double(abs(i)) }
+                    if let i = item["valor"] as? Int { return Double(abs(i)) }
+                    if let s = (item["amount"] ?? item["valor"]) as? String {
+                        return abs(BRLFormatters.parseCurrencyInput(s))
+                    }
+                    return 0.0
+                }()
+                guard rawAmount > 0 else { continue }
+
+                let parsedDate: Date = {
+                    if let timeInterval = item["date"] as? TimeInterval {
+                        return Date(timeIntervalSinceReferenceDate: timeInterval)
+                    }
+                    if let dateStr = (item["date"] ?? item["data"]) as? String {
+                        if let d = BRLFormatters.shortDateFormatter.date(from: dateStr) {
+                            return d
+                        }
+                        if let d = isoFormatter.date(from: dateStr) {
+                            return d
+                        }
+                    }
+                    return Date()
+                }()
+
+                let typeStr = ((item["type"] ?? item["tipo"]) as? String)?.lowercased() ?? "despesa"
+                let txType: TransactionType = (typeStr.contains("receita") || typeStr.contains("income")) ? .income : .expense
+                let isPaid = (item["isPaid"] as? Bool) ?? (item["pago"] as? Bool) ?? true
+
+                let catId: UUID = {
+                    if let cidStr = (item["categoryId"] as? String), let uuid = UUID(uuidString: cidStr),
+                       categories.contains(where: { $0.id == uuid }) {
+                        return uuid
+                    }
+                    if let catName = (item["category"] ?? item["categoria"]) as? String,
+                       let matched = categories.first(where: {
+                           $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")) ==
+                           catName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                       }) {
+                        return matched.id
+                    }
+                    return inferCategoryId(forTitle: desc, type: txType)
+                }()
+
+                let accId: UUID = {
+                    if let aidStr = (item["accountId"] as? String), let uuid = UUID(uuidString: aidStr),
+                       accounts.contains(where: { $0.id == uuid }) {
+                        return uuid
+                    }
+                    if let accName = (item["account"] ?? item["conta"]) as? String,
+                       let matched = accounts.first(where: {
+                           $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")) ==
+                           accName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                       }) {
+                        return matched.id
+                    }
+                    return accounts.first?.id ?? UUID()
+                }()
+
+                let txId = (item["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID()
+                rawTransactions.append(
+                    FinancialTransaction(
+                        id: txId,
+                        name: desc,
+                        details: details,
+                        amount: rawAmount,
+                        date: parsedDate,
+                        type: txType,
+                        isPaid: isPaid,
+                        categoryId: catId,
+                        accountId: accId
+                    )
+                )
+            }
+        }
+
+        let defaultAccountId = accounts.first?.id ?? UUID()
+
+        return rawTransactions.map { tx in
+            let resolvedCategoryId: UUID = {
+                if categories.contains(where: { $0.id == tx.categoryId }) {
+                    return tx.categoryId
+                }
+                if let sourceCatName = sourceCategoriesById[tx.categoryId],
+                   let matchedByName = categories.first(where: {
+                       $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")) ==
+                       sourceCatName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                   }) {
+                    return matchedByName.id
+                }
+                return inferCategoryId(forTitle: tx.name, type: tx.type)
+            }()
+
+            let resolvedAccountId: UUID = {
+                if accounts.contains(where: { $0.id == tx.accountId }) {
+                    return tx.accountId
+                }
+                if let sourceAccName = sourceAccountsById[tx.accountId],
+                   let matchedByName = accounts.first(where: {
+                       $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")) ==
+                       sourceAccName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                   }) {
+                    return matchedByName.id
+                }
+                return defaultAccountId
+            }()
+
+            let duplicate = isDuplicateTransaction(
+                originalId: tx.id,
+                description: tx.name,
+                amount: tx.amount,
+                date: tx.date,
+                type: tx.type
+            )
+
+            return ImportableExpenseDraft(
+                originalTransactionId: tx.id,
+                date: tx.date,
+                description: tx.name,
+                details: tx.details,
+                amount: tx.amount,
+                type: tx.type,
+                isPaid: tx.isPaid,
+                categoryId: resolvedCategoryId,
+                accountId: resolvedAccountId,
+                isDuplicate: duplicate,
+                isSelected: !duplicate
+            )
+        }
+    }
+
+    /// Mescla os rascunhos revisados e selecionados pelo usuário na base de dados ativa, evitando duplicidades.
+    @discardableResult
+    public func importReviewedExpenseDrafts(
+        _ drafts: [ImportableExpenseDraft],
+        skipDuplicates: Bool = true
+    ) -> (importedCount: Int, skippedDuplicatesCount: Int) {
+        var imported = 0
+        var skipped = 0
+
+        let fallbackAccId = accounts.first?.id ?? UUID()
+
+        for draft in drafts where draft.isSelected {
+            let cleanDesc = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleanDesc.isEmpty, draft.amount > 0 else { continue }
+
+            let currentlyDuplicate = isDuplicateTransaction(
+                originalId: draft.originalTransactionId,
+                description: cleanDesc,
+                amount: draft.amount,
+                date: draft.date,
+                type: draft.type
+            )
+
+            if skipDuplicates && currentlyDuplicate {
+                skipped += 1
+                continue
+            }
+
+            let validCategoryId = categories.contains(where: { $0.id == draft.categoryId })
+                ? draft.categoryId
+                : inferCategoryId(forTitle: cleanDesc, type: draft.type)
+
+            let validAccountId = accounts.contains(where: { $0.id == draft.accountId })
+                ? draft.accountId
+                : fallbackAccId
+
+            let txId: UUID = {
+                if let orig = draft.originalTransactionId,
+                   !transactions.contains(where: { $0.id == orig }) {
+                    return orig
+                }
+                return UUID()
+            }()
+
+            let newTx = FinancialTransaction(
+                id: txId,
+                name: cleanDesc,
+                details: draft.details,
+                amount: abs(draft.amount),
+                date: draft.date,
+                type: draft.type,
+                isPaid: draft.isPaid,
+                categoryId: validCategoryId,
+                accountId: validAccountId
+            )
+            transactions.append(newTx)
+            imported += 1
+        }
+
+        if imported > 0 {
+            sortTransactions()
+            save()
+        }
+
+        return (imported, skipped)
+    }
+
     // MARK: - Default Accounts & Investments
 
     public static func buildDefaultAccounts() -> [BankAccount] {
@@ -648,6 +955,24 @@ public final class FinancialDataStore: ObservableObject {
             return matched.id
         }
         return categories(for: type).first?.id ?? categories.first?.id ?? UUID()
+    }
+
+    public func inferCategoryId(forTitle title: String, type: TransactionType) -> UUID {
+        let normTitle = title.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+        let candidates = categories(for: type)
+        for cat in candidates {
+            let normCatName = cat.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            if normTitle.contains(normCatName) {
+                return cat.id
+            }
+            for kw in cat.keywords {
+                let normKw = kw.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                if normKw.count >= 3 && normTitle.contains(normKw) {
+                    return cat.id
+                }
+            }
+        }
+        return fallbackCategoryId(for: type, matchingSubstring: "Outros")
     }
 
     public func addCategory(name: String, type: TransactionType, iconSymbol: String, colorHex: String, keywords: [String] = []) {
@@ -2592,44 +2917,32 @@ public final class FinancialDataStore: ObservableObject {
             .reduce(0.0) { $0 + $1.amount }
     }
 
-    /// Envelope calculado para uma categoria específica no mês de referência,
-    /// coexistindo Verba Livre + Cotas de Itens Específicos.
+    /// Envelope calculado exclusivamente para o Teto Geral de uma categoria no mês de referência.
+    /// Categorias sem teto expressamente configurado (`estimatedAmount <= 0`) retornam `nil`
+    /// e nunca exibem barras de progresso ou alertas de estouro por conta de cotas específicas ou despesas avulsas.
     public func provisionEnvelope(
         forCategory categoryId: UUID,
         in monthReference: Date
     ) -> CategoryProvisionEnvelope? {
         guard let cat = category(for: categoryId), cat.type == .expense else { return nil }
-        let freeDetails = effectiveProvisionDetails(forCategory: categoryId, in: monthReference)
-        let activeQuotas = quotaEnvelopes(forCategory: categoryId, in: monthReference)
-
-        if freeDetails == nil && activeQuotas.isEmpty {
+        guard let freeDetails = effectiveProvisionDetails(forCategory: categoryId, in: monthReference),
+              freeDetails.provision.estimatedAmount > 0 else {
             return nil
         }
-
-        let year = calendar.component(.year, from: monthReference)
-        let month = calendar.component(.month, from: monthReference)
-        let resolvedProvision = freeDetails?.provision ?? CategoryProvision(
-            categoryId: categoryId,
-            year: year,
-            month: month,
-            estimatedAmount: 0.0,
-            repeatForFutureMonths: activeQuotas.first?.repeatForFutureMonths ?? true
-        )
 
         let freeRealized = realizedFreeBudgetExpense(forCategory: categoryId, in: monthReference)
 
         return CategoryProvisionEnvelope(
             category: cat,
-            provision: resolvedProvision,
-            isInheritedFromPreviousMonth: freeDetails?.isInherited ?? (activeQuotas.first?.isInheritedFromPreviousMonth ?? false),
-            estimatedAmount: resolvedProvision.estimatedAmount,
+            provision: freeDetails.provision,
+            isInheritedFromPreviousMonth: freeDetails.isInherited,
+            estimatedAmount: freeDetails.provision.estimatedAmount,
             realizedExpense: freeRealized,
-            quotaEnvelopes: activeQuotas,
-            isFreeBudgetLocalOverride: freeDetails?.isLocalOverride ?? false
+            isFreeBudgetLocalOverride: freeDetails.isLocalOverride
         )
     }
 
-    /// Lista todos os envelopes de provisão ativos no mês de referência.
+    /// Lista todos os envelopes de Teto de Categoria ativos no mês de referência (exclusivamente categorias com limite cadastrado).
     public func provisionEnvelopes(for monthReference: Date) -> [CategoryProvisionEnvelope] {
         expenseCategories.compactMap { cat in
             provisionEnvelope(forCategory: cat.id, in: monthReference)
@@ -2642,16 +2955,31 @@ public final class FinancialDataStore: ObservableObject {
         }
     }
 
-    /// Soma total dos tetos estimados ($\sum T_{estimado}$) configurados para o mês (Verba Livre + Cotas).
-    public func totalEstimatedProvision(for monthReference: Date) -> Double {
-        provisionEnvelopes(for: monthReference)
-            .reduce(0.0) { $0 + $1.estimatedAmount }
-    }
-
-    /// Soma total do saldo estimado remanescente ($\sum P_{restante}$) no mês (Verba Livre restante + Cotas restantes).
-    public func totalRemainingProvision(for monthReference: Date) -> Double {
+    /// Soma dos Tetos de Categoria Restantes ($\sum \text{Tetos de Categoria Restantes}$).
+    public func totalCategoryProvisionsRemaining(for monthReference: Date) -> Double {
         provisionEnvelopes(for: monthReference)
             .reduce(0.0) { $0 + $1.remainingProvision }
+    }
+
+    /// Soma das Cotas Específicas Restantes ($\sum \text{Cotas Restantes}$).
+    public func totalQuotasRemaining(for monthReference: Date) -> Double {
+        allQuotaEnvelopes(for: monthReference)
+            .reduce(0.0) { $0 + $1.remainingProvision }
+    }
+
+    /// Soma total dos valores estimados ($\sum T_{estimado}$) configurados para o mês (Cotas Específicas + Tetos de Categoria).
+    public func totalEstimatedProvision(for monthReference: Date) -> Double {
+        let quotasEstimated = allQuotaEnvelopes(for: monthReference)
+            .reduce(0.0) { $0 + $1.totalEstimatedAmount }
+        let categoriesEstimated = provisionEnvelopes(for: monthReference)
+            .reduce(0.0) { $0 + $1.estimatedAmount }
+        return quotasEstimated + categoriesEstimated
+    }
+
+    /// Provisão Total Futura Consolidada no Dashboard:
+    /// $\text{Provisão Total Futura} = \sum \text{Cotas Restantes} + \sum \text{Tetos de Categoria Restantes}$
+    public func totalRemainingProvision(for monthReference: Date) -> Double {
+        totalQuotasRemaining(for: monthReference) + totalCategoryProvisionsRemaining(for: monthReference)
     }
 
     /// Despesa total projetada do mês considerando despesas reais + provisões variáveis remanescentes ($\sum P_{restante}$).

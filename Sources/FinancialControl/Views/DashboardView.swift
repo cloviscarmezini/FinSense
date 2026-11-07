@@ -54,6 +54,8 @@ public struct DashboardView: View {
             isAnnual: isAnnual
         )
         let monthEnvelopes = store.provisionEnvelopes(for: store.selectedMonth)
+        let monthQuotas = store.allQuotaEnvelopes(for: store.selectedMonth)
+        let hasAnyProvisionOrQuota = !monthEnvelopes.isEmpty || !monthQuotas.isEmpty
         let remainingProvisionsTotal = store.totalRemainingProvision(for: store.selectedMonth)
         let estimatedProvisionsTotal = store.totalEstimatedProvision(for: store.selectedMonth)
 
@@ -192,16 +194,16 @@ public struct DashboardView: View {
                         subtitle: isAnnual ? "Balanço anual projetado: \(BRLFormatters.currency(periodNet))" : "Balanço mensal: \(BRLFormatters.currency(periodNet))",
                         icon: "chart.line.uptrend.xyaxis",
                         tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#F59E0B"),
-                        footnote: (!isAnnual && !monthEnvelopes.isEmpty)
+                        footnote: (!isAnnual && hasAnyProvisionOrQuota)
                             ? "Provisão de Gastos Variáveis: \(BRLFormatters.currency(remainingProvisionsTotal)) restantes"
                             : nil,
                         footnoteColor: remainingProvisionsTotal > 0 ? Color(hex: "#6366F1") : .secondary
                     )
                 }
 
-                // MARK: - Previsões & Tetos do Mês (Orçamento por Envelopes Dinâmicos)
+                // MARK: - Previsões & Tetos do Mês (Divisão Visual em Dois Blocos Claros)
                 if !isAnnual {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 18) {
                         HStack(alignment: .center, spacing: 12) {
                             HStack(spacing: 8) {
                                 Image(systemName: "tray.full.fill")
@@ -209,7 +211,7 @@ public struct DashboardView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("Previsões & Tetos do Mês")
                                         .font(.headline)
-                                    Text("Orçamento por envelopes dinâmicos em \(periodFullLabel) (abatimento em tempo real sem gerar transações fictícias)")
+                                    Text("Cotas específicas e tetos por categoria desacoplados em \(periodFullLabel) (abatimento em tempo real)")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -217,7 +219,7 @@ public struct DashboardView: View {
 
                             Spacer()
 
-                            if !monthEnvelopes.isEmpty {
+                            if hasAnyProvisionOrQuota {
                                 HStack(spacing: 14) {
                                     VStack(alignment: .trailing, spacing: 1) {
                                         Text("Total Orçado")
@@ -228,7 +230,7 @@ public struct DashboardView: View {
                                     }
                                     Divider().frame(height: 26)
                                     VStack(alignment: .trailing, spacing: 1) {
-                                        Text("Provisão de Gastos Variáveis")
+                                        Text("Provisão Total Futura")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
                                         Text("\(BRLFormatters.currency(remainingProvisionsTotal)) restantes")
@@ -241,18 +243,18 @@ public struct DashboardView: View {
                             Button {
                                 showAddQuotaSheet = true
                             } label: {
-                                Label("Nova Cota Específica", systemImage: "plus.square.on.square")
+                                Label("Nova Cota do Mês", systemImage: "plus.square.on.square")
                             }
                             .buttonStyle(.bordered)
                             .tint(Color(hex: "#0EA5E9"))
                             .controlSize(.small)
-                            .help("Cadastrar cota de item específico (ex: Galão de Água, 4 unidades a R$ 30,00)")
+                            .help("Cadastrar cota de item específico (ex: Galão de Água)")
 
                             Button {
                                 showProvisionsSheet = true
                             } label: {
                                 Label(
-                                    monthEnvelopes.isEmpty ? "Configurar Previsões" : "Gerenciar Verbas & Cotas",
+                                    hasAnyProvisionOrQuota ? "Gerenciar Tetos & Cotas" : "Configurar Previsões",
                                     systemImage: "slider.horizontal.3"
                                 )
                             }
@@ -261,15 +263,15 @@ public struct DashboardView: View {
                             .controlSize(.small)
                         }
 
-                        if monthEnvelopes.isEmpty {
+                        if !hasAnyProvisionOrQuota {
                             HStack(spacing: 12) {
                                 Image(systemName: "sparkles.rectangle.stack")
                                     .font(.system(size: 22))
                                     .foregroundStyle(Color(hex: "#6366F1").opacity(0.8))
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Nenhum teto ou cota configurada para \(periodFullLabel).")
+                                    Text("Nenhuma cota específica ou teto de categoria configurado para \(periodFullLabel).")
                                         .font(.subheadline.weight(.medium))
-                                    Text("Defina verbas livres (ex: Combustível, Lazer) e cotas específicas (ex: 4 galões de água a R$ 30) ou peça no Chat IA: \"Reserve R$ 500 para gasolina este mês\".")
+                                    Text("Adicione Cotas do Mês (ex: Galão de Água) ou Orçamentos por Categoria (ex: Combustível) de forma 100% independente.")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -281,9 +283,83 @@ public struct DashboardView: View {
                                     .fill(Color.primary.opacity(0.03))
                             )
                         } else {
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 2), spacing: 14) {
-                                ForEach(monthEnvelopes) { env in
-                                    provisionEnvelopeCard(env)
+                            // BLOCO 1: Cotas do Mês (Itens Específicos)
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "shippingbox.fill")
+                                            .font(.caption.bold())
+                                            .foregroundStyle(Color(hex: "#0EA5E9"))
+                                        Text("Cotas do Mês (Itens Específicos)")
+                                            .font(.subheadline.bold())
+                                    }
+                                    Spacer()
+                                    Text("Subtotal Cotas Restantes: \(BRLFormatters.currency(store.totalQuotasRemaining(for: store.selectedMonth)))")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(Color(hex: "#0EA5E9"))
+                                }
+
+                                if monthQuotas.isEmpty {
+                                    HStack {
+                                        Text("Nenhuma cota de item específico cadastrada neste mês.")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Button("Adicionar Cota Específica") {
+                                            showAddQuotaSheet = true
+                                        }
+                                        .buttonStyle(.link)
+                                        .font(.caption)
+                                    }
+                                    .padding(10)
+                                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.025)))
+                                } else {
+                                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 2), spacing: 14) {
+                                        ForEach(monthQuotas) { quota in
+                                            quotaItemCard(quota)
+                                        }
+                                    }
+                                }
+                            }
+
+                            Divider()
+
+                            // BLOCO 2: Orçamentos por Categoria (Tetos Mensais)
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "chart.bar.fill")
+                                            .font(.caption.bold())
+                                            .foregroundStyle(Color(hex: "#6366F1"))
+                                        Text("Orçamentos por Categoria (Tetos Mensais)")
+                                            .font(.subheadline.bold())
+                                    }
+                                    Spacer()
+                                    Text("Subtotal Tetos Restantes: \(BRLFormatters.currency(store.totalCategoryProvisionsRemaining(for: store.selectedMonth)))")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(Color(hex: "#6366F1"))
+                                }
+
+                                if monthEnvelopes.isEmpty {
+                                    HStack {
+                                        Text("Nenhuma categoria possui teto mensal aberto configurado neste mês.")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Button("Definir Teto de Categoria") {
+                                            showProvisionsSheet = true
+                                        }
+                                        .buttonStyle(.link)
+                                        .font(.caption)
+                                    }
+                                    .padding(10)
+                                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.025)))
+                                } else {
+                                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 2), spacing: 14) {
+                                        ForEach(monthEnvelopes) { env in
+                                            provisionEnvelopeCard(env)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -767,6 +843,133 @@ public struct DashboardView: View {
     }
 
     @ViewBuilder
+    private func quotaItemCard(_ quota: CategoryQuotaEnvelope) -> some View {
+        let statusColorHex: String = {
+            switch quota.status {
+            case .normal: return "#0EA5E9"
+            case .warning: return "#F59E0B"
+            case .exceeded: return "#EF4444"
+            }
+        }()
+        let categoryName = store.category(for: quota.categoryId)?.name ?? "Despesa"
+
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color(hex: statusColorHex).opacity(0.15))
+                        .frame(width: 34, height: 34)
+                    Image(systemName: quota.iconSymbol)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(Color(hex: statusColorHex))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text("\(quota.name): \(quota.consumedUnits) de \(quota.plannedQuantity) consumidos • \(BRLFormatters.currency(quota.remainingProvision)) restantes")
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(1)
+                        if quota.repeatForFutureMonths {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .help("Repetir automaticamente para os próximos meses")
+                        }
+                        if quota.isLocalMonthOverride {
+                            Text("(Mês)")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(Color(hex: "#F59E0B"))
+                        }
+                    }
+                    Text("Unitário est.: \(BRLFormatters.currency(quota.estimatedUnitPrice)) • Pendentes: \(quota.pendingUnits) un. • Cat. padrão: \(categoryName)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Text(quota.status.rawValue)
+                    .font(.system(size: 10.5, weight: .bold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color(hex: statusColorHex).opacity(0.15)))
+                    .foregroundStyle(Color(hex: statusColorHex))
+            }
+
+            // Progress Bar autônoma da cota específica (Unidades Baixadas / Quantidade Prevista)
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(height: 8)
+                    Capsule()
+                        .fill(Color(hex: statusColorHex).gradient)
+                        .frame(
+                            width: max(0, geo.size.width * CGFloat(quota.progressRatio)),
+                            height: 8
+                        )
+                }
+            }
+            .frame(height: 8)
+
+            HStack(spacing: 8) {
+                Button {
+                    redeemingQuotaEnvelope = quota
+                } label: {
+                    Label("+ Dar Baixa", systemImage: "plus.circle.fill")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#0EA5E9"))
+                .controlSize(.small)
+                .help("Abrir mini-diálogo pré-preenchido para dar baixa em 1 unidade e lançar despesa real no extrato")
+
+                Spacer()
+
+                if quota.consumedUnits > quota.plannedQuantity {
+                    Text("Acima do planejado: \(quota.consumedUnits) de \(quota.plannedQuantity) un.")
+                        .font(.caption2.bold())
+                        .foregroundStyle(Color(hex: "#EF4444"))
+                } else {
+                    Text("Total previsto: \(BRLFormatters.currency(quota.totalEstimatedAmount))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button {
+                    editingQuotaEnvelope = quota
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .help("Editar cota específica")
+
+                Button(role: .destructive) {
+                    pendingDeleteQuotaEnvelope = quota
+                    showDeleteQuotaScopeDialog = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundStyle(Color(hex: "#EF4444"))
+                }
+                .buttonStyle(.borderless)
+                .help("Excluir cota específica")
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(hex: "#0EA5E9").opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color(hex: statusColorHex).opacity(0.28), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
     private func provisionEnvelopeCard(_ env: CategoryProvisionEnvelope) -> some View {
         let statusColorHex: String = {
             switch env.status {
@@ -791,8 +994,13 @@ public struct DashboardView: View {
                                 .foregroundStyle(.secondary)
                                 .help("Repetir automaticamente para os próximos meses")
                         }
+                        if env.isFreeBudgetLocalOverride {
+                            Text("(Exceção do mês)")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(Color(hex: "#F59E0B"))
+                        }
                     }
-                    Text("Orçado Total: \(BRLFormatters.currency(env.estimatedAmount)) • Realizado: \(BRLFormatters.currency(env.realizedExpense))")
+                    Text("Teto Mensal: \(BRLFormatters.currency(env.estimatedAmount)) • Gasto Avulso: \(BRLFormatters.currency(env.realizedExpense))")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -801,13 +1009,24 @@ public struct DashboardView: View {
                 Spacer()
 
                 Button {
-                    showAddQuotaSheet = true
+                    editingFreeBudgetEnvelope = env
                 } label: {
-                    Image(systemName: "plus.circle")
+                    Image(systemName: "pencil")
                         .font(.caption)
                 }
                 .buttonStyle(.borderless)
-                .help("Adicionar cota específica nesta categoria")
+                .help("Editar Teto da Categoria")
+
+                Button(role: .destructive) {
+                    pendingDeleteFreeBudgetEnvelope = env
+                    showDeleteFreeBudgetScopeDialog = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundStyle(Color(hex: "#EF4444"))
+                }
+                .buttonStyle(.borderless)
+                .help("Excluir Teto da Categoria")
 
                 Text(env.status.rawValue)
                     .font(.system(size: 10.5, weight: .bold))
@@ -817,7 +1036,7 @@ public struct DashboardView: View {
                     .foregroundStyle(Color(hex: statusColorHex))
             }
 
-            // Progress Bar consolidada da categoria
+            // Progress Bar do Teto Geral da Categoria (comparando exclusivamente com gastos avulsos)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule()
@@ -833,117 +1052,6 @@ public struct DashboardView: View {
             }
             .frame(height: 8)
 
-            // 1. Sub-bloco de Verba Livre (Genérica), caso ativa
-            if env.freeBudgetEstimated > 0 {
-                HStack(spacing: 8) {
-                    Image(systemName: "wallet.pass.fill")
-                        .font(.caption2)
-                        .foregroundStyle(Color(hex: "#6366F1"))
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 4) {
-                            Text("Verba Livre: \(BRLFormatters.currency(env.freeBudgetRemaining)) restantes")
-                                .font(.caption.weight(.semibold))
-                            if env.isFreeBudgetLocalOverride {
-                                Text("(Exceção do mês)")
-                                    .font(.system(size: 9.5, weight: .medium))
-                                    .foregroundStyle(Color(hex: "#F59E0B"))
-                            }
-                        }
-                        Text("Despesas avulsas: \(BRLFormatters.currency(env.freeBudgetRealizedExpense)) de \(BRLFormatters.currency(env.freeBudgetEstimated))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-
-                    Button {
-                        editingFreeBudgetEnvelope = env
-                    } label: {
-                        Image(systemName: "pencil")
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Editar Verba Livre")
-
-                    Button(role: .destructive) {
-                        pendingDeleteFreeBudgetEnvelope = env
-                        showDeleteFreeBudgetScopeDialog = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.caption2)
-                            .foregroundStyle(Color(hex: "#EF4444"))
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Excluir Verba Livre")
-                }
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.035)))
-            }
-
-            // 2. Painel de Controle de Cotas de Itens Específicos
-            if !env.quotaEnvelopes.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(env.quotaEnvelopes) { quota in
-                        HStack(spacing: 8) {
-                            Image(systemName: quota.iconSymbol)
-                                .font(.caption)
-                                .foregroundStyle(Color(hex: "#0EA5E9"))
-                                .frame(width: 16)
-
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(spacing: 4) {
-                                    Text("\(quota.name): \(quota.consumedUnits) de \(quota.plannedQuantity) consumidos • \(BRLFormatters.currency(quota.remainingProvision)) restantes")
-                                        .font(.caption.weight(.semibold))
-                                        .lineLimit(1)
-                                    if quota.isLocalMonthOverride {
-                                        Text("(Mês)")
-                                            .font(.system(size: 9, weight: .bold))
-                                            .foregroundStyle(Color(hex: "#F59E0B"))
-                                    }
-                                }
-                                Text("Unitário est.: \(BRLFormatters.currency(quota.estimatedUnitPrice)) • Pendentes: \(quota.pendingUnits) un.")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer()
-
-                            Button {
-                                redeemingQuotaEnvelope = quota
-                            } label: {
-                                Label("Dar Baixa", systemImage: "plus.circle.fill")
-                                    .font(.system(size: 10.5, weight: .semibold))
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(Color(hex: "#0EA5E9"))
-                            .controlSize(.mini)
-                            .help("Registrar compra real e abater 1 unidade desta cota sem consumir a Verba Livre")
-
-                            Button {
-                                editingQuotaEnvelope = quota
-                            } label: {
-                                Image(systemName: "pencil")
-                                    .font(.caption2)
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Editar cota específica")
-
-                            Button(role: .destructive) {
-                                pendingDeleteQuotaEnvelope = quota
-                                showDeleteQuotaScopeDialog = true
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.caption2)
-                                    .foregroundStyle(Color(hex: "#EF4444"))
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Excluir cota específica")
-                        }
-                        .padding(8)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#0EA5E9").opacity(0.07)))
-                    }
-                }
-            }
-
             HStack {
                 Text(String(format: "%.0f%% utilizado", env.clampedProgressPercentage))
                     .font(.caption2.weight(.medium))
@@ -952,11 +1060,11 @@ public struct DashboardView: View {
                 Spacer()
 
                 if env.status == .exceeded && env.exceededAmount > 0 {
-                    Text("Excedente: +\(BRLFormatters.currency(env.exceededAmount)) • Provisão Restante: \(BRLFormatters.currency(env.remainingProvision))")
+                    Text("Excedente: +\(BRLFormatters.currency(env.exceededAmount)) • Teto Restante: \(BRLFormatters.currency(env.remainingProvision))")
                         .font(.caption2.bold())
                         .foregroundStyle(Color(hex: "#EF4444"))
                 } else {
-                    Text("Provisão da Categoria: \(BRLFormatters.currency(env.remainingProvision)) restantes")
+                    Text("Teto Restante: \(BRLFormatters.currency(env.remainingProvision))")
                         .font(.caption2.bold())
                         .foregroundStyle(.primary)
                 }
@@ -1303,17 +1411,17 @@ public struct MonthlyProvisionsSheet: View {
             isPresented: $showRecurringEditScopeDialog,
             titleVisibility: .visible
         ) {
-            Button("Salvar apenas para este mês") {
+            Button("Aplicar somente a este mês") {
                 saveProvisions(scope: .onlyThisMonth)
                 dismiss()
             }
-            Button("Aplicar a todos os meses futuros") {
+            Button("Aplicar a este e a todos os meses futuros") {
                 saveProvisions(scope: .thisAndFutureMonths)
                 dismiss()
             }
             Button("Cancelar", role: .cancel) {}
         } message: {
-            Text("Você alterou o valor de uma ou mais previsões com recorrência ativa. Deseja manter a alteração apenas como exceção deste mês ou atualizar o modelo base para os próximos meses?")
+            Text("Você alterou o valor de uma ou mais previsões com recorrência ativa. Deseja aplicar somente a este mês ou aplicar a este e a todos os meses futuros?")
         }
     }
 
@@ -1448,19 +1556,19 @@ public struct FreeBudgetEditorSheet: View {
             repeatForFutureMonths = envelope.provision.repeatForFutureMonths
         }
         .confirmationDialog(
-            "Aplicar Alteração na Verba Livre Recorrente",
+            "Aplicar Alteração no Teto Recorrente",
             isPresented: $showScopeDialog,
             titleVisibility: .visible
         ) {
-            Button("Salvar apenas para este mês") {
+            Button("Aplicar somente a este mês") {
                 applySave(scope: .onlyThisMonth)
             }
-            Button("Aplicar a todos os meses futuros") {
+            Button("Aplicar a este e a todos os meses futuros") {
                 applySave(scope: .thisAndFutureMonths)
             }
             Button("Cancelar", role: .cancel) {}
         } message: {
-            Text("Deseja manter o novo valor apenas como exceção para \(monthTitle) ou atualizar a previsão para todos os meses futuros?")
+            Text("Deseja aplicar a alteração somente a este mês (\(monthTitle)) ou a este e a todos os meses futuros?")
         }
     }
 
@@ -1488,8 +1596,8 @@ public struct QuotaItemEditorSheet: View {
     @State private var selectedCategoryId: UUID = UUID()
     @State private var itemName: String = ""
     @State private var iconSymbol: String = "drop.fill"
-    @State private var plannedQuantityString: String = "4"
-    @State private var unitPriceString: String = "30,00"
+    @State private var plannedQuantityString: String = "1"
+    @State private var unitPriceString: String = ""
     @State private var repeatForFutureMonths: Bool = true
     @State private var showEditScopeDialog: Bool = false
 
@@ -1557,18 +1665,18 @@ public struct QuotaItemEditorSheet: View {
 
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Quantidade Prevista no Mês")
+                        Text("Quantidade prevista por mês")
                             .font(.caption.bold())
                             .foregroundStyle(.secondary)
-                        TextField("Ex: 4", text: $plannedQuantityString)
+                        TextField("Ex: 1", text: $plannedQuantityString)
                             .textFieldStyle(.roundedBorder)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Valor Unitário Estimado (R$)")
+                        Text("Valor unitário estimado (R$)")
                             .font(.caption.bold())
                             .foregroundStyle(.secondary)
-                        TextField("Ex: 30,00", text: $unitPriceString)
+                        TextField("Ex: 13,00", text: $unitPriceString)
                             .textFieldStyle(.roundedBorder)
                     }
                 }
@@ -1649,6 +1757,8 @@ public struct QuotaItemEditorSheet: View {
                 repeatForFutureMonths = existing.repeatForFutureMonths
             } else {
                 selectedCategoryId = preselectedCategoryId ?? store.expenseCategories.first?.id ?? UUID()
+                plannedQuantityString = "1"
+                unitPriceString = ""
             }
         }
         .confirmationDialog(
@@ -1656,15 +1766,15 @@ public struct QuotaItemEditorSheet: View {
             isPresented: $showEditScopeDialog,
             titleVisibility: .visible
         ) {
-            Button("Salvar apenas para este mês") {
+            Button("Aplicar somente a este mês") {
                 saveQuota(scope: .onlyThisMonth)
             }
-            Button("Aplicar a todos os meses futuros") {
+            Button("Aplicar a este e a todos os meses futuros") {
                 saveQuota(scope: .thisAndFutureMonths)
             }
             Button("Cancelar", role: .cancel) {}
         } message: {
-            Text("Esta cota possui recorrência ativa. Deseja aplicar as alterações apenas ao mês selecionado (\(monthTitle)) ou atualizar todos os meses futuros?")
+            Text("Esta cota possui recorrência ativa. Deseja aplicar somente a este mês (\(monthTitle)) ou aplicar a este e a todos os meses futuros?")
         }
     }
 

@@ -37,6 +37,27 @@ public enum MacFilePicker {
         panel.allowedContentTypes = [.item, .image, .pdf, .data]
         return panel.runModal() == .OK ? panel.url : nil
     }
+
+    @MainActor
+    public static func saveJSONFile(defaultFileName: String = "financial_backup_granular.json") -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Exportar Dados Financeiros (JSON Estruturado)"
+        panel.nameFieldStringValue = defaultFileName
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [.json]
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    @MainActor
+    public static func pickJSONImportFile() -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "Importar Gastos / Transações (JSON)"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.json]
+        return panel.runModal() == .OK ? panel.url : nil
+    }
 }
 
 // MARK: - Bank / Custom Icon Avatar View
