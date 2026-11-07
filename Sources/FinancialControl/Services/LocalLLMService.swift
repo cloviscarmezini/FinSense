@@ -409,19 +409,34 @@ public final class LocalLLMService: ObservableObject {
             return provisionResponse
         }
 
-        // 2. Verifica se a pergunta é sobre em quanto tempo pagar uma dívida específica (ex: "Cartão Mercado Pago")
-        if lower.contains("divida") || lower.contains("mercado pago") || (lower.contains("quanto tempo") && lower.contains("pagar")) {
+        // 2. Verifica se a pergunta é sobre Empréstimos ou Financiamentos (ex: plano de ação para quitar financiamento imobiliário / consignado)
+        let mentionsContractKeywords = lower.contains("financiamento") ||
+                                       lower.contains("imobiliario") ||
+                                       lower.contains("imobilidario") ||
+                                       lower.contains("habitacao") ||
+                                       lower.contains("emprestimo") ||
+                                       lower.contains("consignado") ||
+                                       lower.contains("amortiza")
+        let matchablePrompt = normalizeForMatching(prompt)
+        let matchesSpecificContract = (store.activeContracts(for: .loan) + store.activeContracts(for: .financing)).contains { contract in
+            let normName = normalizeForMatching(contract.name)
+            if !normName.isEmpty && matchablePrompt.contains(normName) { return true }
+            if let num = contract.contractNumber, !num.isEmpty, matchablePrompt.contains(normalizeForMatching(num)) { return true }
+            return false
+        }
+
+        if mentionsContractKeywords || matchesSpecificContract {
+            return analyzeLoansAndFinancings(prompt: prompt, normalizedPrompt: lower, store: store)
+        }
+
+        // 3. Verifica se a pergunta é sobre em quanto tempo pagar uma dívida específica (ex: "Cartão Mercado Pago", "Cartão de crédito Sam's")
+        if lower.contains("divida") || lower.contains("mercado pago") || (lower.contains("quanto tempo") && lower.contains("pagar")) || lower.contains("quitar") {
             return analyzeDebtPayoffTimeline(prompt: prompt, normalizedPrompt: lower, store: store)
         }
 
-        // 3. Verifica se a pergunta envolve análise de período (ex: 01/01/2026 até 01/12/2026) ou projeção de débito no futuro
+        // 4. Verifica se a pergunta envolve análise de período (ex: 01/01/2026 até 01/12/2026) ou projeção de débito no futuro
         if lower.contains("projecao") || lower.contains("debito") || lower.contains("futuro") || lower.contains("fututo") || lower.contains("ate") || extractDateRange(from: prompt) != nil {
             return analyzePeriodAndOverdraftProjection(prompt: prompt, store: store)
-        }
-
-        // 4. Verifica se a pergunta é sobre empréstimos ou financiamentos
-        if lower.contains("emprestimo") || lower.contains("consignado") || lower.contains("financiamento") || lower.contains("quitar") || lower.contains("amortiza") {
-            return analyzeLoansAndFinancings(store: store)
         }
 
         // 5. Resposta analítica geral completa sobre a base de dados atual
@@ -673,36 +688,68 @@ public final class LocalLLMService: ObservableObject {
             return "- **\(snap.monthLabel):** Receitas \(BRLFormatters.currency(snap.income)) | Despesas \(BRLFormatters.currency(snap.expense)) (Saldo do mês: `\(snap.netFlow >= 0 ? "+" : "")\(BRLFormatters.currency(snap.netFlow))`) → **Balanço Projetado: \(BRLFormatters.currency(snap.projectedAccumulatedBalance))** (*\(statusBadge)*)"
         }.joined(separator: "\n")
 
+        // Análise cronológica dia a dia dentro do mês para identificar a data exata segura de pagamento
+        // (garantindo que pagar a dívida não deixe a conta sem saldo para cobrir despesas seguintes do mês)
+        let currentMonthDailyPlan = evaluateIntraMonthSafePaymentSchedule(
+            forMonth: referenceMonth,
+            startingBalance: immediateLiquidityNow,
+            debtValue: debtValue,
+            isCurrentMonth: true,
+            store: store
+        )
+
         var timelineSection = ""
-        if immediateLiquidityNow >= debtValue {
+        if currentMonthDailyPlan.canSafelyPayImmediately {
             let remainingImmediate = immediateLiquidityNow - debtValue
             let remainingEndOfMonth = projectedEndOfCurrentMonth - debtValue
             timelineSection = """
-            ### 3. Conclusão e Tempo para Quitação
-            - **Quitação Imediata (Hoje) ou até o Fim de \(currentMonthLabel):** Você **já possui saldo disponível suficiente** para quitar **\(debt.name)** (**\(BRLFormatters.currency(debtValue))**) agora mesmo ou no fechamento deste mês!
-            - **Com o saldo já realizado hoje (\(BRLFormatters.currency(immediateLiquidityNow))):** Quitando à vista hoje, ainda restam **\(BRLFormatters.currency(remainingImmediate))** disponíveis.
-            - **No fechamento do mês atual (\(currentMonthLabel)):** Com o resultado líquido do mês (**\(currentMonthNet >= 0 ? "+" : "")\(BRLFormatters.currency(currentMonthNet))**), seu saldo projetado de fim de mês atinge **\(BRLFormatters.currency(projectedEndOfCurrentMonth))**. Pagando a dívida de **\(BRLFormatters.currency(debtValue))**, você termina **\(currentMonthLabel)** com **\(BRLFormatters.currency(remainingEndOfMonth))** de saldo positivo.
+            ### 3. Conclusão, Data Segura e Tempo para Quitação
+            - **Quitação Imediata Segura (Hoje) ou até o Fim de \(currentMonthLabel):** Você **já possui saldo disponível hoje (\(BRLFormatters.currency(immediateLiquidityNow)))** e, analisando todas as datas de receitas e despesas até o fim do mês, quitar **\(debt.name)** (**\(BRLFormatters.currency(debtValue))**) hoje **não compromete nenhuma despesa futura programada**.
+            - **Sobra imediata hoje:** Quitando à vista agora, restam **\(BRLFormatters.currency(remainingImmediate))** livres em caixa.
+            - **Sobra projetada no fechamento de \(currentMonthLabel):** Após todas as receitas e despesas do mês, seu saldo final projetado será de **\(BRLFormatters.currency(remainingEndOfMonth))**.
+            \(currentMonthDailyPlan.scheduleMarkdownBlock)
             """
         } else if projectedEndOfCurrentMonth >= debtValue {
-            let missingToday = max(0.0, debtValue - immediateLiquidityNow)
             let remainingAfterPayoff = projectedEndOfCurrentMonth - debtValue
             let exactMonthsByAverage = avgMonthlySurplus > 0 ? (debtValue / avgMonthlySurplus) : 1.0
+            let safeDateText = currentMonthDailyPlan.recommendedSafeDateLabel
+            let whyWaitExplanation: String = {
+                if immediateLiquidityNow >= debtValue {
+                    return "Embora seu saldo atual hoje seja de **\(BRLFormatters.currency(immediateLiquidityNow))**, **não é recomendável quitar no início/meio do mês antes de \(safeDateText)**, pois você possui despesas e provisões programadas ao longo do mês que deixariam seu caixa descoberto antes da entrada das próximas receitas."
+                } else {
+                    let missingNow = max(0.0, debtValue - immediateLiquidityNow)
+                    return "Hoje seu saldo realizado é de **\(BRLFormatters.currency(immediateLiquidityNow))** (faltam **\(BRLFormatters.currency(missingNow))** para o valor integral hoje, além da necessidade de preservar caixa para as despesas que vencem ao longo do mês)."
+                }
+            }()
+
             timelineSection = """
-            ### 3. Conclusão e Tempo para Quitação
-            - **Quitação já ao Fim do Mês Atual (\(currentMonthLabel) — menos de 1 mês):** Considerando o seu fluxo de caixa e o balanço deste mês, **você já consegue quitar integralmente a dívida \(debt.name) (\(BRLFormatters.currency(debtValue))) até o fim de \(currentMonthLabel)**!
-            - **Por que você já consegue quitar neste mês:** Hoje seu saldo realizado em conta/investimentos é de **\(BRLFormatters.currency(immediateLiquidityNow))** (faltariam apenas **\(BRLFormatters.currency(missingToday))** se pagasse hoje), mas com as receitas e despesas de **\(currentMonthLabel)** (resultado líquido de **+\(BRLFormatters.currency(currentMonthNet))** no mês), seu **Saldo Projetado de Fim de Mês chega a \(BRLFormatters.currency(projectedEndOfCurrentMonth))**.
-            - **Sobra após quitar no fim deste mês:** Ao pagar **\(BRLFormatters.currency(debtValue))** até o final de **\(currentMonthLabel)**, ainda sobrarão **\(BRLFormatters.currency(remainingAfterPayoff))** de saldo projetado na sua conta.
-            - **Pela geração média mensal isolada (\(BRLFormatters.currency(max(avgMonthlySurplus, 0)))/mês):** Essa dívida equivale a apenas `\(String(format: "%.1f", exactMonthsByAverage))` mês de sobra operacional média (ou seja, é absorvida dentro de **1 mês** de fluxo).
+            ### 3. Conclusão, Data Segura e Tempo para Quitação
+            - **Quitação já ao Fim do Mês Atual (\(currentMonthLabel) — menos de 1 mês):** Considerando o seu fluxo de caixa e o cronograma de datas deste mês, **você consegue quitar integralmente a dívida \(debt.name) (\(BRLFormatters.currency(debtValue))) ainda em \(currentMonthLabel)**, mas **deve aguardar a data segura recomendada** (e não pagar agora).
+            - **📅 Data Segura Recomendada para Pagamento:** **A partir de \(safeDateText)** (*\(currentMonthDailyPlan.safeTriggerReason)*).
+            - **Por que aguardar até \(safeDateText):** \(whyWaitExplanation)
+            - **Sobra após quitar em \(safeDateText):** Com o **Saldo Projetado de Fim de Mês em \(BRLFormatters.currency(projectedEndOfCurrentMonth))**, ao pagar **\(BRLFormatters.currency(debtValue))** na janela segura, todas as contas do mês estarão cobertas e ainda sobrarão **\(BRLFormatters.currency(remainingAfterPayoff))** de saldo projetado.
+            - **Pela geração média mensal isolada (\(BRLFormatters.currency(max(avgMonthlySurplus, 0)))/mês):** Essa dívida equivale a apenas `\(String(format: "%.1f", exactMonthsByAverage))` mês de sobra operacional média.
+            \(currentMonthDailyPlan.scheduleMarkdownBlock)
             """
         } else if let targetSnap = payoffMonthSnapshot {
             let monthsNeeded = targetSnap.monthOffset
             let remainingAfterPayoff = targetSnap.projectedAccumulatedBalance - debtValue
             let exactMonthsByAverage = avgMonthlySurplus > 0 ? (debtValue / avgMonthlySurplus) : Double(monthsNeeded)
+            let prevBalance = targetSnap.projectedAccumulatedBalance - targetSnap.netFlow
+            let futureMonthDailyPlan = evaluateIntraMonthSafePaymentSchedule(
+                forMonth: targetSnap.monthDate,
+                startingBalance: prevBalance,
+                debtValue: debtValue,
+                isCurrentMonth: false,
+                store: store
+            )
             timelineSection = """
-            ### 3. Conclusão e Tempo para Quitação
-            - **Prazo Projetado pelo Balanço Mensal:** Mantendo seu padrão de receitas e despesas (com parcelas de empréstimos/financiamentos devidamente diluídas mês a mês), você acumulará saldo suficiente para quitar **\(debt.name)** (**\(BRLFormatters.currency(debtValue))**) em **\(monthsNeeded) \(monthsNeeded == 1 ? "mês" : "meses")** — no fechamento de **\(targetSnap.monthLabel)**.
+            ### 3. Conclusão, Data Segura e Tempo para Quitação
+            - **Prazo Projetado pelo Balanço Mensal:** Mantendo seu padrão de receitas e despesas (com parcelas de empréstimos/financiamentos diluídas mês a mês), você acumulará saldo suficiente para quitar **\(debt.name)** (**\(BRLFormatters.currency(debtValue))**) em **\(monthsNeeded) \(monthsNeeded == 1 ? "mês" : "meses")** — em **\(targetSnap.monthLabel)**.
+            - **📅 Data Segura Recomendada dentro de \(targetSnap.monthLabel):** **A partir de \(futureMonthDailyPlan.recommendedSafeDateLabel)** (*\(futureMonthDailyPlan.safeTriggerReason)*), garantindo que todas as demais despesas daquele mês sejam pagas sem risco de falta de caixa.
             - **Balanço Projetado em \(targetSnap.monthLabel):** **\(BRLFormatters.currency(targetSnap.projectedAccumulatedBalance))** (quitando a dívida, restarão **\(BRLFormatters.currency(remainingAfterPayoff))** de saldo).
             - **Pelo ritmo médio de sobra mensal (\(BRLFormatters.currency(max(avgMonthlySurplus, 0)))/mês):** Equivale a cerca de `\(String(format: "%.1f", exactMonthsByAverage))` meses de capacidade de poupança líquida.
+            \(futureMonthDailyPlan.scheduleMarkdownBlock)
             """
         } else if avgMonthlySurplus > 0 {
             let exactMonths = debtValue / avgMonthlySurplus
@@ -726,7 +773,7 @@ public final class LocalLLMService: ObservableObject {
 
         return """
         ## Análise de Quitação da Dívida: **\(debt.name)**
-        *Análise focada exclusivamente nesta dívida e no seu fluxo de caixa mensal (com parcelas de contratos diluídas mês a mês)*
+        *Análise focada exclusivamente nesta dívida e no seu fluxo de caixa mensal e diário (com parcelas de contratos diluídas mês a mês)*
 
         ### 1. Dados da Dívida Analisada
         - **Dívida:** \(debt.name)
@@ -747,6 +794,164 @@ public final class LocalLLMService: ObservableObject {
         ### 4. Evolução do Fluxo de Caixa e Balanço dos Meses
         \(monthlyEvolutionLines)
         """
+    }
+
+    private struct IntraMonthPaymentScheduleResult {
+        let canSafelyPayImmediately: Bool
+        let recommendedSafeDateLabel: String
+        let safeTriggerReason: String
+        let scheduleMarkdownBlock: String
+    }
+
+    /// Analisa as datas exatas de receitas e despesas pendentes dentro de um mês para determinar
+    /// a partir de qual dia é seguro pagar `debtValue` sem faltar caixa para nenhum compromisso posterior do mês.
+    private static func evaluateIntraMonthSafePaymentSchedule(
+        forMonth targetMonth: Date,
+        startingBalance: Double,
+        debtValue: Double,
+        isCurrentMonth: Bool,
+        store: FinancialDataStore
+    ) -> IntraMonthPaymentScheduleResult {
+        let cal = Calendar.current
+        let unpaidTxs = store.transactionsForMonth(targetMonth)
+            .filter { !$0.ignoreInConsolidated && (!$0.isPaid || !isCurrentMonth) }
+            .sorted { a, b in
+                let da = cal.startOfDay(for: a.date)
+                let db = cal.startOfDay(for: b.date)
+                if da == db {
+                    // No mesmo dia, processa entradas antes de saídas
+                    return a.type == .income && b.type == .expense
+                }
+                return da < db
+            }
+
+        let remainingProvisions = store.totalRemainingProvision(for: targetMonth)
+        let endOfMonthDate = store.endOfMonth(for: targetMonth)
+        let endOfMonthLabel = BRLFormatters.shortDate(endOfMonthDate)
+
+        struct DailyCheckpoint {
+            let date: Date
+            let dateLabel: String
+            let summaryText: String
+            let netDelta: Double
+            let balanceAfterEvents: Double
+        }
+
+        var checkpoints: [DailyCheckpoint] = []
+        var groupedByDay: [(day: Date, items: [FinancialTransaction])] = []
+        for tx in unpaidTxs {
+            let d = cal.startOfDay(for: tx.date)
+            if let lastIdx = groupedByDay.indices.last, groupedByDay[lastIdx].day == d {
+                groupedByDay[lastIdx].items.append(tx)
+            } else {
+                groupedByDay.append((day: d, items: [tx]))
+            }
+        }
+
+        var running = startingBalance
+        for group in groupedByDay {
+            let incItems = group.items.filter { $0.type == .income }
+            let expItems = group.items.filter { $0.type == .expense }
+            let incSum = incItems.reduce(0.0) { $0 + $1.amount }
+            let expSum = expItems.reduce(0.0) { $0 + $1.amount }
+            let delta = incSum - expSum
+            running += delta
+
+            var parts: [String] = []
+            if !incItems.isEmpty {
+                let names = incItems.prefix(2).map(\.name).joined(separator: ", ")
+                parts.append("+\(BRLFormatters.currency(incSum)) (\(names))")
+            }
+            if !expItems.isEmpty {
+                let names = expItems.prefix(2).map(\.name).joined(separator: ", ")
+                parts.append("-\(BRLFormatters.currency(expSum)) (\(names))")
+            }
+
+            checkpoints.append(
+                DailyCheckpoint(
+                    date: group.day,
+                    dateLabel: BRLFormatters.shortDate(group.day),
+                    summaryText: parts.joined(separator: " | "),
+                    netDelta: delta,
+                    balanceAfterEvents: running
+                )
+            )
+        }
+
+        let finalBalanceWithProvisions = running - remainingProvisions
+
+        // Verifica se pagar imediatamente (antes dos eventos futuros do mês) é 100% seguro:
+        // Requer que o saldo inicial >= debtValue E que em nenhum dia subsequente (nem após provisões) o saldo caia abaixo de debtValue.
+        let minBalanceAcrossAllDays = checkpoints.map(\.balanceAfterEvents).min() ?? startingBalance
+        let minSafeFloorFromStart = min(startingBalance, min(minBalanceAcrossAllDays, finalBalanceWithProvisions))
+        let canPayImmediately = isCurrentMonth && (minSafeFloorFromStart >= debtValue)
+
+        // Procura o primeiro checkpoint i a partir do qual o saldo nunca mais fica abaixo de debtValue
+        // (considerando todas as despesas futuras j >= i e a reserva de provisões do mês).
+        var safeIndexWithoutBreakingBills: Int? = nil
+        var safeIndexIncludingFullProvisions: Int? = nil
+
+        for idx in checkpoints.indices {
+            let minSubsequentBillsOnly = checkpoints[idx...].map(\.balanceAfterEvents).min() ?? checkpoints[idx].balanceAfterEvents
+            if safeIndexWithoutBreakingBills == nil && minSubsequentBillsOnly >= debtValue {
+                safeIndexWithoutBreakingBills = idx
+            }
+            let minSubsequentWithProvisions = min(minSubsequentBillsOnly - remainingProvisions, finalBalanceWithProvisions)
+            if safeIndexIncludingFullProvisions == nil && minSubsequentWithProvisions >= debtValue {
+                safeIndexIncludingFullProvisions = idx
+            }
+        }
+
+        let chosenIdx = safeIndexIncludingFullProvisions ?? safeIndexWithoutBreakingBills
+        let recommendedDateLabel: String
+        let triggerReason: String
+
+        if canPayImmediately {
+            recommendedDateLabel = "Hoje (\(BRLFormatters.shortDate(Date())))"
+            triggerReason = "saldo atual cobre a dívida e todas as despesas seguintes do mês"
+        } else if let idx = chosenIdx {
+            let cp = checkpoints[idx]
+            recommendedDateLabel = cp.dateLabel
+            if let strictIdx = safeIndexIncludingFullProvisions,
+               let billsOnlyIdx = safeIndexWithoutBreakingBills,
+               strictIdx > billsOnlyIdx {
+                let earlierCp = checkpoints[billsOnlyIdx]
+                triggerReason = "após \(cp.summaryText), preservando 100% das despesas agendadas e das provisões variáveis do mês (ou a partir de \(earlierCp.dateLabel) caso ainda não tenha consumido toda a reserva de provisões)"
+            } else {
+                triggerReason = "após \(cp.summaryText), quando todas as despesas seguintes do mês já ficam integralmente cobertas"
+            }
+        } else {
+            recommendedDateLabel = endOfMonthLabel
+            triggerReason = "no fechamento consolidado do mês (\(endOfMonthLabel)), após a compensação de todas as receitas e despesas"
+        }
+
+        if checkpoints.isEmpty {
+            return IntraMonthPaymentScheduleResult(
+                canSafelyPayImmediately: canPayImmediately,
+                recommendedSafeDateLabel: recommendedDateLabel,
+                safeTriggerReason: triggerReason,
+                scheduleMarkdownBlock: ""
+            )
+        }
+
+        var lines: [String] = ["\n#### Cronograma de Datas de Caixa em \(BRLFormatters.monthYear(targetMonth))"]
+        let startTag = isCurrentMonth ? "Saldo Realizado Hoje" : "Saldo Inicial do Mês"
+        lines.append("- **\(startTag):** **\(BRLFormatters.currency(startingBalance))**")
+        for (idx, cp) in checkpoints.enumerated() {
+            let isSafePoint = (chosenIdx != nil && idx >= chosenIdx!)
+            let icon = isSafePoint ? "✅" : "⚠️"
+            lines.append("- **Dia \(cp.dateLabel):** \(cp.summaryText) → Saldo projetado no dia: **\(BRLFormatters.currency(cp.balanceAfterEvents))** \(icon)")
+        }
+        if remainingProvisions > 0 {
+            lines.append("- **Reserva de Previsões/Cotas Restantes do Mês:** -\(BRLFormatters.currency(remainingProvisions)) → **Fechamento Líquido Projetado: \(BRLFormatters.currency(finalBalanceWithProvisions))**")
+        }
+
+        return IntraMonthPaymentScheduleResult(
+            canSafelyPayImmediately: canPayImmediately,
+            recommendedSafeDateLabel: recommendedDateLabel,
+            safeTriggerReason: triggerReason,
+            scheduleMarkdownBlock: lines.joined(separator: "\n")
+        )
     }
 
     // MARK: - Specialized Analysis 2: Period Analysis & Overdraft Projection ("01/01/2026 até 01/12/2026")
@@ -905,31 +1110,311 @@ public final class LocalLLMService: ObservableObject {
         """
     }
 
-    private static func analyzeLoansAndFinancings(store: FinancialDataStore) -> String {
+    private static func analyzeLoansAndFinancings(
+        prompt: String,
+        normalizedPrompt: String,
+        store: FinancialDataStore
+    ) -> String {
         let loans = store.activeContracts(for: .loan)
         let financings = store.activeContracts(for: .financing)
+        let allContracts = loans + financings
 
-        if loans.isEmpty && financings.isEmpty {
+        if allContracts.isEmpty {
             return """
             Você não possui **Empréstimos** ou **Financiamentos** ativos cadastrados no momento.
             Você pode adicioná-los nos menus **Empréstimos** ou **Financiamentos** (inclusive informando uma *Data de Início* no passado para que o app gere apenas as parcelas futuras e calcule a projeção de quitação com desconto de juros).
             """
         }
 
-        var lines: [String] = ["## Análise de Empréstimos e Financiamentos Ativos\n"]
-        for c in (loans + financings) {
+        let matchablePrompt = normalizeForMatching(prompt)
+
+        // 1. Tenta identificar um contrato específico pelo nome completo ou pelo número do contrato
+        var matchedContract: CreditContract? = allContracts.first { c in
+            let normName = normalizeForMatching(c.name)
+            if !normName.isEmpty && matchablePrompt.contains(normName) {
+                return true
+            }
+            if let num = c.contractNumber, !num.isEmpty, matchablePrompt.contains(normalizeForMatching(num)) {
+                return true
+            }
+            return false
+        }
+
+        // 2. Se não encontrou pelo nome exato, tenta pelos tokens distintivos (ex: "caixa", "783694303")
+        if matchedContract == nil {
+            let genericContractWords: Set<String> = [
+                "financiamento", "emprestimo", "credito", "consignado", "contrato",
+                "banco", "imobiliario", "imobilidario", "pessoal", "parcela"
+            ]
+            let tokenMatches = allContracts.filter { c in
+                let tokens = normalizeForMatching(c.name)
+                    .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                    .filter { $0.count >= 3 && !genericContractWords.contains($0) }
+                return !tokens.isEmpty && tokens.contains { matchablePrompt.contains($0) }
+            }
+            if tokenMatches.count == 1 {
+                matchedContract = tokenMatches.first
+            }
+        }
+
+        // 3. Se identificou exatamente 1 contrato pelo nome/número, gera o Plano de Ação completo para quitá-lo
+        if let specificContract = matchedContract {
+            return buildContractPayoffActionPlan(for: specificContract, store: store)
+        }
+
+        // 4. Determina se o usuário perguntou sobre Financiamentos ou Empréstimos
+        let mentionsFinancing = matchablePrompt.contains("financiamento") ||
+                                matchablePrompt.contains("imobiliario") ||
+                                matchablePrompt.contains("imobilidario") ||
+                                matchablePrompt.contains("habitacao") ||
+                                matchablePrompt.contains("imovel") ||
+                                matchablePrompt.contains("veiculo")
+        let mentionsLoan = matchablePrompt.contains("emprestimo") ||
+                           matchablePrompt.contains("consignado")
+
+        let candidateContracts: [CreditContract]
+        let scopeTitleSingular: String
+        let scopeTitlePlural: String
+
+        if mentionsFinancing && !mentionsLoan {
+            candidateContracts = financings
+            scopeTitleSingular = "financiamento"
+            scopeTitlePlural = "financiamentos"
+        } else if mentionsLoan && !mentionsFinancing {
+            candidateContracts = loans
+            scopeTitleSingular = "empréstimo"
+            scopeTitlePlural = "empréstimos"
+        } else {
+            candidateContracts = allContracts
+            scopeTitleSingular = "contrato (empréstimo ou financiamento)"
+            scopeTitlePlural = "empréstimos e financiamentos"
+        }
+
+        if candidateContracts.isEmpty {
+            return """
+            Você não possui nenhum **\(scopeTitleSingular)** ativo cadastrado no momento.
+            Atualmente você possui \(allContracts.count) contrato(s) ativo(s) em outra modalidade.
+            """
+        }
+
+        // Se o usuário possui APENAS 1 contrato na modalidade consultada (ex: apenas 1 Financiamento: "Financiamento Habitação CAIXA"),
+        // analisa automaticamente o fluxo de caixa + dívida total e monta o plano de ação completo!
+        if candidateContracts.count == 1 {
+            return buildContractPayoffActionPlan(for: candidateContracts[0], store: store)
+        }
+
+        // Se houver MAIS DE 1 contrato na modalidade e o usuário não especificou qual deseja analisar/quitar,
+        // pergunta a qual ele está se referindo exibindo a lista!
+        let itemLines = candidateContracts.map { c -> String in
             let remCount = store.remainingInstallmentsCount(for: c)
             let nominal = store.remainingNominalAmount(for: c)
             let projected = store.projectedPayoffAmount(for: c)
-            let discount = max(nominal - projected, 0)
-            lines.append("""
-            - **\(c.name)** (*\(c.kind.title) - \(c.subtypeDisplayName)*):
+            let contractNoInfo = (c.contractNumber?.isEmpty == false) ? " • Contrato `\(c.contractNumber!)`" : ""
+            return """
+            - **\(c.name)** (*\(c.kind.title) - \(c.subtypeDisplayName)*\(contractNoInfo)):
               - Parcelas restantes: **\(remCount) de \(c.totalInstallments)** × **\(BRLFormatters.currency(c.installmentAmount))** (Taxa: `\(String(format: "%.2f", c.monthlyInterestRate))% a.m.`)
-              - Soma nominal das parcelas futuras: \(BRLFormatters.currency(nominal))
-              - **Projeção de valor para quitar hoje:** **\(BRLFormatters.currency(projected))** *(Economia estimada de juros futuros: **\(BRLFormatters.currency(discount))**)*
-            """)
+              - Saldo Devedor / Valor para quitar hoje: **\(BRLFormatters.currency(projected))** *(Soma nominal futura: \(BRLFormatters.currency(nominal)))*
+            """
+        }.joined(separator: "\n\n")
+
+        let exampleContract = candidateContracts[0]
+        return """
+        ## Qual \(scopeTitleSingular) você deseja analisar?
+        Encontrei **\(candidateContracts.count) \(scopeTitlePlural) ativos** na sua base de dados. Como você não especificou qual deles deseja quitar ou simular, informe a qual você está se referindo:
+
+        \(itemLines)
+
+        ---
+        💡 **Como prosseguir:**
+        Você pode clicar no botão **"Simular Prazo com IA"** diretamente no card desejado na aba **\(mentionsFinancing && !mentionsLoan ? "Financiamentos" : "Empréstimos")** ou responder especificando o nome/contrato, por exemplo:
+        - *"Monte um plano de ação para eu quitar meu \(scopeTitleSingular) \"\(exampleContract.name)\" no menor prazo possível"*
+        """
+    }
+
+    private static func buildContractPayoffActionPlan(
+        for contract: CreditContract,
+        store: FinancialDataStore
+    ) -> String {
+        let cal = Calendar.current
+        let referenceMonth = store.selectedMonth
+
+        if let horizonDate = cal.date(byAdding: .month, value: 24, to: referenceMonth) {
+            store.ensureRecurringTransactionsMaterialized(upTo: horizonDate)
         }
-        return lines.joined(separator: "\n\n")
+
+        let remCount = max(store.remainingInstallmentsCount(for: contract), 1)
+        let nominalRemaining = store.remainingNominalAmount(for: contract)
+        let outstandingBalance = store.currentOutstandingBalance(for: contract)
+        let payoffToday = store.projectedPayoffAmount(for: contract)
+        let effectivePrincipal = max(outstandingBalance, payoffToday)
+        let totalInterestEmbedded = max(nominalRemaining - payoffToday, 0)
+        let monthlyRateDecimal = max(contract.monthlyInterestRate, 0.0) / 100.0
+
+        // Calcula fluxo de caixa operacional mensal na janela de referência (-2 a +6 meses) com parcelas diluídas
+        let activeTxs = store.transactions.filter { !$0.ignoreInConsolidated }
+        let incomeTxs = activeTxs.filter { tx in
+            tx.type == .income &&
+            !tx.name.uppercased().contains("RESGATE COFRINHOS") &&
+            !tx.name.uppercased().contains("RESGATE CDB")
+        }
+        let expenseTxs = activeTxs.filter { tx in
+            tx.type == .expense &&
+            !tx.name.uppercased().contains("APLICACAO COFRINHOS") &&
+            !tx.name.uppercased().contains("APLICACAO CDB")
+        }
+
+        var windowMonths: [Date] = []
+        for offset in -2...6 {
+            if let m = cal.date(byAdding: .month, value: offset, to: referenceMonth) {
+                let inc = incomeTxs.filter { store.isInMonth($0.date, monthReference: m) }.reduce(0.0) { $0 + $1.amount }
+                let exp = expenseTxs.filter { store.isInMonth($0.date, monthReference: m) }.reduce(0.0) { $0 + $1.amount }
+                if inc > 0 && exp > 0 {
+                    windowMonths.append(m)
+                }
+            }
+        }
+        if windowMonths.isEmpty {
+            windowMonths = [referenceMonth]
+        }
+
+        let windowCount = Double(max(windowMonths.count, 1))
+        let totalWindowInc = incomeTxs
+            .filter { tx in windowMonths.contains { store.isInMonth(tx.date, monthReference: $0) } }
+            .reduce(0.0) { $0 + $1.amount }
+        let totalWindowExp = expenseTxs
+            .filter { tx in windowMonths.contains { store.isInMonth(tx.date, monthReference: $0) } }
+            .reduce(0.0) { $0 + $1.amount }
+
+        let avgMonthlyIncome = totalWindowInc / windowCount
+        let avgMonthlyExpense = totalWindowExp / windowCount
+        let avgMonthlySurplus = avgMonthlyIncome - avgMonthlyExpense
+
+        let currentMonthLabel = BRLFormatters.monthYear(referenceMonth)
+        let immediateLiquidityNow = store.totalCheckingBalanceNow + store.consolidatedInvestmentsBalance
+        let projectedEndOfCurrentMonth = store.accumulatedConsolidatedBalance(throughMonth: referenceMonth, includeProjectedUnpaid: true)
+
+        // Identifica outros contratos ativos de menor prazo (ex: consignados) cujo encerramento liberará fluxo de caixa extra (Efeito Bola de Neve)
+        let otherContracts = (store.activeContracts(for: .loan) + store.activeContracts(for: .financing))
+            .filter { $0.id != contract.id }
+        let shorterTermContracts = otherContracts.filter { store.remainingInstallmentsCount(for: $0) < remCount }
+        let extraCashFreedWhenShorterEnd = shorterTermContracts.reduce(0.0) { $0 + $1.installmentAmount }
+        let shorterTermMaxMonths = shorterTermContracts.map { store.remainingInstallmentsCount(for: $0) }.max() ?? 0
+
+        // Função de simulação mês a mês de amortização extraordinária (focada em Redução de Prazo)
+        func simulateAcceleratedPayoff(
+            baseExtraMonthly: Double,
+            applySnowballFromShorterContracts: Bool
+        ) -> (months: Int, totalPaid: Double, interestSaved: Double, payoffDateLabel: String) {
+            var balance = effectivePrincipal
+            var month = 0
+            var totalPaid = 0.0
+            let installment = contract.installmentAmount
+
+            while balance > 0.01 && month < remCount {
+                month += 1
+                let monthlyInterest = balance * monthlyRateDecimal
+                let regularPrincipalAmortization = max(installment - monthlyInterest, effectivePrincipal / Double(remCount))
+
+                var extraAmortization = max(baseExtraMonthly, 0.0)
+                if applySnowballFromShorterContracts {
+                    for other in shorterTermContracts {
+                        let otherRem = store.remainingInstallmentsCount(for: other)
+                        if month > otherRem {
+                            extraAmortization += other.installmentAmount
+                        }
+                    }
+                }
+
+                let totalPrincipalReduction = regularPrincipalAmortization + extraAmortization
+                if totalPrincipalReduction >= balance {
+                    totalPaid += monthlyInterest + balance
+                    balance = 0.0
+                } else {
+                    balance -= totalPrincipalReduction
+                    totalPaid += installment + extraAmortization
+                }
+            }
+
+            let saved = max(nominalRemaining - totalPaid, 0.0)
+            let payoffDate = cal.date(byAdding: .month, value: month, to: referenceMonth) ?? referenceMonth
+            return (month, totalPaid, saved, BRLFormatters.monthYear(payoffDate))
+        }
+
+        let baseSurplusForAmortization = max(avgMonthlySurplus, contract.installmentAmount * 0.30)
+        let moderateExtra = max(baseSurplusForAmortization * 0.50, 300.0)
+        let aggressiveExtra = max(baseSurplusForAmortization, 600.0)
+
+        let simModerate = simulateAcceleratedPayoff(baseExtraMonthly: moderateExtra, applySnowballFromShorterContracts: false)
+        let simAggressive = simulateAcceleratedPayoff(baseExtraMonthly: aggressiveExtra, applySnowballFromShorterContracts: true)
+
+        func formatYearsAndMonths(_ totalMonths: Int) -> String {
+            let y = totalMonths / 12
+            let m = totalMonths % 12
+            if y > 0 && m > 0 {
+                return "\(totalMonths) meses (\(y) \(y == 1 ? "ano" : "anos") e \(m) \(m == 1 ? "mês" : "meses"))"
+            } else if y > 0 {
+                return "\(totalMonths) meses (\(y) \(y == 1 ? "ano" : "anos"))"
+            } else {
+                return "\(totalMonths) \(totalMonths == 1 ? "mês" : "meses")"
+            }
+        }
+
+        let monthsCutModerate = max(remCount - simModerate.months, 0)
+        let monthsCutAggressive = max(remCount - simAggressive.months, 0)
+        let contractNoText = (contract.contractNumber?.isEmpty == false) ? " (Contrato `\(contract.contractNumber!)`)" : ""
+
+        var snowballSection = ""
+        if !shorterTermContracts.isEmpty {
+            let otherList = shorterTermContracts.map { c in
+                let r = store.remainingInstallmentsCount(for: c)
+                return "• **\(c.name):** \(r)x restantes de **\(BRLFormatters.currency(c.installmentAmount))/mês** (Taxa: `\(String(format: "%.2f", c.monthlyInterestRate))% a.m.`)"
+            }.joined(separator: "\n")
+
+            snowballSection = """
+
+            ### 3. Estratégia "Bola de Neve" com Seus Demais Contratos
+            Você possui outros contratos de prazo mais curto que atualmente consomem **\(BRLFormatters.currency(extraCashFreedWhenShorterEnd))/mês** do seu fluxo:
+            \(otherList)
+            - **Alavanca de Aceleração:** Assim que esses contratos encerrarem (em até **\(shorterTermMaxMonths) meses**), direcione integralmente os **+\(BRLFormatters.currency(extraCashFreedWhenShorterEnd))/mês** liberados para amortizar o saldo devedor de **\(contract.name)**!
+            """
+        }
+
+        return """
+        ## Plano de Ação para Quitação no Menor Prazo: **\(contract.name)**
+        *Simulação personalizada cruzando o saldo devedor do contrato com o seu fluxo de caixa mensal diluído*
+
+        ### 1. Diagnóstico Atual do \(contract.kind.title)
+        - **Contrato:** **\(contract.name)**\(contractNoText) (*\(contract.kind.title) - \(contract.subtypeDisplayName) • Sistema \(contract.amortizationSystem.rawValue)*)
+        - **Parcelas Restantes:** **\(formatYearsAndMonths(remCount))** × **\(BRLFormatters.currency(contract.installmentAmount))/mês** (Vencimento todo dia \(contract.billingDay))
+        - **Taxa de Juros do Contrato:** `\(String(format: "%.2f", contract.monthlyInterestRate))% a.m.`
+        - **Soma Nominal das Parcelas Futuras (com juros até o fim):** **\(BRLFormatters.currency(nominalRemaining))**
+        - **Saldo Devedor Atual / Projeção para Quitar Hoje:** **\(BRLFormatters.currency(payoffToday))** *(Juros futuros embutidos que podem ser eliminados: **\(BRLFormatters.currency(totalInterestEmbedded))**)*
+
+        ### 2. Sua Capacidade Mensal de Amortização (Fluxo de Caixa)
+        - **Receita Operacional Média:** **\(BRLFormatters.currency(avgMonthlyIncome)) / mês**
+        - **Despesa Operacional Média (já incluindo a parcela de \(BRLFormatters.currency(contract.installmentAmount))):** **\(BRLFormatters.currency(avgMonthlyExpense)) / mês**
+        - **Sobra Líquida Mensal (Capacidade de Amortização Extra):** **\(avgMonthlySurplus >= 0 ? "+" : "")\(BRLFormatters.currency(avgMonthlySurplus)) / mês**
+        - **Saldo Disponível Hoje:** \(BRLFormatters.currency(immediateLiquidityNow)) | **Saldo Projetado Fim de \(currentMonthLabel):** **\(BRLFormatters.currency(projectedEndOfCurrentMonth))**
+        \(snowballSection)
+
+        ### \(shorterTermContracts.isEmpty ? "3" : "4"). Simulação de Prazo e Economia de Juros
+        - **Cenário 1 — Ritmo Original (Sem Amortizações Extras):**
+          - Prazo restante: **\(formatYearsAndMonths(remCount))**
+          - Total desembolsado: \(BRLFormatters.currency(nominalRemaining))
+        - **Cenário 2 — Plano Moderado (Amortizando +\(BRLFormatters.currency(moderateExtra))/mês no Prazo):**
+          - **Novo Prazo Estimado:** **\(formatYearsAndMonths(simModerate.months))** (previsão de quitação em **\(simModerate.payoffDateLabel)**)
+          - **Tempo Eliminado:** **\(formatYearsAndMonths(monthsCutModerate)) a menos**
+          - **Economia Estimada de Juros:** **\(BRLFormatters.currency(simModerate.interestSaved))**
+        - **🚀 Cenário 3 — Plano Agressivo de Menor Prazo Possível (Amortizando +\(BRLFormatters.currency(aggressiveExtra))/mês\(shorterTermContracts.isEmpty ? "" : " + Efeito Bola de Neve de +\(BRLFormatters.currency(extraCashFreedWhenShorterEnd))/mês")):**
+          - **Novo Prazo Mínimo Projetado:** **\(formatYearsAndMonths(simAggressive.months))** (previsão de quitação em **\(simAggressive.payoffDateLabel)**!)
+          - **Tempo Eliminado:** **\(formatYearsAndMonths(monthsCutAggressive)) eliminados do contrato**
+          - **Economia Estimada de Juros:** **\(BRLFormatters.currency(simAggressive.interestSaved))** economizados!
+
+        ### \(shorterTermContracts.isEmpty ? "4" : "5"). Passo a Passo Recomendado para Executar Agora
+        1. **Sempre escolha "Redução de Prazo" (e nunca redução de parcela):** Na aba **\(contract.kind == .loan ? "Empréstimos" : "Financiamentos") → Amortizar Parcelas / Saldo**, aplique as amortizações extras abatendo as últimas parcelas de trás para frente, eliminando quase 100% dos juros compostos futuros.
+        2. **Amortize sempre na data de vencimento da prestação (dia \(contract.billingDay)) ou no fechamento do mês:** Após receber todos os salários do mês e garantir o pagamento das contas do mês, direcione a sobra líquida (**\(BRLFormatters.currency(aggressiveExtra))/mês**) para amortização extraordinária.
+        3. **Use 13º Salário, PLR/Bônus\(contract.kind == .financing && contract.financingSubtype == .imovel ? " e FGTS a cada 2 anos" : ""):** Qualquer aporte extraordinário direto no saldo devedor de **\(BRLFormatters.currency(payoffToday))** acelera drasticamente a queda dos juros mensais.
+        """
     }
 
     private static func generateComprehensiveDatabaseOverview(store: FinancialDataStore) -> String {

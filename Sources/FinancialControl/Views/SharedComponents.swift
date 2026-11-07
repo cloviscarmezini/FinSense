@@ -49,6 +49,17 @@ public enum MacFilePicker {
     }
 
     @MainActor
+    public static func saveDatabaseBackupFile(defaultFileName: String = "financial_backup_completo.fcbackup") -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "Exportar Backup Completo da Base de Dados (Exceto Modelos de IA)"
+        panel.nameFieldStringValue = defaultFileName
+        panel.canCreateDirectories = true
+        panel.allowedContentTypes = [.data, .json]
+        panel.allowsOtherFileTypes = true
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    @MainActor
     public static func pickJSONImportFile() -> URL? {
         let panel = NSOpenPanel()
         panel.title = "Importar Gastos / Transações (JSON)"
@@ -56,6 +67,17 @@ public enum MacFilePicker {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.allowedContentTypes = [.json]
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    @MainActor
+    public static func pickDatabaseImportFile() -> URL? {
+        let panel = NSOpenPanel()
+        panel.title = "Selecionar Arquivo de Backup ou Importação (.fcbackup / .json)"
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowedContentTypes = [.data, .json, .item]
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

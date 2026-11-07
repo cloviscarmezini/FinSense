@@ -1344,17 +1344,31 @@ public struct CategoryProvisionEnvelope: Identifiable, Hashable {
     }
 }
 
-// MARK: - Exportação Granular & Importação de Gastos (Configurações)
+// MARK: - Exportação Completa & Importação Seletiva Validada (Configurações)
+
+public struct ExportedAssetFile: Codable, Hashable, Identifiable {
+    public var id: String { fileName }
+    public var fileName: String
+    public var originalPath: String
+    public var data: Data
+
+    public init(fileName: String, originalPath: String, data: Data) {
+        self.fileName = fileName
+        self.originalPath = originalPath
+        self.data = data
+    }
+}
 
 public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Codable {
-    case transactions = "transactions"
     case accounts = "accounts"
     case categories = "categories"
+    case transactions = "transactions"
     case investments = "investments"
     case loans = "loans"
     case financings = "financings"
     case debts = "debts"
     case provisions = "provisions"
+    case assets = "assets"
 
     public var id: String { rawValue }
 
@@ -1375,7 +1389,9 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
         case .debts:
             return "Dívidas"
         case .provisions:
-            return "Previsões"
+            return "Previsões e Cotas"
+        case .assets:
+            return "Assets, Ícones e Comprovantes"
         }
     }
 
@@ -1397,6 +1413,8 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
             return "Dívidas em aberto e histórico de acordos"
         case .provisions:
             return "Tetos mensais por categoria e cotas de itens específicos"
+        case .assets:
+            return "Imagens personalizadas de contas/dívidas e anexos de transações"
         }
     }
 
@@ -1410,6 +1428,7 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
         case .financings: return "house.and.flag.fill"
         case .debts: return "exclamationmark.shield.fill"
         case .provisions: return "tray.full.fill"
+        case .assets: return "photo.on.rectangle.angled"
         }
     }
 }

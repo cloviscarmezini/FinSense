@@ -43,6 +43,13 @@ public struct LoansAndFinancingsView: View {
                     Spacer()
 
                     Button {
+                        store.openAIChat()
+                    } label: {
+                        Label("Perguntar à IA Local", systemImage: "sparkles.bubble.fill")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
                         store.requireInstalledLLM(forFeature: "Importar \(kind.title) via Documento (IA Local)") {
                             showImportDocumentSheet = true
                         }
@@ -255,8 +262,8 @@ public struct LoansAndFinancingsView: View {
                     .tint(Color(hex: accentHex))
             }
 
-            // Highlighted Line: "Projeção de valor para quitar"
-            HStack {
+            // Highlighted Line: "Projeção de valor para quitar" + "Simular Prazo com IA"
+            HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
@@ -270,6 +277,22 @@ public struct LoansAndFinancingsView: View {
                 }
 
                 Spacer()
+
+                Button {
+                    let kindLower = contract.kind == .loan ? "empréstimo" : "financiamento"
+                    let question = "Monte um plano de ação para eu quitar meu \(kindLower) \"\(contract.name)\" no menor prazo possível"
+                    store.requireInstalledLLM(forFeature: "Simular Prazo de '\(contract.name)' com IA Local") {
+                        store.isAIChatPresented = true
+                        Task {
+                            await llmService.sendUserQuestion(question, store: store)
+                        }
+                    }
+                } label: {
+                    Label("Simular Prazo com IA", systemImage: "sparkles")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .help("Gerar plano de ação na IA Local para quitar este \(contract.kind.title.lowercased()) no menor prazo possível")
 
                 Text(BRLFormatters.currency(projectedPayoff))
                     .font(.system(size: 22, weight: .heavy, design: .rounded))

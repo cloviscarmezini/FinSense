@@ -1700,5 +1700,303 @@ final class FinancialControlTests: XCTestCase {
         XCTAssertTrue(samsResponse.localizedCaseInsensitiveContains("Quitação já ao Fim do Mês Atual"))
         XCTAssertTrue(samsResponse.contains("3.570,91"))
         XCTAssertTrue(samsResponse.contains("1.889,91"))
+        // Também deve identificar a data exata segura dentro do mês (15/11/2026, após o recebimento de R$ 2.690,00) e listar o cronograma de datas
+        XCTAssertTrue(samsResponse.contains("15/11/2026"))
+        XCTAssertTrue(samsResponse.localizedCaseInsensitiveContains("Cronograma de Datas de Caixa"))
+    }
+
+    func testLocalLLMContractActionPlanAndIntraMonthChronologicalSafety() throws {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Principal",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 2000.00
+        )
+        let account = store.accounts.first!
+        let nov2026 = BRLFormatters.shortDateFormatter.date(from: "02/11/2026")!
+        store.selectedMonth = nov2026
+
+        let salaryCat = store.incomeCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Salário") }) ?? store.incomeCategories.first!
+        let housingCat = store.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Moradia") }) ?? store.expenseCategories.first!
+
+        // 1. Teste de proteção de fluxo de caixa intra-mês:
+        // No dia 02/11 o usuário tem R$ 2.000,00 em conta (que seria > R$ 1.681,00 da dívida Sam's).
+        // PORÉM, no dia 10/11 vence o Aluguel de R$ 1.500,00, e o Salário de R$ 5.000,00 só cai no dia 25/11!
+        // Se ele pagasse R$ 1.681,00 no começo do mês (02/11), sobrariam apenas R$ 319,00 e faltaria dinheiro para o Aluguel no dia 10/11!
+        // A IA DEVE alertar para NÃO pagar no começo do mês e indicar 25/11/2026 como a data segura.
+        _ = store.createTransaction(
+            name: "Aluguel Vencimento Dia 10",
+            amount: 1500.00,
+            date: BRLFormatters.shortDateFormatter.date(from: "10/11/2026")!,
+            type: .expense,
+            isPaid: false,
+            categoryId: housingCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+        _ = store.createTransaction(
+            name: "Salário Final do Mês",
+            amount: 5000.00,
+            date: BRLFormatters.shortDateFormatter.date(from: "25/11/2026")!,
+            type: .income,
+            isPaid: false,
+            categoryId: salaryCat.id,
+            accountId: account.id,
+            referenceNow: nov2026
+        )
+        store.addDebt(
+            name: "Cartão de crédito Sam's",
+            customImagePath: nil,
+            bankPresetId: nil,
+            iconSymbol: "creditcard.fill",
+            colorHex: "#009EE3",
+            originalAmount: 1681.00,
+            contractedDate: nil
+        )
+
+        let intraMonthResponse = LocalLLMService.generateFinancialResponse(
+            for: "Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida \"Cartão de crédito Sam's\"?",
+            store: store,
+            modelLabel: "Qwen2.5"
+        )
+        XCTAssertTrue(intraMonthResponse.contains("25/11/2026"))
+        XCTAssertTrue(intraMonthResponse.localizedCaseInsensitiveContains("não é recomendável quitar no início/meio do mês antes de 25/11/2026"))
+
+        // 2. Teste de Plano de Ação para Financiamento Imobiliário vs Múltiplos Empréstimos:
+        // Cadastra 2 Empréstimos Santander e APENAS 1 Financiamento (Financiamento Habitação CAIXA)
+        let parsedSantander1 = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.santanderLoanOCRText,
+            expectedKind: .loan
+        )
+        _ = store.createCreditContract(
+            kind: .loan,
+            name: parsedSantander1.name,
+            contractNumber: parsedSantander1.contractNumber,
+            loanSubtype: parsedSantander1.loanSubtype,
+            financingSubtype: parsedSantander1.financingSubtype,
+            amortizationSystem: parsedSantander1.amortizationSystem,
+            totalContractedAmount: parsedSantander1.totalContractedAmount,
+            outstandingBalance: parsedSantander1.outstandingBalance,
+            installmentAmount: parsedSantander1.installmentAmount,
+            billingDay: parsedSantander1.billingDay,
+            totalInstallments: parsedSantander1.totalInstallments,
+            monthlyInterestRate: parsedSantander1.monthlyInterestRate,
+            startDate: parsedSantander1.startDate,
+            accountId: account.id,
+            overridePastInstallmentsCount: parsedSantander1.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: parsedSantander1.firstFutureBillingDate
+        )
+
+        _ = store.createCreditContract(
+            kind: .loan,
+            name: "Crédito Consignado Santander (Contrato 783847703)",
+            contractNumber: "783847703",
+            loanSubtype: .consignado,
+            financingSubtype: nil,
+            amortizationSystem: .price,
+            totalContractedAmount: 10000.0,
+            outstandingBalance: 7213.02,
+            installmentAmount: 357.31,
+            billingDay: 25,
+            totalInstallments: 36,
+            monthlyInterestRate: 2.01,
+            startDate: parsedSantander1.startDate,
+            accountId: account.id,
+            overridePastInstallmentsCount: 10,
+            overrideFirstFutureBillingDate: parsedSantander1.firstFutureBillingDate
+        )
+
+        let parsedCaixa = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.caixaFinancingOCRText,
+            expectedKind: .financing
+        )
+        _ = store.createCreditContract(
+            kind: .financing,
+            name: parsedCaixa.name,
+            contractNumber: parsedCaixa.contractNumber,
+            loanSubtype: parsedCaixa.loanSubtype,
+            financingSubtype: parsedCaixa.financingSubtype,
+            amortizationSystem: parsedCaixa.amortizationSystem,
+            totalContractedAmount: parsedCaixa.totalContractedAmount,
+            outstandingBalance: parsedCaixa.outstandingBalance,
+            installmentAmount: parsedCaixa.installmentAmount,
+            billingDay: parsedCaixa.billingDay,
+            totalInstallments: parsedCaixa.totalInstallments,
+            monthlyInterestRate: parsedCaixa.monthlyInterestRate,
+            startDate: parsedCaixa.startDate,
+            accountId: account.id,
+            overridePastInstallmentsCount: parsedCaixa.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: parsedCaixa.firstFutureBillingDate
+        )
+
+        // Quando o usuário pergunta "Monte um plano de ação para eu quitar meu financiamento imobilidario no menor prazo possível",
+        // como há APENAS 1 financiamento cadastrado, a IA deve selecioná-lo automaticamente e montar o Plano de Ação completo!
+        let singleFinancingPlan = LocalLLMService.generateFinancialResponse(
+            for: "Monte um plano de ação para eu quitar meu financiamento imobilidario no menor prazo possível",
+            store: store,
+            modelLabel: "Qwen2.5"
+        )
+        XCTAssertTrue(singleFinancingPlan.contains("Plano de Ação para Quitação no Menor Prazo"))
+        XCTAssertTrue(singleFinancingPlan.contains("Financiamento Habitação CAIXA"))
+        XCTAssertTrue(singleFinancingPlan.contains("Simulação de Prazo e Economia de Juros"))
+        XCTAssertTrue(singleFinancingPlan.contains("Efeito Bola de Neve"))
+
+        // Quando o usuário pergunta sobre "meu empréstimo" sem especificar qual (e existem 2 empréstimos Santander),
+        // a IA deve perguntar a qual deles o usuário está se referindo, exibindo a lista!
+        let ambiguousLoanQuery = LocalLLMService.generateFinancialResponse(
+            for: "Monte um plano de ação para eu quitar meu empréstimo no menor prazo possível",
+            store: store,
+            modelLabel: "Qwen2.5"
+        )
+        XCTAssertTrue(ambiguousLoanQuery.localizedCaseInsensitiveContains("Qual empréstimo você deseja analisar"))
+        XCTAssertTrue(ambiguousLoanQuery.contains("783847703"))
+        XCTAssertTrue(ambiguousLoanQuery.contains("783694303"))
+
+        // E se cadastrarmos um segundo financiamento, perguntar sobre "meu financiamento" sem especificar também passa a perguntar qual dos 2!
+        _ = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Veículo Itaú",
+            contractNumber: "99887766",
+            loanSubtype: nil,
+            financingSubtype: .imovel,
+            amortizationSystem: .price,
+            totalContractedAmount: 60000.0,
+            outstandingBalance: 45000.0,
+            installmentAmount: 1450.0,
+            billingDay: 15,
+            totalInstallments: 48,
+            monthlyInterestRate: 1.29,
+            startDate: nov2026,
+            accountId: account.id
+        )
+        let ambiguousFinancingQuery = LocalLLMService.generateFinancialResponse(
+            for: "Monte um plano de ação para eu quitar meu financiamento no menor prazo possível",
+            store: store,
+            modelLabel: "Qwen2.5"
+        )
+        XCTAssertTrue(ambiguousFinancingQuery.localizedCaseInsensitiveContains("Qual financiamento você deseja analisar"))
+        XCTAssertTrue(ambiguousFinancingQuery.contains("Financiamento Habitação CAIXA"))
+        XCTAssertTrue(ambiguousFinancingQuery.contains("Financiamento Veículo Itaú"))
+    }
+
+    func testFullCompressedBackupExportAndSelectiveValidatedImport() throws {
+        let sourceStore = makeIsolatedStore(seedStatement: false)
+        let nov2026 = BRLFormatters.shortDateFormatter.date(from: "10/11/2026")!
+        sourceStore.selectedMonth = nov2026
+
+        // Cria um arquivo de asset de teste na pasta Attachments do sourceStore
+        let sourceAttachmentsDir = sourceStore.storageDirectory.appendingPathComponent("Attachments", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceAttachmentsDir, withIntermediateDirectories: true)
+        let dummyAssetURL = sourceAttachmentsDir.appendingPathComponent("comprovante_teste.pdf")
+        let dummyAssetBytes = Data("PDF-COMPROVANTE-TESTE-123".utf8)
+        try dummyAssetBytes.write(to: dummyAssetURL)
+
+        sourceStore.addAccount(
+            name: "Conta Backup",
+            bankPresetId: "nubank",
+            customImagePath: dummyAssetURL.path,
+            iconSymbol: "creditcard.fill",
+            colorHex: "#820AD1",
+            initialBalance: 4200.0
+        )
+        let sourceAcc = sourceStore.accounts.first!
+        let foodCat = sourceStore.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Alimentação") }) ?? sourceStore.expenseCategories.first!
+
+        _ = sourceStore.createTransaction(
+            name: "Compra Supermercado Backup",
+            amount: 450.0,
+            date: nov2026,
+            type: .expense,
+            isPaid: true,
+            categoryId: foodCat.id,
+            accountId: sourceAcc.id,
+            attachmentPath: dummyAssetURL.path,
+            attachmentName: "comprovante_teste.pdf",
+            referenceNow: nov2026
+        )
+        sourceStore.addDebt(
+            name: "Dívida Teste Backup",
+            customImagePath: nil,
+            bankPresetId: nil,
+            iconSymbol: "exclamationmark.shield.fill",
+            colorHex: "#EF4444",
+            originalAmount: 900.0,
+            contractedDate: nov2026
+        )
+        sourceStore.setCategoryProvision(
+            categoryId: foodCat.id,
+            estimatedAmount: 800.0,
+            for: nov2026,
+            repeatForFutureMonths: true
+        )
+
+        // Simula modelo de IA baixado no sourceStore para garantir que NÃO é exportado no backup
+        sourceStore.llmConfig.downloadedModels = [
+            LocalLLMModelInfo(
+                id: "Qwen/Qwen2.5-3B-Instruct-GGUF",
+                displayName: "Qwen 2.5 3B",
+                fileName: "qwen2.5-3b.gguf",
+                localPath: "/tmp/fake_model.gguf",
+                sizeBytes: 2_000_000_000,
+                downloadedAt: nov2026
+            )
+        ]
+
+        // 1. Exporta o arquivo completo comprimido (FCBK + LZFSE)
+        let compressedArchive = try XCTUnwrap(sourceStore.exportFullDatabaseArchive(compress: true))
+        XCTAssertTrue(compressedArchive.starts(with: Data("FCBK".utf8)))
+
+        // 2. Prepara pacote de importação em um segundo store totalmente vazio (sem categorias/contas)
+        let destStore = makeIsolatedStore(seedStatement: false)
+        destStore.resetSelectedData(Set(ResetDataTarget.allCases))
+        XCTAssertTrue(destStore.accounts.isEmpty)
+        XCTAssertTrue(destStore.categories.isEmpty)
+        XCTAssertTrue(destStore.transactions.isEmpty)
+
+        let preparedPkg = try destStore.prepareDatabaseImportPackage(from: compressedArchive)
+        // Modelos de IA nunca são exportados
+        XCTAssertTrue(preparedPkg.snapshot.llmConfig.downloadedModels.isEmpty)
+        // Assets estão incluídos
+        XCTAssertEqual(preparedPkg.totalCount(for: .assets), 1)
+        XCTAssertEqual(preparedPkg.totalCount(for: .transactions), 1)
+        XCTAssertEqual(preparedPkg.newCount(for: .transactions), 1)
+
+        // 3. Importa SELETIVAMENTE apenas [.transactions, .assets] (sem marcar .accounts nem .categories!)
+        // O validador de consistência referencial deve criar automaticamente a conta e a categoria referenciadas pela transação!
+        let firstImportResult = destStore.executeSelectiveDatabaseImportSync(
+            package: preparedPkg,
+            selectedTargets: [.transactions, .assets]
+        )
+        XCTAssertEqual(firstImportResult.importedCounts[.transactions], 1)
+        XCTAssertEqual(firstImportResult.importedCounts[.assets], 1)
+        XCTAssertGreaterThanOrEqual(firstImportResult.autoCreatedDependenciesCount, 2) // Conta + Categoria criadas por consistência!
+        XCTAssertEqual(destStore.transactions.count, 1)
+        XCTAssertEqual(destStore.accounts.count, 1)
+        XCTAssertEqual(destStore.categories.count, 1)
+        // Dívidas não foram marcadas, logo continuam 0
+        XCTAssertEqual(destStore.debts.count, 0)
+
+        // Verifica que o asset físico foi restaurado no diretório do destStore
+        let restoredAssetURL = destStore.storageDirectory.appendingPathComponent("Attachments/comprovante_teste.pdf")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: restoredAssetURL.path))
+
+        // 4. Re-analisa e re-importa o mesmo pacote: deve detectar duplicidade em O(1) e não duplicar nada!
+        let secondPkg = try destStore.prepareDatabaseImportPackage(from: compressedArchive)
+        XCTAssertEqual(secondPkg.newCount(for: .transactions), 0)
+        XCTAssertEqual(secondPkg.duplicateCount(for: .transactions), 1)
+
+        let secondImportResult = destStore.executeSelectiveDatabaseImportSync(
+            package: secondPkg,
+            selectedTargets: Set(ExportDataTarget.allCases)
+        )
+        XCTAssertEqual(secondImportResult.importedCounts[.transactions] ?? 0, 0)
+        XCTAssertEqual(secondImportResult.skippedDuplicateCounts[.transactions] ?? 0, 1)
+        // Agora que Dívidas e Previsões foram marcadas, elas entram sem duplicar Transações/Contas
+        XCTAssertEqual(secondImportResult.importedCounts[.debts], 1)
+        XCTAssertEqual(destStore.transactions.count, 1)
+        XCTAssertEqual(destStore.debts.count, 1)
     }
 }

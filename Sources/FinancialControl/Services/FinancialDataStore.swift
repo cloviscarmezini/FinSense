@@ -13,6 +13,7 @@ public struct FinancialDatabaseSnapshot: Codable {
     public var contracts: [CreditContract]
     public var provisions: [CategoryProvision]?
     public var categoryQuotas: [CategoryQuotaRule]?
+    public var assets: [ExportedAssetFile]?
     public var llmConfig: LLMConfiguration
     public var chatHistory: [ChatMessage]
     public var hasSeededInitialStatement: Bool
@@ -27,6 +28,7 @@ public struct FinancialDatabaseSnapshot: Codable {
         contracts: [CreditContract] = [],
         provisions: [CategoryProvision]? = [],
         categoryQuotas: [CategoryQuotaRule]? = [],
+        assets: [ExportedAssetFile]? = nil,
         llmConfig: LLMConfiguration = LLMConfiguration(),
         chatHistory: [ChatMessage] = [],
         hasSeededInitialStatement: Bool = false
@@ -40,11 +42,97 @@ public struct FinancialDatabaseSnapshot: Codable {
         self.contracts = contracts
         self.provisions = provisions
         self.categoryQuotas = categoryQuotas
+        self.assets = assets
         self.llmConfig = llmConfig
         self.chatHistory = chatHistory
         self.hasSeededInitialStatement = hasSeededInitialStatement
     }
 }
+
+public struct ImportTargetAnalysis: Identifiable, Hashable {
+    public var id: ExportDataTarget { target }
+    public let target: ExportDataTarget
+    public let totalCount: Int
+    public let newCount: Int
+    public let duplicateCount: Int
+
+    public init(target: ExportDataTarget, totalCount: Int, newCount: Int, duplicateCount: Int) {
+        self.target = target
+        self.totalCount = totalCount
+        self.newCount = newCount
+        self.duplicateCount = duplicateCount
+    }
+}
+
+public struct PreparedDatabaseImportPackage {
+    public let snapshot: FinancialDatabaseSnapshot
+    public let targetAnalyses: [ExportDataTarget: ImportTargetAnalysis]
+    public let availableNonEmptyTargets: Set<ExportDataTarget>
+
+    public init(
+        snapshot: FinancialDatabaseSnapshot,
+        targetAnalyses: [ExportDataTarget: ImportTargetAnalysis],
+        availableNonEmptyTargets: Set<ExportDataTarget>
+    ) {
+        self.snapshot = snapshot
+        self.targetAnalyses = targetAnalyses
+        self.availableNonEmptyTargets = availableNonEmptyTargets
+    }
+
+    public func analysis(for target: ExportDataTarget) -> ImportTargetAnalysis {
+        targetAnalyses[target] ?? ImportTargetAnalysis(target: target, totalCount: 0, newCount: 0, duplicateCount: 0)
+    }
+
+    public func totalCount(for target: ExportDataTarget) -> Int {
+        analysis(for: target).totalCount
+    }
+
+    public func newCount(for target: ExportDataTarget) -> Int {
+        analysis(for: target).newCount
+    }
+
+    public func duplicateCount(for target: ExportDataTarget) -> Int {
+        analysis(for: target).duplicateCount
+    }
+}
+
+public struct SelectiveImportExecutionResult {
+    public var importedAccounts: Int = 0
+    public var importedCategories: Int = 0
+    public var importedTransactions: Int = 0
+    public var importedInvestments: Int = 0
+    public var importedLoans: Int = 0
+    public var importedFinancings: Int = 0
+    public var importedDebts: Int = 0
+    public var importedProvisionsAndQuotas: Int = 0
+    public var importedAssets: Int = 0
+    public var skippedDuplicatesTotal: Int = 0
+    public var autoCreatedDependenciesCount: Int = 0
+    public var skippedDuplicateCounts: [ExportDataTarget: Int] = [:]
+
+    public init() {}
+
+    public var importedCounts: [ExportDataTarget: Int] {
+        [
+            .accounts: importedAccounts,
+            .categories: importedCategories,
+            .transactions: importedTransactions,
+            .investments: importedInvestments,
+            .loans: importedLoans,
+            .financings: importedFinancings,
+            .debts: importedDebts,
+            .provisions: importedProvisionsAndQuotas,
+            .assets: importedAssets
+        ]
+    }
+
+    public var totalImportedItems: Int {
+        importedAccounts + importedCategories + importedTransactions + importedInvestments +
+        importedLoans + importedFinancings + importedDebts + importedProvisionsAndQuotas + importedAssets
+    }
+}
+
+public typealias SelectiveDatabaseImportResult = SelectiveImportExecutionResult
 
 // MARK: - Dashboard Breakdown Models
 
@@ -355,9 +443,95 @@ public final class FinancialDataStore: ObservableObject {
         save()
     }
 
-    // MARK: - Granular Database Export & Expense JSON Import (Configurações)
+    // MARK: - Complete Database Export (Exceto Modelo de IA) & Fast Selective Validated Import
 
-    /// Constrói um snapshot contendo exclusivamente as entidades selecionadas pelo usuário para exportação granular.
+    private static let compressedArchiveMagicHeader = Data([0x46, 0x43, 0x42, 0x4B]) // "FCBK"
+
+    /// Coleta todos os arquivos de assets (imagens personalizadas de contas/dívidas e comprovantes em `Attachments/`),
+    /// excluindo estritamente qualquer modelo de IA (`Models/`).
+    public func collectExportableAssets() -> [ExportedAssetFile] {
+        let fm = FileManager.default
+        let modelsDirStandardized = modelsDirectoryURL.standardizedFileURL.path
+        var collectedByFileName: [String: ExportedAssetFile] = [:]
+
+        func tryAddAsset(atPath rawPath: String) {
+            guard !rawPath.isEmpty else { return }
+            let url = URL(fileURLWithPath: rawPath).standardizedFileURL
+            // Nunca inclui arquivos do diretório de modelos de IA
+            guard !url.path.hasPrefix(modelsDirStandardized) else { return }
+            let ext = url.pathExtension.lowercased()
+            guard ext != "gguf" && ext != "safetensors" && ext != "bin" else { return }
+            let fileName = url.lastPathComponent
+            guard !fileName.isEmpty, collectedByFileName[fileName] == nil else { return }
+            guard fm.fileExists(atPath: url.path),
+                  let data = try? Data(contentsOf: url),
+                  !data.isEmpty else { return }
+            collectedByFileName[fileName] = ExportedAssetFile(
+                fileName: fileName,
+                originalPath: rawPath,
+                data: data
+            )
+        }
+
+        if let attachmentURLs = try? fm.contentsOfDirectory(
+            at: attachmentsDirectoryURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
+            for fileURL in attachmentURLs {
+                tryAddAsset(atPath: fileURL.path)
+            }
+        }
+
+        for acc in accounts {
+            if let path = acc.customImagePath { tryAddAsset(atPath: path) }
+        }
+        for debt in debts {
+            if let path = debt.customImagePath { tryAddAsset(atPath: path) }
+        }
+        for tx in transactions {
+            if let path = tx.attachmentPath { tryAddAsset(atPath: path) }
+        }
+
+        return collectedByFileName.values.sorted { $0.fileName < $1.fileName }
+    }
+
+    /// Constrói o snapshot completo da base de dados exportando todas as entidades (incluindo contas, categorias e assets),
+    /// exceto modelos de IA local.
+    public func buildFullExportSnapshot() -> FinancialDatabaseSnapshot {
+        FinancialDatabaseSnapshot(
+            schemaVersion: 2,
+            accounts: accounts,
+            categories: categories,
+            transactions: transactions,
+            investments: investments,
+            debts: debts,
+            contracts: contracts,
+            provisions: provisions,
+            categoryQuotas: categoryQuotas,
+            assets: collectExportableAssets(),
+            llmConfig: LLMConfiguration(),
+            chatHistory: [],
+            hasSeededInitialStatement: false
+        )
+    }
+
+    /// Exporta toda a base de dados (exceto modelos de IA) em formato compacto e eficiente (com compressão binária LZFSE por padrão).
+    public func exportFullDatabaseArchive(compress: Bool = true) -> Data? {
+        let snapshot = buildFullExportSnapshot()
+        let encoder = JSONEncoder()
+        // Sem prettyPrinted para máxima velocidade de serialização e menor tamanho em memória
+        guard let rawJSON = try? encoder.encode(snapshot) else { return nil }
+        if compress,
+           let compressed = try? (rawJSON as NSData).compressed(using: .lzfse) as Data {
+            var archive = Self.compressedArchiveMagicHeader
+            archive.append(compressed)
+            return archive
+        }
+        return rawJSON
+    }
+
+    /// Constrói um snapshot contendo exclusivamente as entidades selecionadas para exportação granular.
     public func buildGranularExportSnapshot(targets: Set<ExportDataTarget>) -> FinancialDatabaseSnapshot {
         let exportedContracts = contracts.filter { contract in
             switch contract.kind {
@@ -378,18 +552,30 @@ public final class FinancialDataStore: ObservableObject {
             contracts: exportedContracts,
             provisions: targets.contains(.provisions) ? provisions : [],
             categoryQuotas: targets.contains(.provisions) ? categoryQuotas : [],
+            assets: targets.contains(.assets) ? collectExportableAssets() : nil,
             llmConfig: LLMConfiguration(),
             chatHistory: [],
             hasSeededInitialStatement: false
         )
     }
 
-    /// Gera os bytes JSON estruturados da exportação granular contendo apenas as entidades marcadas.
-    public func exportGranularDatabaseJSON(targets: Set<ExportDataTarget>) -> Data? {
+    /// Gera os bytes JSON compactos da exportação contendo as entidades marcadas.
+    public func exportGranularDatabaseJSON(targets: Set<ExportDataTarget> = Set(ExportDataTarget.allCases)) -> Data? {
         let snapshot = buildGranularExportSnapshot(targets: targets)
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try? encoder.encode(snapshot)
+    }
+
+    private static func normalizeKey(_ text: String) -> String {
+        text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func transactionSignature(name: String, amount: Double, date: Date, type: TransactionType) -> String {
+        let comps = calendar.dateComponents([.year, .month, .day], from: date)
+        let dayKey = String(format: "%04d-%02d-%02d", comps.year ?? 2026, comps.month ?? 1, comps.day ?? 1)
+        let cents = Int((abs(amount) * 100.0).rounded())
+        return "\(type.rawValue)|\(dayKey)|\(cents)|\(Self.normalizeKey(name))"
     }
 
     /// Verifica se uma transação candidata já existe no banco de dados ativo (anti-duplicidade).
@@ -403,181 +589,797 @@ public final class FinancialDataStore: ObservableObject {
         if let originalId, transactions.contains(where: { $0.id == originalId }) {
             return true
         }
-        let normCandidate = description
-            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normCandidate = Self.normalizeKey(description)
+        let candidateCents = Int((abs(amount) * 100.0).rounded())
 
         return transactions.contains { existing in
             guard existing.type == type else { return false }
-            guard abs(existing.amount - abs(amount)) < 0.01 else { return false }
+            guard Int((abs(existing.amount) * 100.0).rounded()) == candidateCents else { return false }
             guard calendar.isDate(existing.date, inSameDayAs: date) else { return false }
-            let normExisting = existing.name
-                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return normExisting == normCandidate
+            return Self.normalizeKey(existing.name) == normCandidate
         }
     }
 
-    /// Analisa um arquivo JSON de gastos/transações (suportando tanto o formato de backup `FinancialDatabaseSnapshot`
-    /// quanto um array direto de `[FinancialTransaction]` ou objetos JSON equivalentes) e retorna rascunhos para revisão.
-    public func parseImportableExpensesFromJSON(data: Data) throws -> [ImportableExpenseDraft] {
-        var rawTransactions: [FinancialTransaction] = []
-        var sourceCategoriesById: [UUID: String] = [:]
-        var sourceAccountsById: [UUID: String] = [:]
-
-        let decoder = JSONDecoder()
-        if let snapshot = try? decoder.decode(FinancialDatabaseSnapshot.self, from: data) {
-            rawTransactions = snapshot.transactions
-            for cat in snapshot.categories {
-                sourceCategoriesById[cat.id] = cat.name
-            }
-            for acc in snapshot.accounts {
-                sourceAccountsById[acc.id] = acc.name
-            }
-        } else if let directArray = try? decoder.decode([FinancialTransaction].self, from: data) {
-            rawTransactions = directArray
-        } else if let jsonObj = try? JSONSerialization.jsonObject(with: data, options: []) {
-            let dictArray: [[String: Any]]
-            if let arr = jsonObj as? [[String: Any]] {
-                dictArray = arr
-            } else if let root = jsonObj as? [String: Any],
-                      let nested = (root["transactions"] ?? root["expenses"] ?? root["gastos"]) as? [[String: Any]] {
-                dictArray = nested
+    /// Descomprime (caso seja arquivo binário `FCBK` comprimido com LZFSE) e decodifica qualquer arquivo válido de importação
+    /// em um `FinancialDatabaseSnapshot` unificado.
+    public func decodeImportDataToSnapshot(_ data: Data) throws -> FinancialDatabaseSnapshot {
+        let payloadData: Data
+        if data.count > Self.compressedArchiveMagicHeader.count,
+           data.prefix(Self.compressedArchiveMagicHeader.count) == Self.compressedArchiveMagicHeader {
+            let compressedBody = data.dropFirst(Self.compressedArchiveMagicHeader.count)
+            if let decompressed = try? (compressedBody as NSData).decompressed(using: .lzfse) as Data {
+                payloadData = decompressed
             } else {
                 throw NSError(
                     domain: "FinancialDataStore.Import",
-                    code: 400,
-                    userInfo: [NSLocalizedDescriptionKey: "Formato JSON inválido. Forneça um backup JSON do aplicativo ou uma lista JSON de transações."]
+                    code: 401,
+                    userInfo: [NSLocalizedDescriptionKey: "Não foi possível descomprimir o pacote de backup da base de dados."]
                 )
             }
+        } else {
+            payloadData = data
+        }
 
-            let isoFormatter = ISO8601DateFormatter()
-            for item in dictArray {
-                let desc = (item["name"] as? String)
-                    ?? (item["description"] as? String)
-                    ?? (item["descricao"] as? String)
-                    ?? (item["title"] as? String)
-                    ?? "Gasto Importado"
-                let details = (item["details"] as? String)
-                    ?? (item["detalhes"] as? String)
-                    ?? (item["notes"] as? String)
-                    ?? ""
-                let rawAmount: Double = {
-                    if let d = item["amount"] as? Double { return abs(d) }
-                    if let d = item["valor"] as? Double { return abs(d) }
-                    if let i = item["amount"] as? Int { return Double(abs(i)) }
-                    if let i = item["valor"] as? Int { return Double(abs(i)) }
-                    if let s = (item["amount"] ?? item["valor"]) as? String {
-                        return abs(BRLFormatters.parseCurrencyInput(s))
-                    }
-                    return 0.0
-                }()
-                guard rawAmount > 0 else { continue }
+        let decoder = JSONDecoder()
+        if let snapshot = try? decoder.decode(FinancialDatabaseSnapshot.self, from: payloadData) {
+            return snapshot
+        }
+        if let directTransactions = try? decoder.decode([FinancialTransaction].self, from: payloadData) {
+            return FinancialDatabaseSnapshot(schemaVersion: 2, transactions: directTransactions)
+        }
 
-                let parsedDate: Date = {
-                    if let timeInterval = item["date"] as? TimeInterval {
-                        return Date(timeIntervalSinceReferenceDate: timeInterval)
-                    }
-                    if let dateStr = (item["date"] ?? item["data"]) as? String {
-                        if let d = BRLFormatters.shortDateFormatter.date(from: dateStr) {
-                            return d
-                        }
-                        if let d = isoFormatter.date(from: dateStr) {
-                            return d
-                        }
-                    }
-                    return Date()
-                }()
+        // Suporte a JSON externo simplificado (array de objetos de despesas/transações)
+        guard let jsonObj = try? JSONSerialization.jsonObject(with: payloadData, options: []) else {
+            throw NSError(
+                domain: "FinancialDataStore.Import",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Arquivo de importação inválido. Selecione um backup exportado pelo app (.fcbackup / .json) ou um JSON de transações."]
+            )
+        }
 
-                let typeStr = ((item["type"] ?? item["tipo"]) as? String)?.lowercased() ?? "despesa"
-                let txType: TransactionType = (typeStr.contains("receita") || typeStr.contains("income")) ? .income : .expense
-                let isPaid = (item["isPaid"] as? Bool) ?? (item["pago"] as? Bool) ?? true
+        let dictArray: [[String: Any]]
+        if let arr = jsonObj as? [[String: Any]] {
+            dictArray = arr
+        } else if let root = jsonObj as? [String: Any],
+                  let nested = (root["transactions"] ?? root["expenses"] ?? root["gastos"]) as? [[String: Any]] {
+            dictArray = nested
+        } else {
+            throw NSError(
+                domain: "FinancialDataStore.Import",
+                code: 400,
+                userInfo: [NSLocalizedDescriptionKey: "Formato JSON inválido. Forneça um backup da base de dados ou uma lista de transações."]
+            )
+        }
 
-                let catId: UUID = {
-                    if let cidStr = (item["categoryId"] as? String), let uuid = UUID(uuidString: cidStr),
-                       categories.contains(where: { $0.id == uuid }) {
-                        return uuid
-                    }
-                    if let catName = (item["category"] ?? item["categoria"]) as? String,
-                       let matched = categories.first(where: {
-                           $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")) ==
-                           catName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
-                       }) {
-                        return matched.id
-                    }
-                    return inferCategoryId(forTitle: desc, type: txType)
-                }()
+        var catByNormName: [String: UUID] = [:]
+        for cat in categories {
+            catByNormName[Self.normalizeKey(cat.name)] = cat.id
+        }
+        var accByNormName: [String: UUID] = [:]
+        for acc in accounts {
+            accByNormName[Self.normalizeKey(acc.name)] = acc.id
+        }
+        let defaultAccId = accounts.first?.id ?? UUID()
+        let isoFormatter = ISO8601DateFormatter()
+        var parsedTransactions: [FinancialTransaction] = []
+        parsedTransactions.reserveCapacity(dictArray.count)
 
-                let accId: UUID = {
-                    if let aidStr = (item["accountId"] as? String), let uuid = UUID(uuidString: aidStr),
-                       accounts.contains(where: { $0.id == uuid }) {
-                        return uuid
-                    }
-                    if let accName = (item["account"] ?? item["conta"]) as? String,
-                       let matched = accounts.first(where: {
-                           $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")) ==
-                           accName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
-                       }) {
-                        return matched.id
-                    }
-                    return accounts.first?.id ?? UUID()
-                }()
+        for item in dictArray {
+            let desc = (item["name"] as? String)
+                ?? (item["description"] as? String)
+                ?? (item["descricao"] as? String)
+                ?? (item["title"] as? String)
+                ?? "Gasto Importado"
+            let details = (item["details"] as? String)
+                ?? (item["detalhes"] as? String)
+                ?? (item["notes"] as? String)
+                ?? ""
+            let rawAmount: Double = {
+                if let d = item["amount"] as? Double { return abs(d) }
+                if let d = item["valor"] as? Double { return abs(d) }
+                if let i = item["amount"] as? Int { return Double(abs(i)) }
+                if let i = item["valor"] as? Int { return Double(abs(i)) }
+                if let s = (item["amount"] ?? item["valor"]) as? String {
+                    return abs(BRLFormatters.parseCurrencyInput(s))
+                }
+                return 0.0
+            }()
+            guard rawAmount > 0 else { continue }
 
-                let txId = (item["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID()
-                rawTransactions.append(
-                    FinancialTransaction(
-                        id: txId,
-                        name: desc,
-                        details: details,
-                        amount: rawAmount,
-                        date: parsedDate,
-                        type: txType,
-                        isPaid: isPaid,
-                        categoryId: catId,
-                        accountId: accId
-                    )
+            let parsedDate: Date = {
+                if let timeInterval = item["date"] as? TimeInterval {
+                    return Date(timeIntervalSinceReferenceDate: timeInterval)
+                }
+                if let dateStr = (item["date"] ?? item["data"]) as? String {
+                    if let d = BRLFormatters.shortDateFormatter.date(from: dateStr) {
+                        return d
+                    }
+                    if let d = isoFormatter.date(from: dateStr) {
+                        return d
+                    }
+                }
+                return Date()
+            }()
+
+            let typeStr = ((item["type"] ?? item["tipo"]) as? String)?.lowercased() ?? "despesa"
+            let txType: TransactionType = (typeStr.contains("receita") || typeStr.contains("income")) ? .income : .expense
+            let isPaid = (item["isPaid"] as? Bool) ?? (item["pago"] as? Bool) ?? true
+
+            let catId: UUID = {
+                if let cidStr = (item["categoryId"] as? String), let uuid = UUID(uuidString: cidStr),
+                   categories.contains(where: { $0.id == uuid }) {
+                    return uuid
+                }
+                if let catName = (item["category"] ?? item["categoria"]) as? String,
+                   let matchedId = catByNormName[Self.normalizeKey(catName)] {
+                    return matchedId
+                }
+                return inferCategoryId(forTitle: desc, type: txType)
+            }()
+
+            let accId: UUID = {
+                if let aidStr = (item["accountId"] as? String), let uuid = UUID(uuidString: aidStr),
+                   accounts.contains(where: { $0.id == uuid }) {
+                    return uuid
+                }
+                if let accName = (item["account"] ?? item["conta"]) as? String,
+                   let matchedId = accByNormName[Self.normalizeKey(accName)] {
+                    return matchedId
+                }
+                return defaultAccId
+            }()
+
+            let txId = (item["id"] as? String).flatMap(UUID.init(uuidString:)) ?? UUID()
+            parsedTransactions.append(
+                FinancialTransaction(
+                    id: txId,
+                    name: desc,
+                    details: details,
+                    amount: rawAmount,
+                    date: parsedDate,
+                    type: txType,
+                    isPaid: isPaid,
+                    categoryId: catId,
+                    accountId: accId
                 )
+            )
+        }
+
+        return FinancialDatabaseSnapshot(schemaVersion: 2, transactions: parsedTransactions)
+    }
+
+    /// Prepara e analisa um arquivo de importação em tempo $O(N)$ usando tabelas hash,
+    /// identificando a contagem total, novos itens e duplicatas para cada grupo selecionável pelo usuário.
+    public func prepareDatabaseImportPackage(from data: Data) throws -> PreparedDatabaseImportPackage {
+        let snapshot = try decodeImportDataToSnapshot(data)
+
+        // Índices hash O(1) da base ativa atual
+        let existingAccIds = Set(accounts.map(\.id))
+        let existingAccKeys = Set(accounts.map { "\(Self.normalizeKey($0.name))|\($0.bankPresetId ?? "")" })
+
+        let existingCatIds = Set(categories.map(\.id))
+        let existingCatKeys = Set(categories.map { "\($0.type.rawValue)|\(Self.normalizeKey($0.name))" })
+
+        let existingTxIds = Set(transactions.map(\.id))
+        var existingTxSigs = Set<String>()
+        existingTxSigs.reserveCapacity(transactions.count)
+        for tx in transactions {
+            existingTxSigs.insert(transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type))
+        }
+
+        let existingInvIds = Set(investments.map(\.id))
+        let existingInvKeys = Set(investments.map { "\(Self.normalizeKey($0.groupName))|\(Self.normalizeKey($0.name))" })
+
+        let existingDebtIds = Set(debts.map(\.id))
+        let existingDebtKeys = Set(debts.map { "\(Self.normalizeKey($0.name))|\(Int((abs($0.originalAmount) * 100).rounded()))" })
+
+        let existingContractIds = Set(contracts.map(\.id))
+        let existingContractKeys = Set(contracts.map {
+            "\($0.kind.rawValue)|\(Self.normalizeKey($0.name))|\($0.contractNumber ?? "")|\(Int((abs($0.installmentAmount) * 100).rounded()))"
+        })
+
+        let existingProvIds = Set(provisions.map(\.id))
+        let existingProvKeys = Set(provisions.map { "\($0.categoryId.uuidString)|\($0.yearMonthKey)" })
+
+        let existingQuotaIds = Set(categoryQuotas.map(\.id))
+        let existingQuotaKeys = Set(categoryQuotas.map { "\($0.seriesId.uuidString)|\($0.yearMonthKey)|\(Self.normalizeKey($0.name))" })
+
+        var analyses: [ExportDataTarget: ImportTargetAnalysis] = [:]
+
+        // 1. Contas
+        let accDups = snapshot.accounts.filter {
+            existingAccIds.contains($0.id) || existingAccKeys.contains("\(Self.normalizeKey($0.name))|\($0.bankPresetId ?? "")")
+        }.count
+        analyses[.accounts] = ImportTargetAnalysis(
+            target: .accounts,
+            totalCount: snapshot.accounts.count,
+            newCount: max(0, snapshot.accounts.count - accDups),
+            duplicateCount: accDups
+        )
+
+        // 2. Categorias
+        let catDups = snapshot.categories.filter {
+            existingCatIds.contains($0.id) || existingCatKeys.contains("\($0.type.rawValue)|\(Self.normalizeKey($0.name))")
+        }.count
+        analyses[.categories] = ImportTargetAnalysis(
+            target: .categories,
+            totalCount: snapshot.categories.count,
+            newCount: max(0, snapshot.categories.count - catDups),
+            duplicateCount: catDups
+        )
+
+        // 3. Transações
+        var txDups = 0
+        for tx in snapshot.transactions {
+            let sig = transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type)
+            if existingTxIds.contains(tx.id) || existingTxSigs.contains(sig) {
+                txDups += 1
             }
+        }
+        analyses[.transactions] = ImportTargetAnalysis(
+            target: .transactions,
+            totalCount: snapshot.transactions.count,
+            newCount: max(0, snapshot.transactions.count - txDups),
+            duplicateCount: txDups
+        )
+
+        // 4. Investimentos
+        let invDups = snapshot.investments.filter {
+            existingInvIds.contains($0.id) || existingInvKeys.contains("\(Self.normalizeKey($0.groupName))|\(Self.normalizeKey($0.name))")
+        }.count
+        analyses[.investments] = ImportTargetAnalysis(
+            target: .investments,
+            totalCount: snapshot.investments.count,
+            newCount: max(0, snapshot.investments.count - invDups),
+            duplicateCount: invDups
+        )
+
+        // 5. Empréstimos
+        let snapLoans = snapshot.contracts.filter { $0.kind == .loan }
+        let loanDups = snapLoans.filter {
+            existingContractIds.contains($0.id) ||
+            existingContractKeys.contains("\($0.kind.rawValue)|\(Self.normalizeKey($0.name))|\($0.contractNumber ?? "")|\(Int((abs($0.installmentAmount) * 100).rounded()))")
+        }.count
+        analyses[.loans] = ImportTargetAnalysis(
+            target: .loans,
+            totalCount: snapLoans.count,
+            newCount: max(0, snapLoans.count - loanDups),
+            duplicateCount: loanDups
+        )
+
+        // 6. Financiamentos
+        let snapFinancings = snapshot.contracts.filter { $0.kind == .financing }
+        let finDups = snapFinancings.filter {
+            existingContractIds.contains($0.id) ||
+            existingContractKeys.contains("\($0.kind.rawValue)|\(Self.normalizeKey($0.name))|\($0.contractNumber ?? "")|\(Int((abs($0.installmentAmount) * 100).rounded()))")
+        }.count
+        analyses[.financings] = ImportTargetAnalysis(
+            target: .financings,
+            totalCount: snapFinancings.count,
+            newCount: max(0, snapFinancings.count - finDups),
+            duplicateCount: finDups
+        )
+
+        // 7. Dívidas
+        let debtDups = snapshot.debts.filter {
+            existingDebtIds.contains($0.id) ||
+            existingDebtKeys.contains("\(Self.normalizeKey($0.name))|\(Int((abs($0.originalAmount) * 100).rounded()))")
+        }.count
+        analyses[.debts] = ImportTargetAnalysis(
+            target: .debts,
+            totalCount: snapshot.debts.count,
+            newCount: max(0, snapshot.debts.count - debtDups),
+            duplicateCount: debtDups
+        )
+
+        // 8. Previsões e Cotas
+        let snapProvs = snapshot.provisions ?? []
+        let snapQuotas = snapshot.categoryQuotas ?? []
+        let provDups = snapProvs.filter {
+            existingProvIds.contains($0.id) || existingProvKeys.contains("\($0.categoryId.uuidString)|\($0.yearMonthKey)")
+        }.count
+        let quotaDups = snapQuotas.filter {
+            existingQuotaIds.contains($0.id) || existingQuotaKeys.contains("\($0.seriesId.uuidString)|\($0.yearMonthKey)|\(Self.normalizeKey($0.name))")
+        }.count
+        let totalProvsAndQuotas = snapProvs.count + snapQuotas.count
+        let totalProvQuotaDups = provDups + quotaDups
+        analyses[.provisions] = ImportTargetAnalysis(
+            target: .provisions,
+            totalCount: totalProvsAndQuotas,
+            newCount: max(0, totalProvsAndQuotas - totalProvQuotaDups),
+            duplicateCount: totalProvQuotaDups
+        )
+
+        // 9. Assets
+        let snapAssets = snapshot.assets ?? []
+        let fm = FileManager.default
+        let assetDups = snapAssets.filter { asset in
+            let dest = attachmentsDirectoryURL.appendingPathComponent(asset.fileName)
+            return fm.fileExists(atPath: dest.path)
+        }.count
+        analyses[.assets] = ImportTargetAnalysis(
+            target: .assets,
+            totalCount: snapAssets.count,
+            newCount: max(0, snapAssets.count - assetDups),
+            duplicateCount: assetDups
+        )
+
+        let nonEmpty = Set(analyses.values.filter { $0.totalCount > 0 }.map(\.target))
+        return PreparedDatabaseImportPackage(
+            snapshot: snapshot,
+            targetAnalyses: analyses,
+            availableNonEmptyTargets: nonEmpty
+        )
+    }
+
+    /// Executa a importação seletiva com validação de duplicidade em $O(1)$, garantia de consistência referencial
+    /// (criando/mapeando contas, categorias, contratos e assets referenciados) e atualização de barra de progresso.
+    @discardableResult
+    public func executeSelectiveDatabaseImport(
+        package: PreparedDatabaseImportPackage,
+        selectedTargets: Set<ExportDataTarget>,
+        onProgress: (@MainActor (Double, String) -> Void)? = nil
+    ) async -> SelectiveImportExecutionResult {
+        onProgress?(0.05, "Preparando índices de validação e consistência...")
+        await Task.yield()
+
+        let result = executeSelectiveDatabaseImportCore(
+            package: package,
+            selectedTargets: selectedTargets,
+            onProgress: { pct, msg in
+                onProgress?(pct, msg)
+            }
+        )
+
+        onProgress?(1.0, "Importação concluída com sucesso!")
+        await Task.yield()
+        return result
+    }
+
+    @discardableResult
+    public func executeSelectiveDatabaseImportSync(
+        package: PreparedDatabaseImportPackage,
+        selectedTargets: Set<ExportDataTarget>
+    ) -> SelectiveImportExecutionResult {
+        executeSelectiveDatabaseImportCore(package: package, selectedTargets: selectedTargets, onProgress: nil)
+    }
+
+    private func executeSelectiveDatabaseImportCore(
+        package: PreparedDatabaseImportPackage,
+        selectedTargets: Set<ExportDataTarget>,
+        onProgress: ((Double, String) -> Void)?
+    ) -> SelectiveImportExecutionResult {
+        let snapshot = package.snapshot
+        var res = SelectiveImportExecutionResult()
+        let fm = FileManager.default
+        try? fm.createDirectory(at: attachmentsDirectoryURL, withIntermediateDirectories: true)
+
+        // 1. Mapeamento e restauração de Assets (quando .assets está selecionado ou quando uma entidade importada referencia um asset do pacote)
+        onProgress?(0.12, "Processando assets e comprovantes...")
+        var assetByOriginalPath: [String: ExportedAssetFile] = [:]
+        var assetByFileName: [String: ExportedAssetFile] = [:]
+        for asset in (snapshot.assets ?? []) {
+            assetByOriginalPath[asset.originalPath] = asset
+            assetByFileName[asset.fileName] = asset
+        }
+
+        var restoredAssetPathsByFileName: [String: String] = [:]
+        func restoreAssetIfAvailable(originalPath: String?) -> String? {
+            guard let orig = originalPath, !orig.isEmpty else { return nil }
+            let fileName = URL(fileURLWithPath: orig).lastPathComponent
+            if let alreadyRestored = restoredAssetPathsByFileName[fileName] {
+                return alreadyRestored
+            }
+            if let asset = assetByOriginalPath[orig] ?? assetByFileName[fileName] {
+                let targetURL = attachmentsDirectoryURL.appendingPathComponent(asset.fileName)
+                if !fm.fileExists(atPath: targetURL.path) {
+                    try? asset.data.write(to: targetURL, options: .atomic)
+                    res.importedAssets += 1
+                } else if selectedTargets.contains(.assets) {
+                    res.skippedDuplicatesTotal += 1
+                }
+                restoredAssetPathsByFileName[asset.fileName] = targetURL.path
+                return targetURL.path
+            }
+            return fm.fileExists(atPath: orig) ? orig : nil
+        }
+
+        if selectedTargets.contains(.assets) {
+            for asset in (snapshot.assets ?? []) {
+                _ = restoreAssetIfAvailable(originalPath: asset.originalPath)
+            }
+        }
+
+        // 2. Índices de Contas e Importação de Contas
+        onProgress?(0.25, "Validando e importando contas bancárias...")
+        let sourceAccountsById = Dictionary(uniqueKeysWithValues: snapshot.accounts.map { ($0.id, $0) })
+        var accountIdMap: [UUID: UUID] = [:]
+        var existingAccById = Set(accounts.map(\.id))
+        var existingAccByKey: [String: UUID] = [:]
+        for acc in accounts {
+            existingAccByKey["\(Self.normalizeKey(acc.name))|\(acc.bankPresetId ?? "")"] = acc.id
+            existingAccByKey[Self.normalizeKey(acc.name)] = acc.id
+        }
+
+        func ensureValidAccountId(for sourceAccId: UUID) -> UUID {
+            if let mapped = accountIdMap[sourceAccId] { return mapped }
+            if existingAccById.contains(sourceAccId) {
+                accountIdMap[sourceAccId] = sourceAccId
+                return sourceAccId
+            }
+            if let srcAcc = sourceAccountsById[sourceAccId] {
+                let exactKey = "\(Self.normalizeKey(srcAcc.name))|\(srcAcc.bankPresetId ?? "")"
+                if let matchedId = existingAccByKey[exactKey] ?? existingAccByKey[Self.normalizeKey(srcAcc.name)] {
+                    accountIdMap[sourceAccId] = matchedId
+                    return matchedId
+                }
+                // Cria automaticamente a conta referenciada para manter consistência referencial!
+                var newAcc = srcAcc
+                newAcc.customImagePath = restoreAssetIfAvailable(originalPath: srcAcc.customImagePath)
+                accounts.append(newAcc)
+                existingAccById.insert(newAcc.id)
+                existingAccByKey[exactKey] = newAcc.id
+                existingAccByKey[Self.normalizeKey(newAcc.name)] = newAcc.id
+                accountIdMap[sourceAccId] = newAcc.id
+                res.autoCreatedDependenciesCount += 1
+                return newAcc.id
+            }
+            if let firstExisting = accounts.first?.id {
+                accountIdMap[sourceAccId] = firstExisting
+                return firstExisting
+            }
+            // Se não há nenhuma conta na base e o arquivo não trouxe contas (ex: JSON avulso de gastos), cria uma conta padrão consistente
+            let fallbackAcc = BankAccount(
+                name: "Conta Principal",
+                bankPresetId: "itau",
+                iconSymbol: "building.columns.fill",
+                colorHex: "#EC7000",
+                initialBalance: 0.0
+            )
+            accounts.append(fallbackAcc)
+            existingAccById.insert(fallbackAcc.id)
+            existingAccByKey[Self.normalizeKey(fallbackAcc.name)] = fallbackAcc.id
+            accountIdMap[sourceAccId] = fallbackAcc.id
+            res.autoCreatedDependenciesCount += 1
+            return fallbackAcc.id
+        }
+
+        if selectedTargets.contains(.accounts) {
+            for srcAcc in snapshot.accounts {
+                let exactKey = "\(Self.normalizeKey(srcAcc.name))|\(srcAcc.bankPresetId ?? "")"
+                if existingAccById.contains(srcAcc.id) {
+                    accountIdMap[srcAcc.id] = srcAcc.id
+                    res.skippedDuplicatesTotal += 1
+                } else if let matchedId = existingAccByKey[exactKey] {
+                    accountIdMap[srcAcc.id] = matchedId
+                    res.skippedDuplicatesTotal += 1
+                } else {
+                    var importedAcc = srcAcc
+                    importedAcc.customImagePath = restoreAssetIfAvailable(originalPath: srcAcc.customImagePath)
+                    accounts.append(importedAcc)
+                    existingAccById.insert(importedAcc.id)
+                    existingAccByKey[exactKey] = importedAcc.id
+                    existingAccByKey[Self.normalizeKey(importedAcc.name)] = importedAcc.id
+                    accountIdMap[srcAcc.id] = importedAcc.id
+                    res.importedAccounts += 1
+                }
+            }
+        }
+
+        // 3. Índices de Categorias e Importação de Categorias
+        onProgress?(0.38, "Validando e importando categorias...")
+        let sourceCategoriesById = Dictionary(uniqueKeysWithValues: snapshot.categories.map { ($0.id, $0) })
+        var categoryIdMap: [UUID: UUID] = [:]
+        var existingCatById = Set(categories.map(\.id))
+        var existingCatByKey: [String: UUID] = [:]
+        for cat in categories {
+            existingCatByKey["\(cat.type.rawValue)|\(Self.normalizeKey(cat.name))"] = cat.id
+        }
+
+        func ensureValidCategoryId(for sourceCatId: UUID, fallbackType: TransactionType, titleHint: String = "") -> UUID {
+            if let mapped = categoryIdMap[sourceCatId] { return mapped }
+            if existingCatById.contains(sourceCatId) {
+                categoryIdMap[sourceCatId] = sourceCatId
+                return sourceCatId
+            }
+            if let srcCat = sourceCategoriesById[sourceCatId] {
+                let key = "\(srcCat.type.rawValue)|\(Self.normalizeKey(srcCat.name))"
+                if let matchedId = existingCatByKey[key] {
+                    categoryIdMap[sourceCatId] = matchedId
+                    return matchedId
+                }
+                // Cria automaticamente a categoria referenciada para evitar transações/previsões órfãs!
+                categories.append(srcCat)
+                existingCatById.insert(srcCat.id)
+                existingCatByKey[key] = srcCat.id
+                categoryIdMap[sourceCatId] = srcCat.id
+                res.autoCreatedDependenciesCount += 1
+                return srcCat.id
+            }
+            let inferred = inferCategoryId(forTitle: titleHint, type: fallbackType)
+            categoryIdMap[sourceCatId] = inferred
+            return inferred
+        }
+
+        if selectedTargets.contains(.categories) {
+            for srcCat in snapshot.categories {
+                let key = "\(srcCat.type.rawValue)|\(Self.normalizeKey(srcCat.name))"
+                if existingCatById.contains(srcCat.id) {
+                    categoryIdMap[srcCat.id] = srcCat.id
+                    res.skippedDuplicatesTotal += 1
+                } else if let matchedId = existingCatByKey[key] {
+                    categoryIdMap[srcCat.id] = matchedId
+                    res.skippedDuplicatesTotal += 1
+                } else {
+                    categories.append(srcCat)
+                    existingCatById.insert(srcCat.id)
+                    existingCatByKey[key] = srcCat.id
+                    categoryIdMap[srcCat.id] = srcCat.id
+                    res.importedCategories += 1
+                }
+            }
+        }
+
+        // 4. Empréstimos e Financiamentos
+        onProgress?(0.52, "Validando contratos de empréstimos e financiamentos...")
+        var contractIdMap: [UUID: UUID] = [:]
+        var newlyImportedContractIds = Set<UUID>()
+        var existingContractById = Set(contracts.map(\.id))
+        var existingContractByKey: [String: UUID] = [:]
+        for c in contracts {
+            let key = "\(c.kind.rawValue)|\(Self.normalizeKey(c.name))|\(c.contractNumber ?? "")|\(Int((abs(c.installmentAmount) * 100).rounded()))"
+            existingContractByKey[key] = c.id
+        }
+
+        for srcContract in snapshot.contracts {
+            let isSelectedKind = (srcContract.kind == .loan && selectedTargets.contains(.loans)) ||
+                                 (srcContract.kind == .financing && selectedTargets.contains(.financings))
+            let key = "\(srcContract.kind.rawValue)|\(Self.normalizeKey(srcContract.name))|\(srcContract.contractNumber ?? "")|\(Int((abs(srcContract.installmentAmount) * 100).rounded()))"
+
+            if existingContractById.contains(srcContract.id) {
+                contractIdMap[srcContract.id] = srcContract.id
+                if isSelectedKind { res.skippedDuplicatesTotal += 1 }
+            } else if let matchedId = existingContractByKey[key] {
+                contractIdMap[srcContract.id] = matchedId
+                if isSelectedKind { res.skippedDuplicatesTotal += 1 }
+            } else if isSelectedKind {
+                var newContract = srcContract
+                newContract.accountId = ensureValidAccountId(for: srcContract.accountId)
+                contracts.append(newContract)
+                existingContractById.insert(newContract.id)
+                existingContractByKey[key] = newContract.id
+                contractIdMap[srcContract.id] = newContract.id
+                newlyImportedContractIds.insert(srcContract.id)
+                if srcContract.kind == .loan {
+                    res.importedLoans += 1
+                } else {
+                    res.importedFinancings += 1
+                }
+            }
+        }
+
+        // 5. Investimentos
+        onProgress?(0.64, "Validando investimentos e dívidas...")
+        var investmentIdMap: [UUID: UUID] = [:]
+        var existingInvById = Set(investments.map(\.id))
+        var existingInvByKey: [String: UUID] = [:]
+        for inv in investments {
+            existingInvByKey["\(Self.normalizeKey(inv.groupName))|\(Self.normalizeKey(inv.name))"] = inv.id
+        }
+
+        for srcInv in snapshot.investments {
+            let key = "\(Self.normalizeKey(srcInv.groupName))|\(Self.normalizeKey(srcInv.name))"
+            if existingInvById.contains(srcInv.id) {
+                investmentIdMap[srcInv.id] = srcInv.id
+                if selectedTargets.contains(.investments) { res.skippedDuplicatesTotal += 1 }
+            } else if let matchedId = existingInvByKey[key] {
+                investmentIdMap[srcInv.id] = matchedId
+                if selectedTargets.contains(.investments) { res.skippedDuplicatesTotal += 1 }
+            } else if selectedTargets.contains(.investments) {
+                var newInv = srcInv
+                newInv.investmentAccountId = ensureValidAccountId(for: srcInv.investmentAccountId)
+                investments.append(newInv)
+                existingInvById.insert(newInv.id)
+                existingInvByKey[key] = newInv.id
+                investmentIdMap[srcInv.id] = newInv.id
+                res.importedInvestments += 1
+            }
+        }
+
+        // 6. Dívidas
+        var debtIdMap: [UUID: UUID] = [:]
+        var existingDebtById = Set(debts.map(\.id))
+        var existingDebtByKey: [String: UUID] = [:]
+        for d in debts {
+            existingDebtByKey["\(Self.normalizeKey(d.name))|\(Int((abs(d.originalAmount) * 100).rounded()))"] = d.id
+        }
+
+        for srcDebt in snapshot.debts {
+            let key = "\(Self.normalizeKey(srcDebt.name))|\(Int((abs(srcDebt.originalAmount) * 100).rounded()))"
+            if existingDebtById.contains(srcDebt.id) {
+                debtIdMap[srcDebt.id] = srcDebt.id
+                if selectedTargets.contains(.debts) { res.skippedDuplicatesTotal += 1 }
+            } else if let matchedId = existingDebtByKey[key] {
+                debtIdMap[srcDebt.id] = matchedId
+                if selectedTargets.contains(.debts) { res.skippedDuplicatesTotal += 1 }
+            } else if selectedTargets.contains(.debts) {
+                var newDebt = srcDebt
+                newDebt.customImagePath = restoreAssetIfAvailable(originalPath: srcDebt.customImagePath)
+                if let paidAccId = srcDebt.paidFromAccountId {
+                    newDebt.paidFromAccountId = ensureValidAccountId(for: paidAccId)
+                }
+                debts.append(newDebt)
+                existingDebtById.insert(newDebt.id)
+                existingDebtByKey[key] = newDebt.id
+                debtIdMap[srcDebt.id] = newDebt.id
+                res.importedDebts += 1
+            }
+        }
+
+        // 7. Transações (ou parcelas vinculadas a contratos recém-importados para manter consistência das parcelas restantes)
+        onProgress?(0.78, "Importando transações e validando vínculos (\(snapshot.transactions.count) registros)...")
+        let shouldImportAllTransactions = selectedTargets.contains(.transactions)
+        if shouldImportAllTransactions || !newlyImportedContractIds.isEmpty {
+            var existingTxIds = Set(transactions.map(\.id))
+            var existingTxSigs = Set<String>()
+            existingTxSigs.reserveCapacity(transactions.count + snapshot.transactions.count)
+            for tx in transactions {
+                existingTxSigs.insert(transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type))
+            }
+
+            for srcTx in snapshot.transactions {
+                let isLinkedToNewContract = srcTx.linkedContractId.map { newlyImportedContractIds.contains($0) } ?? false
+                guard shouldImportAllTransactions || isLinkedToNewContract else { continue }
+
+                let sig = transactionSignature(name: srcTx.name, amount: srcTx.amount, date: srcTx.date, type: srcTx.type)
+                if existingTxIds.contains(srcTx.id) || existingTxSigs.contains(sig) {
+                    if shouldImportAllTransactions { res.skippedDuplicatesTotal += 1 }
+                    continue
+                }
+
+                var newTx = srcTx
+                newTx.accountId = ensureValidAccountId(for: srcTx.accountId)
+                newTx.categoryId = ensureValidCategoryId(for: srcTx.categoryId, fallbackType: srcTx.type, titleHint: srcTx.name)
+                newTx.attachmentPath = restoreAssetIfAvailable(originalPath: srcTx.attachmentPath)
+
+                // Consistência de vínculos com contratos, investimentos e dívidas
+                if let oldContractId = srcTx.linkedContractId {
+                    newTx.linkedContractId = contractIdMap[oldContractId] ?? (existingContractById.contains(oldContractId) ? oldContractId : nil)
+                }
+                if let oldInvId = srcTx.linkedInvestmentId {
+                    newTx.linkedInvestmentId = investmentIdMap[oldInvId] ?? (existingInvById.contains(oldInvId) ? oldInvId : nil)
+                }
+                if let oldDebtId = srcTx.linkedDebtId {
+                    newTx.linkedDebtId = debtIdMap[oldDebtId] ?? (existingDebtById.contains(oldDebtId) ? oldDebtId : nil)
+                }
+
+                transactions.append(newTx)
+                existingTxIds.insert(newTx.id)
+                existingTxSigs.insert(sig)
+                res.importedTransactions += 1
+            }
+        }
+
+        // 8. Previsões e Cotas
+        onProgress?(0.90, "Validando previsões e cotas mensais...")
+        if selectedTargets.contains(.provisions) {
+            var existingProvIds = Set(provisions.map(\.id))
+            var existingProvKeys = Set(provisions.map { "\($0.categoryId.uuidString)|\($0.yearMonthKey)" })
+
+            for srcProv in (snapshot.provisions ?? []) {
+                let mappedCatId = ensureValidCategoryId(for: srcProv.categoryId, fallbackType: .expense)
+                let key = "\(mappedCatId.uuidString)|\(srcProv.yearMonthKey)"
+                if existingProvIds.contains(srcProv.id) || existingProvKeys.contains(key) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                var newProv = srcProv
+                newProv.categoryId = mappedCatId
+                provisions.append(newProv)
+                existingProvIds.insert(newProv.id)
+                existingProvKeys.insert(key)
+                res.importedProvisionsAndQuotas += 1
+            }
+
+            var existingQuotaIds = Set(categoryQuotas.map(\.id))
+            var existingQuotaKeys = Set(categoryQuotas.map { "\($0.seriesId.uuidString)|\($0.yearMonthKey)|\(Self.normalizeKey($0.name))" })
+
+            for srcQuota in (snapshot.categoryQuotas ?? []) {
+                let mappedCatId = ensureValidCategoryId(for: srcQuota.categoryId, fallbackType: .expense, titleHint: srcQuota.name)
+                let key = "\(srcQuota.seriesId.uuidString)|\(srcQuota.yearMonthKey)|\(Self.normalizeKey(srcQuota.name))"
+                if existingQuotaIds.contains(srcQuota.id) || existingQuotaKeys.contains(key) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                var newQuota = srcQuota
+                newQuota.categoryId = mappedCatId
+                categoryQuotas.append(newQuota)
+                existingQuotaIds.insert(newQuota.id)
+                existingQuotaKeys.insert(key)
+                res.importedProvisionsAndQuotas += 1
+            }
+        }
+
+        // 9. Ordenação única e gravação atômica
+        onProgress?(0.96, "Consolidando e salvando base de dados...")
+        for target in ExportDataTarget.allCases {
+            if selectedTargets.contains(target) {
+                let totalInPkg = package.totalCount(for: target)
+                let importedForTarget = res.importedCounts[target] ?? 0
+                res.skippedDuplicateCounts[target] = max(0, totalInPkg - importedForTarget)
+            } else {
+                res.skippedDuplicateCounts[target] = 0
+            }
+        }
+        if res.importedTransactions > 0 {
+            sortTransactions()
+        }
+        if res.totalImportedItems > 0 || res.autoCreatedDependenciesCount > 0 {
+            save()
+        }
+
+        return res
+    }
+
+    /// Analisa um arquivo JSON/Backup de gastos/transações em tempo $O(N)$ e retorna rascunhos para revisão.
+    public func parseImportableExpensesFromJSON(data: Data) throws -> [ImportableExpenseDraft] {
+        let snapshot = try decodeImportDataToSnapshot(data)
+        let rawTransactions = snapshot.transactions
+        var sourceCategoriesById: [UUID: String] = [:]
+        for cat in snapshot.categories {
+            sourceCategoriesById[cat.id] = cat.name
+        }
+        var sourceAccountsById: [UUID: String] = [:]
+        for acc in snapshot.accounts {
+            sourceAccountsById[acc.id] = acc.name
+        }
+
+        let existingCatIds = Set(categories.map(\.id))
+        var localCatByNormName: [String: UUID] = [:]
+        for cat in categories {
+            localCatByNormName[Self.normalizeKey(cat.name)] = cat.id
+        }
+
+        let existingAccIds = Set(accounts.map(\.id))
+        var localAccByNormName: [String: UUID] = [:]
+        for acc in accounts {
+            localAccByNormName[Self.normalizeKey(acc.name)] = acc.id
+        }
+
+        let existingTxIds = Set(transactions.map(\.id))
+        var existingTxSigs = Set<String>()
+        existingTxSigs.reserveCapacity(transactions.count)
+        for tx in transactions {
+            existingTxSigs.insert(transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type))
         }
 
         let defaultAccountId = accounts.first?.id ?? UUID()
 
         return rawTransactions.map { tx in
             let resolvedCategoryId: UUID = {
-                if categories.contains(where: { $0.id == tx.categoryId }) {
+                if existingCatIds.contains(tx.categoryId) {
                     return tx.categoryId
                 }
                 if let sourceCatName = sourceCategoriesById[tx.categoryId],
-                   let matchedByName = categories.first(where: {
-                       $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")) ==
-                       sourceCatName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
-                   }) {
-                    return matchedByName.id
+                   let matchedId = localCatByNormName[Self.normalizeKey(sourceCatName)] {
+                    return matchedId
                 }
                 return inferCategoryId(forTitle: tx.name, type: tx.type)
             }()
 
             let resolvedAccountId: UUID = {
-                if accounts.contains(where: { $0.id == tx.accountId }) {
+                if existingAccIds.contains(tx.accountId) {
                     return tx.accountId
                 }
                 if let sourceAccName = sourceAccountsById[tx.accountId],
-                   let matchedByName = accounts.first(where: {
-                       $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")) ==
-                       sourceAccName.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
-                   }) {
-                    return matchedByName.id
+                   let matchedId = localAccByNormName[Self.normalizeKey(sourceAccName)] {
+                    return matchedId
                 }
                 return defaultAccountId
             }()
 
-            let duplicate = isDuplicateTransaction(
-                originalId: tx.id,
-                description: tx.name,
-                amount: tx.amount,
-                date: tx.date,
-                type: tx.type
-            )
+            let sig = transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type)
+            let duplicate = existingTxIds.contains(tx.id) || existingTxSigs.contains(sig)
 
             return ImportableExpenseDraft(
                 originalTransactionId: tx.id,
@@ -595,7 +1397,7 @@ public final class FinancialDataStore: ObservableObject {
         }
     }
 
-    /// Mescla os rascunhos revisados e selecionados pelo usuário na base de dados ativa, evitando duplicidades.
+    /// Mescla os rascunhos revisados e selecionados pelo usuário na base de dados ativa em tempo $O(N)$, evitando duplicidades.
     @discardableResult
     public func importReviewedExpenseDrafts(
         _ drafts: [ImportableExpenseDraft],
@@ -604,36 +1406,50 @@ public final class FinancialDataStore: ObservableObject {
         var imported = 0
         var skipped = 0
 
-        let fallbackAccId = accounts.first?.id ?? UUID()
+        let fallbackAccId: UUID = {
+            if let first = accounts.first?.id { return first }
+            let defaultAcc = BankAccount(
+                name: "Conta Principal",
+                bankPresetId: "itau",
+                iconSymbol: "building.columns.fill",
+                colorHex: "#EC7000",
+                initialBalance: 0.0
+            )
+            accounts.append(defaultAcc)
+            return defaultAcc.id
+        }()
+
+        let validCatIds = Set(categories.map(\.id))
+        let validAccIds = Set(accounts.map(\.id))
+        var existingTxIds = Set(transactions.map(\.id))
+        var existingTxSigs = Set<String>()
+        existingTxSigs.reserveCapacity(transactions.count + drafts.count)
+        for tx in transactions {
+            existingTxSigs.insert(transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type))
+        }
 
         for draft in drafts where draft.isSelected {
             let cleanDesc = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleanDesc.isEmpty, draft.amount > 0 else { continue }
 
-            let currentlyDuplicate = isDuplicateTransaction(
-                originalId: draft.originalTransactionId,
-                description: cleanDesc,
-                amount: draft.amount,
-                date: draft.date,
-                type: draft.type
-            )
+            let sig = transactionSignature(name: cleanDesc, amount: draft.amount, date: draft.date, type: draft.type)
+            let currentlyDuplicate = (draft.originalTransactionId.map { existingTxIds.contains($0) } ?? false) || existingTxSigs.contains(sig)
 
             if skipDuplicates && currentlyDuplicate {
                 skipped += 1
                 continue
             }
 
-            let validCategoryId = categories.contains(where: { $0.id == draft.categoryId })
+            let validCategoryId = validCatIds.contains(draft.categoryId)
                 ? draft.categoryId
                 : inferCategoryId(forTitle: cleanDesc, type: draft.type)
 
-            let validAccountId = accounts.contains(where: { $0.id == draft.accountId })
+            let validAccountId = validAccIds.contains(draft.accountId)
                 ? draft.accountId
                 : fallbackAccId
 
             let txId: UUID = {
-                if let orig = draft.originalTransactionId,
-                   !transactions.contains(where: { $0.id == orig }) {
+                if let orig = draft.originalTransactionId, !existingTxIds.contains(orig) {
                     return orig
                 }
                 return UUID()
@@ -651,6 +1467,8 @@ public final class FinancialDataStore: ObservableObject {
                 accountId: validAccountId
             )
             transactions.append(newTx)
+            existingTxIds.insert(txId)
+            existingTxSigs.insert(sig)
             imported += 1
         }
 
