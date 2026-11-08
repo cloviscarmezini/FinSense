@@ -121,15 +121,47 @@ public struct AIChatSheetView: View {
                             }
                             .padding(10)
                         }
+
+                        if llmService.isTypingResponse {
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "cpu.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(Color(hex: "#6366F1"))
+                                        Text(store.llmConfig.selectedModel?.displayName ?? "Assistente Financeiro Local")
+                                            .font(.caption.bold())
+                                            .foregroundStyle(.secondary)
+                                    }
+
+                                    Text(LocalizedStringKey(llmService.liveTypingResponseText + " ▌"))
+                                        .font(.system(size: 13.5))
+                                        .textSelection(.enabled)
+                                        .padding(14)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                                .fill(Color.primary.opacity(0.05))
+                                        )
+                                }
+                                Spacer(minLength: 40)
+                            }
+                            .id("liveTypingBubble")
+                        }
+
+                        Color.clear
+                            .frame(height: 1)
+                            .id("chatBottomAnchor")
                     }
                     .padding(.vertical, 8)
                 }
                 .onChange(of: store.chatHistory.count) { _, _ in
-                    if let lastId = store.chatHistory.last?.id {
-                        withAnimation {
-                            proxy.scrollTo(lastId, anchor: .bottom)
-                        }
-                    }
+                    scrollToBottom(proxy: proxy)
+                }
+                .onChange(of: llmService.isProcessingChat) { _, _ in
+                    scrollToBottom(proxy: proxy)
+                }
+                .onChange(of: llmService.liveTypingResponseText) { _, _ in
+                    proxy.scrollTo("chatBottomAnchor", anchor: .bottom)
                 }
             }
             .padding(12)
@@ -188,6 +220,17 @@ public struct AIChatSheetView: View {
         inputPrompt = ""
         Task {
             await llmService.sendUserQuestion(q, store: store)
+        }
+    }
+
+    private func scrollToBottom(proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo("chatBottomAnchor", anchor: .bottom)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo("chatBottomAnchor", anchor: .bottom)
+            }
         }
     }
 

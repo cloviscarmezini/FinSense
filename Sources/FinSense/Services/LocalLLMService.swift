@@ -9,6 +9,8 @@ public final class LocalLLMService: ObservableObject {
     @Published public var isProcessingChat: Bool = false
     @Published public var isAnalyzingStatement: Bool = false
     @Published public var currentAgentStepMessage: String = ""
+    @Published public var liveTypingResponseText: String = ""
+    @Published public var isTypingResponse: Bool = false
     @Published public var shouldCloseChatSheet: Bool = false
 
     public static let suggestedModels: [(id: String, name: String, description: String, sizeEstimate: String)] = [
@@ -377,9 +379,28 @@ public final class LocalLLMService: ObservableObject {
             }
         )
 
+        isProcessingChat = false
+        currentAgentStepMessage = ""
+
+        // Efeito visual de digitação contínua (streaming suave)
+        let fullMarkdown = agentOutput.responseMarkdown
+        isTypingResponse = true
+        liveTypingResponseText = ""
+
+        let words = fullMarkdown.split(separator: " ", omittingEmptySubsequences: false)
+        var currentText = ""
+        for (idx, word) in words.enumerated() {
+            currentText += (idx == 0 ? "" : " ") + word
+            liveTypingResponseText = currentText
+            try? await Task.sleep(nanoseconds: 12_000_000)
+        }
+
+        isTypingResponse = false
+        liveTypingResponseText = ""
+
         let assistantMsg = ChatMessage(
             role: .assistant,
-            content: agentOutput.responseMarkdown,
+            content: fullMarkdown,
             modelUsed: modelLabel,
             agentSteps: agentOutput.executedSteps,
             suggestedFollowUps: agentOutput.suggestedFollowUps,

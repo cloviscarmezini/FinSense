@@ -2396,4 +2396,193 @@ final class FinSenseTests: XCTestCase {
         XCTAssertTrue(output.responseMarkdown.contains("Jantar"))
         XCTAssertTrue(output.executedSteps.contains { $0.contains("Agente 1") && $0.contains("Lista de Transações Recentes") })
     }
+
+    func testAgenticTopExpenseCategoriesQueryAndFollowUpPrompt() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente", initialBalance: 10000.0)
+        let catFin = CategoryItem(name: "Financiamento", type: .expense, iconSymbol: "house.fill", colorHex: "#4F46E5")
+        let catAlim = CategoryItem(name: "Alimentação", type: .expense, iconSymbol: "fork.knife", colorHex: "#FF5722")
+        let catLaz = CategoryItem(name: "Lazer", type: .expense, iconSymbol: "gamecontroller.fill", colorHex: "#10B981")
+
+        store.accounts = [acc]
+        store.categories = [catFin, catAlim, catLaz]
+
+        let cal = Calendar.current
+        var comps = DateComponents()
+        comps.year = 2026
+        comps.month = 10
+        comps.day = 10
+        let date2026 = cal.date(from: comps)!
+        store.selectedMonth = date2026
+
+        let t1 = FinancialTransaction(name: "Parcela Imóvel", amount: 4500.0, date: date2026, type: .expense, isPaid: true, categoryId: catFin.id, accountId: acc.id)
+        let t2 = FinancialTransaction(name: "Supermercado", amount: 800.0, date: date2026, type: .expense, isPaid: true, categoryId: catAlim.id, accountId: acc.id)
+        let t3 = FinancialTransaction(name: "Cinema", amount: 300.0, date: date2026, type: .expense, isPaid: true, categoryId: catLaz.id, accountId: acc.id)
+
+        store.transactions = [t1, t2, t3]
+
+        let prompt = "qual categoria eu mais gasto?"
+        let output = AgenticFinancialEngine.runAgentLoop(prompt: prompt, store: store, modelLabel: "Qwen2.5-3B-Local")
+
+        // 1. Não deve conter dump bruto do RAG nem visão geral não solicitada
+        XCTAssertFalse(output.responseMarkdown.contains("## 🔎 Análise Inteligente na Base Local (RAG)"))
+        XCTAssertFalse(output.responseMarkdown.contains("## Panorama Completo da sua Base Financeira"))
+
+        // 2. Resposta deve destacar a categoria Financiamento e seu valor
+        XCTAssertTrue(output.responseMarkdown.contains("Financiamento"), "Deve apontar Financiamento como top categoria")
+        XCTAssertTrue(output.responseMarkdown.contains("4.500,00"), "Deve incluir o valor gasto")
+
+        // 3. Deve convidar para detalhamento de período ou histórico geral
+        XCTAssertTrue(output.responseMarkdown.contains("Gostaria de saber") || output.responseMarkdown.contains("ano específico"), "Deve oferecer continuidade elegante")
+
+        // 4. Agente 1 deve ter identificado a intenção topExpenseCategories
+        XCTAssertTrue(output.executedSteps.contains { $0.contains("Agente 1") && $0.contains("Ranking e Categoria Mais Gasta") })
+    }
+
+    func testAgenticUpcomingContractInstallmentsDueNextMonth() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Santander CC", initialBalance: 12000.0)
+        let cat = CategoryItem(name: "Contratos de Crédito", type: .expense, iconSymbol: "doc.text.fill", colorHex: "#4F46E5")
+        store.accounts = [acc]
+        store.categories = [cat]
+
+        let cal = Calendar.current
+        var comps = DateComponents()
+        comps.year = 2026
+        comps.month = 11
+        comps.day = 15
+        let nov2026 = cal.date(from: comps)!
+        store.selectedMonth = nov2026
+
+        // 3 Contratos: Santander 783847703, Santander 783694303, Financiamento Habitação CAIXA
+        let c1 = CreditContract(
+            kind: .loan,
+            name: "Santander",
+            contractNumber: "783847703",
+            loanSubtype: .pessoal,
+            amortizationSystem: .price,
+            totalContractedAmount: 10000.0,
+            installmentAmount: 357.31,
+            billingDay: 4,
+            totalInstallments: 36,
+            monthlyInterestRate: 1.85,
+            startDate: nov2026,
+            accountId: acc.id,
+            categoryId: cat.id
+        )
+
+        let c2 = CreditContract(
+            kind: .loan,
+            name: "Santander",
+            contractNumber: "783694303",
+            loanSubtype: .pessoal,
+            amortizationSystem: .price,
+            totalContractedAmount: 120000.0,
+            installmentAmount: 4509.81,
+            billingDay: 4,
+            totalInstallments: 48,
+            monthlyInterestRate: 1.65,
+            startDate: nov2026,
+            accountId: acc.id,
+            categoryId: cat.id
+        )
+
+        let c3 = CreditContract(
+            kind: .financing,
+            name: "Financiamento Habitação CAIXA",
+            contractNumber: nil,
+            financingSubtype: .imovel,
+            amortizationSystem: .sac,
+            totalContractedAmount: 400000.0,
+            installmentAmount: 2658.04,
+            billingDay: 4,
+            totalInstallments: 360,
+            monthlyInterestRate: 0.85,
+            startDate: nov2026,
+            accountId: acc.id,
+            categoryId: cat.id
+        )
+
+        store.contracts = [c1, c2, c3]
+
+        let prompt = "Quanto vou pagar de parcelas de financiamento e emprestimos próximo mês?"
+        let output = AgenticFinancialEngine.runAgentLoop(prompt: prompt, store: store, modelLabel: "Qwen2.5-3B-Local")
+
+        // 1. NÃO deve pedir para escolher um contrato nem perguntar qual amortizar
+        XCTAssertFalse(output.responseMarkdown.contains("Qual contrato você deseja analisar?"), "Não deve perguntar qual contrato analisar quando a dúvida é sobre parcelas do mês")
+        XCTAssertFalse(output.responseMarkdown.contains("Qual financiamento você deseja analisar?"))
+
+        // 2. Deve listar os 3 contratos com seus valores e dia 04/12/2026
+        XCTAssertTrue(output.responseMarkdown.contains("357,31"), "Deve conter parcela de 357,31")
+        XCTAssertTrue(output.responseMarkdown.contains("4.509,81"), "Deve conter parcela de 4.509,81")
+        XCTAssertTrue(output.responseMarkdown.contains("2.658,04"), "Deve conter parcela de 2.658,04")
+        XCTAssertTrue(output.responseMarkdown.contains("04/12/2026"), "Deve conter a data de vencimento formatada no próximo mês")
+
+        // 3. Deve totalizar R$ 7.525,16
+        XCTAssertTrue(output.responseMarkdown.contains("7.525,16"), "Deve totalizar R$ 7.525,16")
+    }
+
+    func testAgenticMultiTurnAnaphoricCategoryAndContractPayoff() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+        AgenticFinancialEngine.resetMemory(for: store)
+
+        let acc = BankAccount(name: "Conta Principal", initialBalance: 20000.0)
+        let catMoradia = CategoryItem(name: "Moradia", type: .expense, iconSymbol: "house.fill", colorHex: "#4F46E5")
+        let catAlim = CategoryItem(name: "Alimentação", type: .expense, iconSymbol: "fork.knife", colorHex: "#FF5722")
+        store.accounts = [acc]
+        store.categories = [catMoradia, catAlim]
+
+        let cal = Calendar.current
+        var comps = DateComponents()
+        comps.year = 2026
+        comps.month = 11
+        comps.day = 10
+        let refDate = cal.date(from: comps)!
+        store.selectedMonth = refDate
+
+        let t1 = FinancialTransaction(name: "Aluguel", amount: 3000.0, date: refDate, type: .expense, isPaid: true, categoryId: catMoradia.id, accountId: acc.id)
+        let t2 = FinancialTransaction(name: "Supermercado", amount: 1000.0, date: refDate, type: .expense, isPaid: true, categoryId: catAlim.id, accountId: acc.id)
+        store.transactions = [t1, t2]
+
+        let c1 = CreditContract(
+            kind: .loan,
+            name: "Santander",
+            contractNumber: "783847703",
+            loanSubtype: .pessoal,
+            amortizationSystem: .price,
+            totalContractedAmount: 10000.0,
+            outstandingBalance: 8000.0,
+            installmentAmount: 357.31,
+            billingDay: 4,
+            totalInstallments: 36,
+            monthlyInterestRate: 1.85,
+            startDate: refDate,
+            accountId: acc.id,
+            categoryId: catMoradia.id
+        )
+        store.contracts = [c1]
+
+        // Turno 1: Qual categoria eu mais gasto?
+        let out1 = AgenticFinancialEngine.runAgentLoop(prompt: "qual categoria eu mais gasto?", store: store, modelLabel: "Qwen2.5-3B-Local")
+        XCTAssertTrue(out1.responseMarkdown.contains("Moradia"))
+
+        // Turno 2: Anáfora "quanto gastei nela?" -> resolve automaticamente para "Moradia"
+        let out2 = AgenticFinancialEngine.runAgentLoop(prompt: "quanto gastei nela?", store: store, modelLabel: "Qwen2.5-3B-Local")
+        XCTAssertTrue(out2.responseMarkdown.contains("Moradia"), "Deve resolver 'nela' para a categoria Moradia")
+        XCTAssertTrue(out2.responseMarkdown.contains("3.000,00"), "Deve buscar valor fresco no banco de dados local")
+
+        // Turno 3: Pergunta de parcelas
+        let out3 = AgenticFinancialEngine.runAgentLoop(prompt: "Quanto vou pagar de parcelas de financiamento e emprestimos próximo mês?", store: store, modelLabel: "Qwen2.5-3B-Local")
+        XCTAssertTrue(out3.responseMarkdown.contains("357,31"))
+
+        // Turno 4: Anáfora "quanto falta para quitar o primeiro?"
+        let out4 = AgenticFinancialEngine.runAgentLoop(prompt: "quanto falta para quitar o primeiro?", store: store, modelLabel: "Qwen2.5-3B-Local")
+        XCTAssertTrue(out4.responseMarkdown.contains("Santander"), "Deve resolver 'o primeiro' para o contrato Santander")
+        XCTAssertTrue(out4.responseMarkdown.contains("Valor Projetado para Quitação") || out4.responseMarkdown.contains("Saldo Devedor"))
+    }
 }
