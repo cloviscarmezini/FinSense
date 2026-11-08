@@ -2323,4 +2323,77 @@ final class FinSenseTests: XCTestCase {
         XCTAssertFalse(searchDivida.isEmpty)
         XCTAssertTrue(searchDivida.first?.document.title.contains("Mercado Pago") == true)
     }
+
+    func testAgenticLatestTransactionQueryConciseResponse() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente", initialBalance: 1142.83)
+        let catAlim = CategoryItem(name: "Alimentação", type: .expense, iconSymbol: "fork.knife", colorHex: "#FF5722")
+        store.accounts = [acc]
+        store.categories = [catAlim]
+
+        let cal = Calendar.current
+        var dateComps = DateComponents()
+        dateComps.year = 2026
+        dateComps.month = 10
+        dateComps.day = 13
+        dateComps.hour = 10
+        dateComps.minute = 0
+        let specificDate = cal.date(from: dateComps)!
+
+        let t1 = FinancialTransaction(
+            name: "caixa de chocolate",
+            amount: 98.0,
+            date: specificDate,
+            type: .expense,
+            isPaid: true,
+            categoryId: catAlim.id,
+            accountId: acc.id
+        )
+        store.transactions = [t1]
+
+        let prompt = "qual foi a minha ultima transação?"
+        let output = AgenticFinancialEngine.runAgentLoop(prompt: prompt, store: store, modelLabel: "Qwen2.5-3B-Local")
+
+        // 1. NÃO deve conter o dump genérico anterior da base
+        XCTAssertFalse(output.responseMarkdown.contains("## Panorama Completo da sua Base Financeira"), "Não deve retornar o panorama completo genérico")
+        XCTAssertFalse(output.responseMarkdown.contains("### Resumo de Dívidas e Compromissos"))
+
+        // 2. Resposta deve ser concisa e responder diretamente com dados da transação
+        XCTAssertTrue(output.responseMarkdown.contains("98,00") || output.responseMarkdown.contains("98"))
+        XCTAssertTrue(output.responseMarkdown.contains("caixa de chocolate"))
+        XCTAssertTrue(output.responseMarkdown.contains("Alimentação"))
+        XCTAssertTrue(output.responseMarkdown.contains("13/10/2026"))
+
+        // 3. Etapas colaborativas dos 4 agentes
+        XCTAssertTrue(output.executedSteps.contains { $0.contains("Agente 1") && $0.contains("Última Transação") && $0.contains("Curta e Direta") })
+        XCTAssertTrue(output.executedSteps.contains { $0.contains("Agente 2") })
+        XCTAssertTrue(output.executedSteps.contains { $0.contains("Agente 3") && $0.contains("aprovados") })
+        XCTAssertTrue(output.executedSteps.contains { $0.contains("Agente 4") })
+    }
+
+    func testAgenticRecentTransactionsList() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Principal", initialBalance: 5000.0)
+        let cat = CategoryItem(name: "Alimentação", type: .expense, iconSymbol: "fork.knife", colorHex: "#FF5722")
+        store.accounts = [acc]
+        store.categories = [cat]
+
+        let cal = Calendar.current
+        let now = Date()
+        let t1 = FinancialTransaction(name: "Almoço", amount: 45.0, date: now, type: .expense, isPaid: true, categoryId: cat.id, accountId: acc.id)
+        let t2 = FinancialTransaction(name: "Jantar", amount: 90.0, date: cal.date(byAdding: .day, value: -1, to: now)!, type: .expense, isPaid: true, categoryId: cat.id, accountId: acc.id)
+        store.transactions = [t1, t2]
+
+        let prompt = "quais foram as minhas ultimas transacoes?"
+        let output = AgenticFinancialEngine.runAgentLoop(prompt: prompt, store: store, modelLabel: "Qwen2.5-3B-Local")
+
+        XCTAssertFalse(output.responseMarkdown.contains("## Panorama Completo da sua Base Financeira"))
+        XCTAssertTrue(output.responseMarkdown.contains("Almoço"))
+        XCTAssertTrue(output.responseMarkdown.contains("Jantar"))
+        XCTAssertTrue(output.executedSteps.contains { $0.contains("Agente 1") && $0.contains("Lista de Transações Recentes") })
+    }
 }
