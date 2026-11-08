@@ -54,6 +54,9 @@ public struct SettingsView: View {
 
 public struct GeneralSettingsSectionView: View {
     @ObservedObject public var store: FinancialDataStore
+    @ObservedObject private var authService = AuthService.shared
+    @State private var showAuthSheet: Bool = false
+    @State private var authMode: AuthSheetMode = .login
     @State private var showResetFromScratchSheet: Bool = false
     @State private var lastResetBanner: String? = nil
 
@@ -76,6 +79,235 @@ public struct GeneralSettingsSectionView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                // Card 0: Autenticação & Conta (FinSense Cloud)
+                if !authService.isAuthenticated {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .top, spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color(hex: "#0284C7").opacity(0.14))
+                                    .frame(width: 46, height: 46)
+                                Image(systemName: "person.crop.circle.badge.plus")
+                                    .font(.system(size: 22, weight: .bold))
+                                    .foregroundStyle(Color(hex: "#0284C7"))
+                            }
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Conta FinSense")
+                                    .font(.title3.bold())
+                                Text("Conecte-se para sincronizar seus dados financeiros entre seus dispositivos com segurança. Sem login, o app continua operando 100% no modo local.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    authMode = .login
+                                    showAuthSheet = true
+                                } label: {
+                                    Text("Entrar na Conta")
+                                        .fontWeight(.semibold)
+                                        .padding(.horizontal, 6)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(Color(hex: "#0284C7"))
+
+                                Button {
+                                    authMode = .register
+                                    showAuthSheet = true
+                                } label: {
+                                    Text("Criar Nova Conta")
+                                        .fontWeight(.semibold)
+                                        .padding(.horizontal, 6)
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                        }
+                    }
+                    .padding(20)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                } else {
+                    // Perfil Conectado & Sincronização em Nuvem (Visível quando Autenticado)
+                    VStack(alignment: .leading, spacing: 16) {
+                        HStack(alignment: .center, spacing: 14) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color(hex: "#10B981").opacity(0.14))
+                                    .frame(width: 46, height: 46)
+                                Image(systemName: "person.crop.circle.fill.badge.checkmark")
+                                    .font(.system(size: 22, weight: .bold))
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                            }
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 8) {
+                                    Text(authService.currentUser?.fullName ?? "Usuário FinSense")
+                                        .font(.title3.bold())
+                                    Text("Conectado")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(Color(hex: "#10B981").opacity(0.18)))
+                                        .foregroundStyle(Color(hex: "#10B981"))
+                                }
+                                Text(authService.currentUser?.email ?? "")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                authService.logout()
+                                store.cloudSyncService?.syncStatus = .disabled
+                            } label: {
+                                Text("Sair da Conta")
+                                    .fontWeight(.medium)
+                            }
+                            .buttonStyle(.bordered)
+                            .foregroundStyle(.red)
+                        }
+
+                        Divider()
+
+                        // Toggle de Sincronização
+                        if let sync = store.cloudSyncService {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Toggle("Ativar Sincronização em Nuvem", isOn: Binding(
+                                    get: { sync.isEnabled },
+                                    set: { newValue in
+                                        sync.isEnabled = newValue
+                                        if newValue {
+                                            sync.performSync()
+                                        } else {
+                                            sync.syncStatus = .disabled
+                                        }
+                                    }
+                                ))
+                                .font(.system(size: 14, weight: .semibold))
+
+                                Text("Quando ativado, as alterações salvas localmente são enviadas silenciosamente ao servidor em segundo plano e sincronizadas bidirecionalmente.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                // Opções avançadas de sync (APENAS se ativado)
+                                if sync.isEnabled {
+                                    Divider()
+
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        Text("Configurações do Servidor")
+                                            .font(.subheadline.bold())
+
+                                        HStack(spacing: 12) {
+                                            Text("URL da API:")
+                                                .font(.caption.bold())
+                                                .frame(width: 80, alignment: .leading)
+                                            TextField("URL da API Backend", text: Binding(
+                                                get: { sync.baseURLString },
+                                                set: { sync.baseURLString = $0 }
+                                            ))
+                                            .textFieldStyle(.roundedBorder)
+                                            .font(.system(.body, design: .monospaced))
+                                        }
+
+                                        HStack(spacing: 12) {
+                                            Text("Client ID:")
+                                                .font(.caption.bold())
+                                                .frame(width: 80, alignment: .leading)
+                                            Text(sync.clientId)
+                                                .font(.system(.caption, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                            Spacer()
+                                        }
+
+                                        HStack(spacing: 12) {
+                                            Text("Status:")
+                                                .font(.caption.bold())
+                                                .frame(width: 80, alignment: .leading)
+                                            HStack(spacing: 6) {
+                                                Image(systemName: sync.syncStatus.iconSymbol)
+                                                Text(sync.syncStatus.statusDescription)
+                                                    .font(.caption)
+                                            }
+                                            Spacer()
+                                            if let last = sync.lastSyncDate {
+                                                Text("Último sync: \(BRLFormatters.shortDate(last))")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+
+                                        Divider()
+
+                                        HStack(spacing: 12) {
+                                            Button {
+                                                sync.performSync()
+                                            } label: {
+                                                if sync.isSyncing {
+                                                    HStack(spacing: 6) {
+                                                        ProgressView().controlSize(.small)
+                                                        Text("Sincronizando...")
+                                                    }
+                                                } else {
+                                                    Label("Sincronizar Agora", systemImage: "arrow.clockwise")
+                                                        .fontWeight(.semibold)
+                                                }
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
+
+                                            Button {
+                                                sync.triggerInitialSeed()
+                                            } label: {
+                                                if sync.isSeeding {
+                                                    HStack(spacing: 6) {
+                                                        ProgressView()
+                                                            .controlSize(.small)
+                                                        Text("Preparando Envio...")
+                                                    }
+                                                } else {
+                                                    Label("Forçar Envio Completo da Base (Initial Seed)", systemImage: "arrow.up.to.line")
+                                                }
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
+
+                                            Spacer()
+                                        }
+
+                                        if sync.isSyncing {
+                                            HStack(spacing: 6) {
+                                                ProgressView().controlSize(.small)
+                                                Text("Sincronizando dados com o servidor...")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .padding(.top, 4)
+                                        }
+
+                                        if sync.isSeeding {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                ProgressView(value: sync.seedProgress, total: 1.0)
+                                                    .progressViewStyle(.linear)
+                                                Text(sync.seedStatusText)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            .padding(.top, 4)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(20)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                }
+
                 // Card 1: Exportação Completa da Base de Dados (Exceto Modelos de IA)
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .top, spacing: 14) {
@@ -396,6 +628,12 @@ public struct GeneralSettingsSectionView: View {
                     importStatusBanner = "Importação concluída: \(importedCount) lançamento(s) mesclado(s) com sucesso na base ativa."
                 }
             }
+        }
+        .sheet(isPresented: $showAuthSheet) {
+            AuthFormSheetView(
+                mode: $authMode,
+                baseURL: store.cloudSyncService?.baseURLString ?? "http://localhost:8080/api/v1"
+            )
         }
     }
 

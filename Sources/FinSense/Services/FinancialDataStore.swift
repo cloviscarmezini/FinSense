@@ -208,6 +208,8 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var isLLMInstallAlertPresented: Bool = false
     @Published public var pendingAIFeatureName: String = ""
 
+    public weak var cloudSyncService: CloudSyncService?
+
     public let persistenceEnvironment: PersistenceEnvironment
     public let storageDirectory: URL
     public let databaseFileURL: URL
@@ -441,6 +443,7 @@ public final class FinancialDataStore: ObservableObject {
             ]
         }
         save()
+        cloudSyncService?.resetSyncState()
     }
 
     // MARK: - Complete Database Export (Exceto Modelo de IA) & Fast Selective Validated Import
@@ -1751,18 +1754,21 @@ public final class FinancialDataStore: ObservableObject {
         )
         accounts.append(account)
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "bank_accounts", entityId: account.id, operation: .upsert, entity: account)
     }
 
     public func updateAccount(_ account: BankAccount) {
         if let idx = accounts.firstIndex(where: { $0.id == account.id }) {
             accounts[idx] = account
             save()
+            cloudSyncService?.recordLocalMutation(entityName: "bank_accounts", entityId: account.id, operation: .upsert, entity: account)
         }
     }
 
     public func deleteAccount(_ accountId: UUID) {
         accounts.removeAll(where: { $0.id == accountId })
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "bank_accounts", entityId: accountId, operation: .delete)
     }
 
     public func account(for id: UUID) -> BankAccount? {
@@ -1856,12 +1862,14 @@ public final class FinancialDataStore: ObservableObject {
         )
         categories.append(item)
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "categories", entityId: item.id, operation: .upsert, entity: item)
     }
 
     public func updateCategory(_ category: CategoryItem) {
         if let idx = categories.firstIndex(where: { $0.id == category.id }) {
             categories[idx] = category
             save()
+            cloudSyncService?.recordLocalMutation(entityName: "categories", entityId: category.id, operation: .upsert, entity: category)
         }
     }
 
@@ -1870,6 +1878,7 @@ public final class FinancialDataStore: ObservableObject {
         provisions.removeAll(where: { $0.categoryId == categoryId })
         categoryQuotas.removeAll(where: { $0.categoryId == categoryId })
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "categories", entityId: categoryId, operation: .delete)
     }
 
     // MARK: - Transaction Creation (Single, Installment, Repeated, Recurring)
@@ -2018,6 +2027,9 @@ public final class FinancialDataStore: ObservableObject {
 
         sortTransactions()
         save()
+        for tx in created {
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: tx.id, operation: .upsert, entity: tx)
+        }
         return created
     }
 
@@ -2088,6 +2100,7 @@ public final class FinancialDataStore: ObservableObject {
         }
         for idx in transactions.indices where transactions[idx].seriesGroupId == groupId {
             transactions[idx].isCanceledRecurringSeries = true
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: transactions[idx].id, operation: .upsert, entity: transactions[idx])
         }
         save()
     }
@@ -2155,6 +2168,12 @@ public final class FinancialDataStore: ObservableObject {
 
         sortTransactions()
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: cleanUpdated.id, operation: .upsert, entity: cleanUpdated)
+        if scope != .onlyThis, let groupId = cleanUpdated.seriesGroupId {
+            for tx in transactions where tx.seriesGroupId == groupId && tx.id != cleanUpdated.id {
+                cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: tx.id, operation: .upsert, entity: tx)
+            }
+        }
     }
 
     private static func stripInstallmentSuffix(from title: String) -> String {
@@ -2182,6 +2201,9 @@ public final class FinancialDataStore: ObservableObject {
         }
         sortTransactions()
         save()
+        if let tx = transactions.first(where: { $0.id == id }) {
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .upsert, entity: tx)
+        }
         return true
     }
 
@@ -2195,28 +2217,46 @@ public final class FinancialDataStore: ObservableObject {
     public func deleteTransaction(_ id: UUID, scope: SeriesDeleteScope = .onlyThis) {
         guard let targetTx = transactions.first(where: { $0.id == id }) else { return }
 
+        var deletedIds: [UUID] = []
+
         if scope == .onlyThis || !targetTx.isPartOfSeries || targetTx.seriesGroupId == nil {
             transactions.removeAll(where: { $0.id == id })
             save()
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .delete)
             return
         }
 
         guard let groupId = targetTx.seriesGroupId else {
             transactions.removeAll(where: { $0.id == id })
             save()
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .delete)
             return
         }
 
         switch scope {
         case .onlyThis:
+            deletedIds = [id]
             transactions.removeAll(where: { $0.id == id })
 
         case .allInSeries:
+            deletedIds = transactions.filter({ $0.seriesGroupId == groupId }).map(\.id)
             transactions.removeAll(where: { $0.seriesGroupId == groupId })
 
         case .thisAndPending:
             let referenceDate = calendar.startOfDay(for: targetTx.date)
             let referenceInstallmentIdx = targetTx.installmentIndex
+
+            deletedIds = transactions.filter { tx in
+                guard tx.seriesGroupId == groupId else { return false }
+                if tx.id == targetTx.id { return true }
+                guard !tx.isPaid else { return false }
+
+                if let refInst = referenceInstallmentIdx, let otherInst = tx.installmentIndex {
+                    return otherInst >= refInst
+                } else {
+                    return calendar.startOfDay(for: tx.date) >= referenceDate
+                }
+            }.map(\.id)
 
             transactions.removeAll { tx in
                 guard tx.seriesGroupId == groupId else { return false }
@@ -2239,6 +2279,9 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         save()
+        for delId in deletedIds {
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: delId, operation: .delete)
+        }
     }
 
     private func sortTransactions() {
@@ -2501,18 +2544,21 @@ public final class FinancialDataStore: ObservableObject {
         )
         investments.append(item)
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: item.id, operation: .upsert, entity: item)
     }
 
     public func toggleInvestmentConsolidated(_ investmentId: UUID) {
         if let idx = investments.firstIndex(where: { $0.id == investmentId }) {
             investments[idx].showInConsolidated.toggle()
             save()
+            cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: investmentId, operation: .upsert, entity: investments[idx])
         }
     }
 
     public func deleteInvestment(_ investmentId: UUID) {
         investments.removeAll(where: { $0.id == investmentId })
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: investmentId, operation: .delete)
     }
 
     /// Investir (aportar) ou resgatar:
@@ -2622,18 +2668,21 @@ public final class FinancialDataStore: ObservableObject {
         )
         debts.append(debt)
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "debt_items", entityId: debt.id, operation: .upsert, entity: debt)
     }
 
     public func updateDebt(_ updated: DebtItem) {
         if let idx = debts.firstIndex(where: { $0.id == updated.id }) {
             debts[idx] = updated
             save()
+            cloudSyncService?.recordLocalMutation(entityName: "debt_items", entityId: updated.id, operation: .upsert, entity: updated)
         }
     }
 
     public func deleteDebt(_ debtId: UUID) {
         debts.removeAll(where: { $0.id == debtId })
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "debt_items", entityId: debtId, operation: .delete)
     }
 
     public struct DebtImportSummary {
@@ -3094,6 +3143,8 @@ public final class FinancialDataStore: ObservableObject {
 
         sortTransactions()
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "credit_contracts", entityId: contract.id, operation: .upsert, entity: contract)
+        cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: amortTx.id, operation: .upsert, entity: amortTx)
     }
 
     /// Quitar empréstimo/financiamento: cria transação de quitação na conta selecionada e remove parcelas futuras
@@ -3137,12 +3188,15 @@ public final class FinancialDataStore: ObservableObject {
 
         sortTransactions()
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "credit_contracts", entityId: contract.id, operation: .upsert, entity: contract)
+        cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: settleTx.id, operation: .upsert, entity: settleTx)
     }
 
     public func deleteContract(_ contractId: UUID) {
         transactions.removeAll { $0.linkedContractId == contractId || $0.seriesGroupId == contractId }
         contracts.removeAll { $0.id == contractId }
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "credit_contracts", entityId: contractId, operation: .delete)
     }
 
     // MARK: - Balances, Monthly Summaries & Insights
@@ -3318,6 +3372,9 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         save()
+        for prov in provisions where prov.categoryId == categoryId {
+            cloudSyncService?.recordLocalMutation(entityName: "category_provisions", entityId: prov.id, operation: .upsert, entity: prov)
+        }
     }
 
     /// Exclui a Verba Livre de uma categoria respeitando o escopo temporal:
@@ -3359,6 +3416,7 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "category_provisions", entityId: categoryId, operation: .delete)
     }
 
     /// Remove ou zera a provisão de uma categoria a partir do mês informado.
@@ -3524,7 +3582,9 @@ public final class FinancialDataStore: ObservableObject {
                 categoryQuotas[exactIdx].estimatedUnitPrice = cleanPrice
                 categoryQuotas[exactIdx].repeatForFutureMonths = repeatForFutureMonths
                 save()
-                return categoryQuotas[exactIdx]
+                let rule = categoryQuotas[exactIdx]
+                cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: rule.id, operation: .upsert, entity: rule)
+                return rule
             } else {
                 let updatedFutureRule = CategoryQuotaRule(
                     seriesId: existingSeriesId,
@@ -3539,6 +3599,7 @@ public final class FinancialDataStore: ObservableObject {
                 )
                 categoryQuotas.append(updatedFutureRule)
                 save()
+                cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: updatedFutureRule.id, operation: .upsert, entity: updatedFutureRule)
                 return updatedFutureRule
             }
         }
@@ -3556,6 +3617,7 @@ public final class FinancialDataStore: ObservableObject {
         )
         categoryQuotas.append(newRule)
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: newRule.id, operation: .upsert, entity: newRule)
         return newRule
     }
 
@@ -3598,6 +3660,7 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: seriesId, operation: .delete)
     }
 
     /// Retorna os envelopes de Cotas Específicas ativas para uma categoria no mês informado.
@@ -3764,6 +3827,7 @@ public final class FinancialDataStore: ObservableObject {
         )
         transactions.append(tx)
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: tx.id, operation: .upsert, entity: tx)
         return tx
     }
 

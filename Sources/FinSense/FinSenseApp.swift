@@ -4,10 +4,12 @@ import AppKit
 public struct MainContentView: View {
     @ObservedObject public var store: FinancialDataStore
     @ObservedObject public var llmService: LocalLLMService
+    @ObservedObject public var syncService: CloudSyncService
 
-    public init(store: FinancialDataStore, llmService: LocalLLMService) {
+    public init(store: FinancialDataStore, llmService: LocalLLMService, syncService: CloudSyncService) {
         self.store = store
         self.llmService = llmService
+        self.syncService = syncService
     }
 
     public var body: some View {
@@ -54,6 +56,10 @@ public struct MainContentView: View {
                             }
                         }
                     }
+
+                    Spacer()
+
+                    SyncStatusIndicatorView(syncService: syncService)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
@@ -236,6 +242,11 @@ public struct MainContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .toolbar {
+                ToolbarItem(placement: .automatic) {
+                    SyncStatusIndicatorView(syncService: syncService)
+                }
+            }
         }
         .sheet(isPresented: $store.isAIChatPresented) {
             AIChatSheetView(store: store, llmService: llmService)
@@ -260,12 +271,20 @@ public struct MainContentView: View {
 
 @main
 public struct FinSenseApp: App {
-    @StateObject private var store = FinancialDataStore()
+    @StateObject private var store: FinancialDataStore
+    @StateObject private var syncService: CloudSyncService
     @StateObject private var llmService = LocalLLMService()
 
     public init() {
         NSApplication.shared.setActivationPolicy(.regular)
         Self.configureApplicationIcon()
+
+        let storeInstance = FinancialDataStore()
+        let syncInstance = CloudSyncService(store: storeInstance)
+        storeInstance.cloudSyncService = syncInstance
+
+        _store = StateObject(wrappedValue: storeInstance)
+        _syncService = StateObject(wrappedValue: syncInstance)
     }
 
     public static func configureApplicationIcon() {
@@ -301,7 +320,7 @@ public struct FinSenseApp: App {
 
     public var body: some Scene {
         WindowGroup(PersistenceEnvironment.current.isDebug ? "FinSense [DEBUG DB]" : "FinSense") {
-            MainContentView(store: store, llmService: llmService)
+            MainContentView(store: store, llmService: llmService, syncService: syncService)
                 .frame(minWidth: 1120, minHeight: 740)
                 .onAppear {
                     NSApplication.shared.activate(ignoringOtherApps: true)
