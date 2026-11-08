@@ -761,10 +761,11 @@ public final class FinancialDataStore: ObservableObject {
         let existingCatKeys = Set(categories.map { "\($0.type.rawValue)|\(Self.normalizeKey($0.name))" })
 
         let existingTxIds = Set(transactions.map(\.id))
-        var existingTxSigs = Set<String>()
-        existingTxSigs.reserveCapacity(transactions.count)
+        var preExistingTxSigCounts: [String: Int] = [:]
+        preExistingTxSigCounts.reserveCapacity(transactions.count)
         for tx in transactions {
-            existingTxSigs.insert(transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type))
+            let sig = transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type)
+            preExistingTxSigCounts[sig, default: 0] += 1
         }
 
         let existingInvIds = Set(investments.map(\.id))
@@ -810,9 +811,16 @@ public final class FinancialDataStore: ObservableObject {
 
         // 3. Transações
         var txDups = 0
+        var remainingPreExistingTxSigCounts = preExistingTxSigCounts
         for tx in snapshot.transactions {
             let sig = transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type)
-            if existingTxIds.contains(tx.id) || existingTxSigs.contains(sig) {
+            if existingTxIds.contains(tx.id) {
+                txDups += 1
+                if let count = remainingPreExistingTxSigCounts[sig], count > 0 {
+                    remainingPreExistingTxSigCounts[sig] = count - 1
+                }
+            } else if let count = remainingPreExistingTxSigCounts[sig], count > 0 {
+                remainingPreExistingTxSigCounts[sig] = count - 1
                 txDups += 1
             }
         }
@@ -1220,24 +1228,43 @@ public final class FinancialDataStore: ObservableObject {
         onProgress?(0.78, "Importando transações e validando vínculos (\(snapshot.transactions.count) registros)...")
         let shouldImportAllTransactions = selectedTargets.contains(.transactions)
         if shouldImportAllTransactions || !newlyImportedContractIds.isEmpty {
-            var existingTxIds = Set(transactions.map(\.id))
-            var existingTxSigs = Set<String>()
-            existingTxSigs.reserveCapacity(transactions.count + snapshot.transactions.count)
+            let preExistingTxIds = Set(transactions.map(\.id))
+            var preExistingTxSigCounts: [String: Int] = [:]
+            preExistingTxSigCounts.reserveCapacity(transactions.count)
             for tx in transactions {
-                existingTxSigs.insert(transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type))
+                let sig = transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type)
+                preExistingTxSigCounts[sig, default: 0] += 1
             }
+            var currentTxIds = preExistingTxIds
 
             for srcTx in snapshot.transactions {
                 let isLinkedToNewContract = srcTx.linkedContractId.map { newlyImportedContractIds.contains($0) } ?? false
                 guard shouldImportAllTransactions || isLinkedToNewContract else { continue }
 
                 let sig = transactionSignature(name: srcTx.name, amount: srcTx.amount, date: srcTx.date, type: srcTx.type)
-                if existingTxIds.contains(srcTx.id) || existingTxSigs.contains(sig) {
+                let isPreExistingDuplicate: Bool = {
+                    if preExistingTxIds.contains(srcTx.id) {
+                        if let count = preExistingTxSigCounts[sig], count > 0 {
+                            preExistingTxSigCounts[sig] = count - 1
+                        }
+                        return true
+                    }
+                    if let count = preExistingTxSigCounts[sig], count > 0 {
+                        preExistingTxSigCounts[sig] = count - 1
+                        return true
+                    }
+                    return false
+                }()
+
+                if isPreExistingDuplicate {
                     if shouldImportAllTransactions { res.skippedDuplicatesTotal += 1 }
                     continue
                 }
 
                 var newTx = srcTx
+                if currentTxIds.contains(newTx.id) {
+                    newTx.id = UUID()
+                }
                 newTx.accountId = ensureValidAccountId(for: srcTx.accountId)
                 newTx.categoryId = ensureValidCategoryId(for: srcTx.categoryId, fallbackType: srcTx.type, titleHint: srcTx.name)
                 newTx.attachmentPath = restoreAssetIfAvailable(originalPath: srcTx.attachmentPath)
@@ -1254,8 +1281,7 @@ public final class FinancialDataStore: ObservableObject {
                 }
 
                 transactions.append(newTx)
-                existingTxIds.insert(newTx.id)
-                existingTxSigs.insert(sig)
+                currentTxIds.insert(newTx.id)
                 res.importedTransactions += 1
             }
         }
@@ -1346,11 +1372,12 @@ public final class FinancialDataStore: ObservableObject {
             localAccByNormName[Self.normalizeKey(acc.name)] = acc.id
         }
 
-        let existingTxIds = Set(transactions.map(\.id))
-        var existingTxSigs = Set<String>()
-        existingTxSigs.reserveCapacity(transactions.count)
+        let preExistingTxIds = Set(transactions.map(\.id))
+        var remainingPreExistingTxSigCounts: [String: Int] = [:]
+        remainingPreExistingTxSigCounts.reserveCapacity(transactions.count)
         for tx in transactions {
-            existingTxSigs.insert(transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type))
+            let sig = transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type)
+            remainingPreExistingTxSigCounts[sig, default: 0] += 1
         }
 
         let defaultAccountId = accounts.first?.id ?? UUID()
@@ -1379,7 +1406,19 @@ public final class FinancialDataStore: ObservableObject {
             }()
 
             let sig = transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type)
-            let duplicate = existingTxIds.contains(tx.id) || existingTxSigs.contains(sig)
+            let duplicate: Bool = {
+                if preExistingTxIds.contains(tx.id) {
+                    if let count = remainingPreExistingTxSigCounts[sig], count > 0 {
+                        remainingPreExistingTxSigCounts[sig] = count - 1
+                    }
+                    return true
+                }
+                if let count = remainingPreExistingTxSigCounts[sig], count > 0 {
+                    remainingPreExistingTxSigCounts[sig] = count - 1
+                    return true
+                }
+                return false
+            }()
 
             return ImportableExpenseDraft(
                 originalTransactionId: tx.id,
@@ -1421,21 +1460,35 @@ public final class FinancialDataStore: ObservableObject {
 
         let validCatIds = Set(categories.map(\.id))
         let validAccIds = Set(accounts.map(\.id))
-        var existingTxIds = Set(transactions.map(\.id))
-        var existingTxSigs = Set<String>()
-        existingTxSigs.reserveCapacity(transactions.count + drafts.count)
+        let preExistingTxIds = Set(transactions.map(\.id))
+        var preExistingTxSigCounts: [String: Int] = [:]
+        preExistingTxSigCounts.reserveCapacity(transactions.count)
         for tx in transactions {
-            existingTxSigs.insert(transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type))
+            let sig = transactionSignature(name: tx.name, amount: tx.amount, date: tx.date, type: tx.type)
+            preExistingTxSigCounts[sig, default: 0] += 1
         }
+        var currentTxIds = preExistingTxIds
 
         for draft in drafts where draft.isSelected {
             let cleanDesc = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleanDesc.isEmpty, draft.amount > 0 else { continue }
 
             let sig = transactionSignature(name: cleanDesc, amount: draft.amount, date: draft.date, type: draft.type)
-            let currentlyDuplicate = (draft.originalTransactionId.map { existingTxIds.contains($0) } ?? false) || existingTxSigs.contains(sig)
+            let isPreExistingDuplicate: Bool = {
+                if let origId = draft.originalTransactionId, preExistingTxIds.contains(origId) {
+                    if let count = preExistingTxSigCounts[sig], count > 0 {
+                        preExistingTxSigCounts[sig] = count - 1
+                    }
+                    return true
+                }
+                if let count = preExistingTxSigCounts[sig], count > 0 {
+                    preExistingTxSigCounts[sig] = count - 1
+                    return true
+                }
+                return false
+            }()
 
-            if skipDuplicates && currentlyDuplicate {
+            if skipDuplicates && isPreExistingDuplicate {
                 skipped += 1
                 continue
             }
@@ -1449,7 +1502,7 @@ public final class FinancialDataStore: ObservableObject {
                 : fallbackAccId
 
             let txId: UUID = {
-                if let orig = draft.originalTransactionId, !existingTxIds.contains(orig) {
+                if let orig = draft.originalTransactionId, !currentTxIds.contains(orig) {
                     return orig
                 }
                 return UUID()
@@ -1467,8 +1520,7 @@ public final class FinancialDataStore: ObservableObject {
                 accountId: validAccountId
             )
             transactions.append(newTx)
-            existingTxIds.insert(txId)
-            existingTxSigs.insert(sig)
+            currentTxIds.insert(txId)
             imported += 1
         }
 

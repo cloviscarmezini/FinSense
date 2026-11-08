@@ -1999,4 +1999,126 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(destStore.transactions.count, 1)
         XCTAssertEqual(destStore.debts.count, 1)
     }
+
+    func testExportAndImportIdenticalTransactionsPreserved() throws {
+        let calendar = Calendar(identifier: .gregorian)
+        var dateComps = DateComponents()
+        dateComps.year = 2026
+        dateComps.month = 11
+        dateComps.day = 8
+        dateComps.hour = 12
+        let fixedDate = calendar.date(from: dateComps)!
+
+        // 1. Cria store de origem com 2 transações manuais exatamente idênticas (mesmo nome, valor, data e tipo)
+        let sourceStore = makeIsolatedStore(seedStatement: false)
+        sourceStore.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente", bankPresetId: "itau", initialBalance: 1000.0)
+        sourceStore.accounts = [acc]
+        let cat = CategoryItem(name: "Alimentação", type: .expense, iconSymbol: "cart.fill", colorHex: "#EF4444")
+        sourceStore.categories = [cat]
+
+        let tx1List = sourceStore.createTransaction(
+            name: "Café e Pão de Queijo",
+            amount: 15.50,
+            date: fixedDate,
+            type: .expense,
+            isPaid: true,
+            categoryId: cat.id,
+            accountId: acc.id,
+            recurrenceMode: .single,
+            referenceNow: fixedDate
+        )
+        let tx2List = sourceStore.createTransaction(
+            name: "Café e Pão de Queijo",
+            amount: 15.50,
+            date: fixedDate,
+            type: .expense,
+            isPaid: true,
+            categoryId: cat.id,
+            accountId: acc.id,
+            recurrenceMode: .single,
+            referenceNow: fixedDate
+        )
+        XCTAssertEqual(sourceStore.transactions.count, 2)
+        XCTAssertNotEqual(tx1List.first!.id, tx2List.first!.id)
+
+        // 2. Exporta o banco de dados completo (export deve manter todos os registros, inclusive duplicados)
+        let archiveData = try XCTUnwrap(sourceStore.exportFullDatabaseArchive(compress: true))
+
+        // 3. Prepara a importação em uma base de dados zerada (sem transações)
+        let destStore = makeIsolatedStore(seedStatement: false)
+        destStore.resetSelectedData(Set(ResetDataTarget.allCases))
+        XCTAssertTrue(destStore.transactions.isEmpty)
+
+        let pkg = try destStore.prepareDatabaseImportPackage(from: archiveData)
+        XCTAssertEqual(pkg.totalCount(for: .transactions), 2)
+        XCTAssertEqual(pkg.newCount(for: .transactions), 2)
+        XCTAssertEqual(pkg.duplicateCount(for: .transactions), 0)
+
+        // 4. Importa na base zerada: ambas as transações idênticas do arquivo devem ser cadastradas normalmente!
+        let importResult = destStore.executeSelectiveDatabaseImportSync(
+            package: pkg,
+            selectedTargets: Set(ExportDataTarget.allCases)
+        )
+        XCTAssertEqual(importResult.importedCounts[.transactions], 2)
+        XCTAssertEqual(importResult.skippedDuplicateCounts[.transactions] ?? 0, 0)
+        XCTAssertEqual(destStore.transactions.count, 2)
+
+        // 5. Re-importa o mesmo arquivo na base que agora JÁ possui as duas transações:
+        // Agora sim a importação deve ignorar ambas como duplicadas porque já existem previamente na base local!
+        let reimportPkg = try destStore.prepareDatabaseImportPackage(from: archiveData)
+        XCTAssertEqual(reimportPkg.totalCount(for: .transactions), 2)
+        XCTAssertEqual(reimportPkg.newCount(for: .transactions), 0)
+        XCTAssertEqual(reimportPkg.duplicateCount(for: .transactions), 2)
+
+        let reimportResult = destStore.executeSelectiveDatabaseImportSync(
+            package: reimportPkg,
+            selectedTargets: Set(ExportDataTarget.allCases)
+        )
+        XCTAssertEqual(reimportResult.importedCounts[.transactions] ?? 0, 0)
+        XCTAssertEqual(reimportResult.skippedDuplicateCounts[.transactions] ?? 0, 2)
+        XCTAssertEqual(destStore.transactions.count, 2)
+
+        // 6. Testa também importação de JSON externo com gastos idênticos no mesmo arquivo
+        let rawJSON = """
+        [
+          {"name": "Almoço Executivo", "amount": 35.0, "date": "08/11/2026", "type": "despesa"},
+          {"name": "Almoço Executivo", "amount": 35.0, "date": "08/11/2026", "type": "despesa"}
+        ]
+        """.data(using: .utf8)!
+
+        let jsonStore = makeIsolatedStore(seedStatement: false)
+        jsonStore.resetSelectedData(Set(ResetDataTarget.allCases))
+        jsonStore.accounts = [acc]
+        jsonStore.categories = [cat]
+
+        let drafts = try jsonStore.parseImportableExpensesFromJSON(data: rawJSON)
+        XCTAssertEqual(drafts.count, 2)
+        // Como a base local estava zerada, nenhuma das duas é duplicada em relação à base local
+        XCTAssertFalse(drafts[0].isDuplicate)
+        XCTAssertTrue(drafts[0].isSelected)
+        XCTAssertFalse(drafts[1].isDuplicate)
+        XCTAssertTrue(drafts[1].isSelected)
+
+        let (draftsImported, draftsSkipped) = jsonStore.importReviewedExpenseDrafts(drafts, skipDuplicates: true)
+        XCTAssertEqual(draftsImported, 2)
+        XCTAssertEqual(draftsSkipped, 0)
+        XCTAssertEqual(jsonStore.transactions.count, 2)
+
+        // Agora que a base já tem os 2 almoços, re-analisar o JSON deve marcar ambas como duplicadas da base local
+        let drafts2 = try jsonStore.parseImportableExpensesFromJSON(data: rawJSON)
+        XCTAssertEqual(drafts2.count, 2)
+        XCTAssertTrue(drafts2[0].isDuplicate)
+        XCTAssertTrue(drafts2[1].isDuplicate)
+
+        // Forçando seleção mas mantendo skipDuplicates = true, deve ignorar ambas
+        var drafts2Forced = drafts2
+        drafts2Forced[0].isSelected = true
+        drafts2Forced[1].isSelected = true
+        let (reImported, reSkipped) = jsonStore.importReviewedExpenseDrafts(drafts2Forced, skipDuplicates: true)
+        XCTAssertEqual(reImported, 0)
+        XCTAssertEqual(reSkipped, 2)
+        XCTAssertEqual(jsonStore.transactions.count, 2)
+    }
 }
