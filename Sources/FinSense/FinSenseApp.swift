@@ -15,7 +15,7 @@ public struct MainContentView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // App Brand Header
                 HStack(spacing: 10) {
-                    if let appIcon = FinancialControlApp.loadAppIcon() {
+                    if let appIcon = FinSenseApp.loadAppIcon() {
                         Image(nsImage: appIcon)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
@@ -41,7 +41,7 @@ public struct MainContentView: View {
 
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 5) {
-                            Text("Financial Control")
+                            Text("FinSense")
                                 .font(.system(size: 15, weight: .bold, design: .rounded))
                             if store.persistenceEnvironment.isDebug {
                                 Text(store.persistenceEnvironment.badgeTitle)
@@ -53,9 +53,6 @@ public struct MainContentView: View {
                                     .help("Ambiente de Desenvolvimento isolado: \(store.databaseFileURL.path)")
                             }
                         }
-                        Text("macOS Native • IA Local")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -262,7 +259,7 @@ public struct MainContentView: View {
 }
 
 @main
-public struct FinancialControlApp: App {
+public struct FinSenseApp: App {
     @StateObject private var store = FinancialDataStore()
     @StateObject private var llmService = LocalLLMService()
 
@@ -294,7 +291,7 @@ public struct FinancialControlApp: App {
            let img = NSImage(contentsOf: url) {
             return img
         }
-        let fallbackPath = "Sources/FinancialControl/Resources/AppIcon.png"
+        let fallbackPath = "Sources/FinSense/Resources/AppIcon.png"
         if FileManager.default.fileExists(atPath: fallbackPath),
            let img = NSImage(contentsOfFile: fallbackPath) {
             return img
@@ -303,7 +300,7 @@ public struct FinancialControlApp: App {
     }
 
     public var body: some Scene {
-        WindowGroup(PersistenceEnvironment.current.isDebug ? "Controle Financeiro macOS [DEBUG DB]" : "Controle Financeiro macOS") {
+        WindowGroup(PersistenceEnvironment.current.isDebug ? "FinSense [DEBUG DB]" : "FinSense") {
             MainContentView(store: store, llmService: llmService)
                 .frame(minWidth: 1120, minHeight: 740)
                 .onAppear {

@@ -2,29 +2,29 @@
 import PackageDescription
 
 let package = Package(
-    name: "FinancialControl",
+    name: "FinSense",
     defaultLocalization: "pt",
     platforms: [
         .macOS(.v14)
     ],
     products: [
         .executable(
-            name: "FinancialControl",
-            targets: ["FinancialControl"]
+            name: "FinSense",
+            targets: ["FinSense"]
         )
     ],
     targets: [
         .executableTarget(
-            name: "FinancialControl",
-            path: "Sources/FinancialControl",
+            name: "FinSense",
+            path: "Sources/FinSense",
             resources: [
                 .process("Resources")
             ]
         ),
         .testTarget(
-            name: "FinancialControlTests",
-            dependencies: ["FinancialControl"],
-            path: "Tests/FinancialControlTests"
+            name: "FinSenseTests",
+            dependencies: ["FinSense"],
+            path: "Tests/FinSenseTests"
         )
     ]
 )

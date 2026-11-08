@@ -1,4 +1,4 @@
-# 💰 Controle Financeiro macOS (Financial Control)
+# 💰 FinSense macOS
 
 <div align="center">
 
@@ -16,7 +16,7 @@
 
 ## 📌 Sobre o Projeto
 
-O **Controle Financeiro** é um aplicativo de alta performance desenvolvido exclusivamente para o ecossistema Apple macOS. Projetado para quem busca organização financeira profunda sem abrir mão da sua privacidade, o sistema opera **100% offline**: todos os seus dados, contas, transações e dívidas residem exclusivamente no seu Mac, sem envio de informações para nuvens de terceiros.
+O **FinSense** é um aplicativo de alta performance desenvolvido exclusivamente para o ecossistema Apple macOS. Projetado para quem busca organização financeira profunda sem abrir mão da sua privacidade, o sistema opera **100% offline**: todos os seus dados, contas, transações e dívidas residem exclusivamente no seu Mac, sem envio de informações para nuvens de terceiros.
 
 O diferencial revolucionário é a **IA Local Embarcada**: integrada a modelos de linguagem (LLMs) executados diretamente no hardware da sua máquina (via Hugging Face e MLX/GGUF). A IA lê extratos bancários em PDF ou texto bruto, categoriza despesas e receitas de forma inteligente, interpreta contratos de financiamento e responde perguntas analíticas sobre suas finanças em linguagem natural.
 
@@ -113,10 +113,10 @@ O diferencial revolucionário é a **IA Local Embarcada**: integrada a modelos d
 
 - **Linguagem**: Swift 5.10+
 - **Interface**: SwiftUI 5 + AppKit (macOS 14.0 Sonoma ou superior)
-- **Persistência**: Arquivo JSON criptografado/estruturado em disco local (`Application Support/FinancialControl/`)
+- **Persistência**: Arquivo JSON criptografado/estruturado em disco local (`Application Support/FinSense/`)
 - **Inteligência Artificial**: Integração direta com modelos locais GGUF / MLX via Hugging Face Hub
 - **Formatadores**: Padrão monetário brasileiro nativo (BRL `R$ 1.234,56`) com máscaras em tempo real
-- **Testes**: XCTest com 18 testes automatizados cobrindo regras de negócio, amortização e parsing
+- **Testes**: XCTest com suíte de testes automatizados cobrindo regras de negócio, amortização e parsing
 
 ---
 
@@ -129,15 +129,15 @@ O diferencial revolucionário é a **IA Local Embarcada**: integrada a modelos d
 
 ### 1. Clonar o Repositório
 ```bash
-git clone https://github.com/cloviscarmezini/finantialControl.git
-cd finantialControl
+git clone https://github.com/cloviscarmezini/FinSense.git
+cd FinSense
 ```
 
 ### 2. Executar os Testes Automatizados
 ```bash
 swift test
 ```
-*Garante que todas as 18 suítes de teste de integração, cálculos e modelos estão íntegras.*
+*Garante que todas as suítes de teste de integração, cálculos e modelos estão íntegras.*
 
 ### 3. Compilar e Rodar o App
 ```bash
@@ -149,7 +149,7 @@ O aplicativo abrirá nativamente na sua área de trabalho.
 
 ## 📦 Como Gerar o Build de Produção (.app)
 
-O projeto inclui um script automatizado que compila a versão otimizada de release, gera o conjunto de ícones em alta resolução (`.icns`), configura o arquivo `Info.plist` e empacota o aplicativo final em **`FinancialControl.app`**.
+O projeto inclui um script automatizado que compila a versão otimizada de release, gera o conjunto de ícones em alta resolução (`.icns`), configura o arquivo `Info.plist` e empacota o aplicativo final em **`FinSense.app`**.
 
 ### 1. Gerar o Binário de Release e Empacotar
 Execute no terminal da raiz do projeto:
@@ -163,17 +163,17 @@ zsh scripts/package_app.sh
 ```
 
 ### 2. Instalar na Máquina
-Após a execução do script, o pacote **`FinancialControl.app`** estará pronto na raiz do projeto. Para instalá-lo:
+Após a execução do script, o pacote **`FinSense.app`** estará pronto na raiz do projeto. Para instalá-lo:
 
 1. **Via Terminal**:
    ```bash
-   cp -R FinancialControl.app /Applications/
+   cp -R FinSense.app /Applications/
    ```
 2. **Ou via Finder**:
    - Abra a pasta do projeto no Finder (`open .`).
-   - Arraste o arquivo **`FinancialControl.app`** para a pasta **Aplicativos** (`/Applications`).
+   - Arraste o arquivo **`FinSense.app`** para a pasta **Aplicativos** (`/Applications`).
 
-Agora você pode abrir o **Controle Financeiro** diretamente pelo **Spotlight** (`Cmd + Espaço`), pelo **Launchpad** ou fixá-lo no seu **Dock** com o ícone oficial do projeto!
+Agora você pode abrir o **FinSense** diretamente pelo **Spotlight** (`Cmd + Espaço`), pelo **Launchpad** ou fixá-lo no seu **Dock** com o ícone oficial do projeto!
 
 ---
 
@@ -189,8 +189,8 @@ zsh scripts/distribute.sh
 ```
 
 Este script compila a versão release, assina o app, gera os ícones e cria automaticamente na pasta `dist/`:
-- **`dist/FinancialControl.dmg`**: Imagem de disco padrão do macOS com instalador amigável (arraste para a pasta *Aplicativos*).
-- **`dist/FinancialControl.zip`**: Arquivo comprimido leve e portátil preservando todas as permissões nativas.
+- **`dist/FinSense.dmg`**: Imagem de disco padrão do macOS com instalador amigável (arraste para a pasta *Aplicativos*).
+- **`dist/FinSense.zip`**: Arquivo comprimido leve e portátil preservando todas as permissões nativas.
 
 ### 2. Abrindo em Outro Mac (Gatekeeper do macOS)
 Se você distribuir o app sem um certificado pago da Apple Developer Program (usando a assinatura ad-hoc padrão), o macOS exibirá na primeira abertura que o app é de um *desenvolvedor não identificado*. Para abrir normalmente no outro Mac, basta usar qualquer uma das opções:
@@ -199,7 +199,7 @@ Se você distribuir o app sem um certificado pago da Apple Developer Program (us
 - **Opção 2**: Vá em **Ajustes do Sistema > Privacidade e Segurança**, role até o fim e clique em **"Abrir Mesmo Assim"**.
 - **Opção 3 (Terminal)**: Se baixado via internet/zip, execute no Terminal do Mac de destino:
   ```bash
-  xattr -cr /Applications/FinancialControl.app
+  xattr -cr /Applications/FinSense.app
   ```
 
 *(Opcional) Se você possuir uma conta de desenvolvedor Apple paga, basta exportar sua identidade antes de rodar o script:*
@@ -216,7 +216,7 @@ zsh scripts/distribute.sh
 - 🚫 **Sem dependência de nuvem**: O app funciona perfeitamente sem conexão com a internet.
 - 💾 **Seus dados pertencem a você**: O banco de dados fica armazenado em:
   ```text
-  ~/Library/Application Support/FinancialControl/financial_database.json
+  ~/Library/Application Support/FinSense/financial_database.json
   ```
   Você pode realizar backups manuais copiando este arquivo a qualquer momento.
 

@@ -1044,8 +1044,8 @@ public enum PersistenceEnvironment: String, Codable, CaseIterable, Hashable {
 
     public var folderName: String {
         switch self {
-        case .debug: return "FinancialControl-Debug"
-        case .release: return "FinancialControl"
+        case .debug: return "FinSense-Debug"
+        case .release: return "FinSense"
         }
     }
 

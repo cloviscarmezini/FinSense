@@ -1,11 +1,11 @@
 import XCTest
-@testable import FinancialControl
+@testable import FinSense
 
 @MainActor
-final class FinancialControlTests: XCTestCase {
+final class FinSenseTests: XCTestCase {
 
     private func makeIsolatedStore(seedStatement: Bool = false) -> FinancialDataStore {
-        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("FinancialControlTests_\(UUID().uuidString)")
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("FinSenseTests_\(UUID().uuidString)")
         return FinancialDataStore(customDirectory: tempDir, seedStatementOnFirstLaunch: seedStatement)
     }
 
@@ -1177,7 +1177,7 @@ final class FinancialControlTests: XCTestCase {
     func testAdvancedCategoryQuotasLifecycleScopesAndEnvironmentIsolation() throws {
         // 1. Isolamento de Ambientes (Debug vs. Release)
         let tempAppSupport = FileManager.default.temporaryDirectory
-            .appendingPathComponent("FinancialControlEnvTest-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("FinSenseEnvTest-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempAppSupport, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempAppSupport) }
 
@@ -1202,9 +1202,9 @@ final class FinancialControlTests: XCTestCase {
         )
 
         // Verifica que os diretórios e arquivos de banco são estritamente separados
-        XCTAssertEqual(releaseStore.storageDirectory.lastPathComponent, "FinancialControl")
+        XCTAssertEqual(releaseStore.storageDirectory.lastPathComponent, "FinSense")
         XCTAssertEqual(releaseStore.databaseFileURL.lastPathComponent, "financial_database.json")
-        XCTAssertEqual(debugStore.storageDirectory.lastPathComponent, "FinancialControl-Debug")
+        XCTAssertEqual(debugStore.storageDirectory.lastPathComponent, "FinSense-Debug")
         XCTAssertEqual(debugStore.databaseFileURL.lastPathComponent, "financial_database_debug.json")
         XCTAssertNotEqual(releaseStore.databaseFileURL, debugStore.databaseFileURL)
         // Debug inicia limpo sem ler nem modificar os dados de produção

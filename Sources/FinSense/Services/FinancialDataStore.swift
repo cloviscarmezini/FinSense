@@ -239,14 +239,14 @@ public final class FinancialDataStore: ObservableObject {
             let appSupport = baseAppSupportDirectory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             switch environment {
             case .release:
-                // Produção (Release): mantém exatamente ~/Library/Application Support/FinancialControl/financial_database.json
-                let prodDir = appSupport.appendingPathComponent("FinancialControl", isDirectory: true)
+                // Produção (Release): ~/Library/Application Support/FinSense/financial_database.json
+                let prodDir = appSupport.appendingPathComponent("FinSense", isDirectory: true)
                 self.storageDirectory = prodDir
                 self.databaseFileURL = prodDir.appendingPathComponent("financial_database.json")
                 self.legacyReleaseDatabaseFileURL = prodDir.appendingPathComponent("database.json")
             case .debug:
                 // Desenvolvimento (Debug): diretório e arquivo 100% isolados, sem tocar no banco de produção
-                let debugDir = appSupport.appendingPathComponent("FinancialControl-Debug", isDirectory: true)
+                let debugDir = appSupport.appendingPathComponent("FinSense-Debug", isDirectory: true)
                 self.storageDirectory = debugDir
                 self.databaseFileURL = debugDir.appendingPathComponent("financial_database_debug.json")
                 self.legacyReleaseDatabaseFileURL = nil

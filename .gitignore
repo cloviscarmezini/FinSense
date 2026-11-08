@@ -4,7 +4,7 @@ requirements.md
 /.swiftpm
 /DerivedData
 /*.xcodeproj
-/FinancialControl.app
+/FinSense.app
 /dist
 *.dmg
 *.zip
