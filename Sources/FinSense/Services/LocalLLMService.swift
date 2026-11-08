@@ -8,6 +8,8 @@ public final class LocalLLMService: ObservableObject {
     @Published public var lastErrorMessage: String? = nil
     @Published public var isProcessingChat: Bool = false
     @Published public var isAnalyzingStatement: Bool = false
+    @Published public var currentAgentStepMessage: String = ""
+    @Published public var shouldCloseChatSheet: Bool = false
 
     public static let suggestedModels: [(id: String, name: String, description: String, sizeEstimate: String)] = [
         (
@@ -343,7 +345,7 @@ public final class LocalLLMService: ObservableObject {
         return parsed
     }
 
-    // MARK: - 100% Finance-Focused Local AI Chat Engine with Full Database Access
+    // MARK: - 100% Finance-Focused Agentic Local AI Chat Engine with Full Database Access & RAG
 
     public func sendUserQuestion(_ question: String, store: FinancialDataStore) async {
         guard store.requireInstalledLLM(forFeature: "Chat Financeiro com IA Local", action: {}) else {
@@ -357,20 +359,38 @@ public final class LocalLLMService: ObservableObject {
         store.save()
 
         isProcessingChat = true
-        defer { isProcessingChat = false }
+        currentAgentStepMessage = "Inicializando motor agêntico e índice RAG da base local..."
+        defer {
+            isProcessingChat = false
+            currentAgentStepMessage = ""
+        }
 
-        try? await Task.sleep(nanoseconds: 280_000_000)
+        try? await Task.sleep(nanoseconds: 180_000_000)
 
-        let modelLabel = store.llmConfig.selectedModel?.displayName ?? "LLM Financeira Local (macOS)"
-        let responseText = Self.generateFinancialResponse(for: trimmed, store: store, modelLabel: modelLabel)
+        let modelLabel = store.llmConfig.selectedModel?.displayName ?? "Agente Financeiro Local (macOS)"
+        let agentOutput = AgenticFinancialEngine.runAgentLoop(
+            prompt: trimmed,
+            store: store,
+            modelLabel: modelLabel,
+            onStepUpdate: { [weak self] stepText in
+                self?.currentAgentStepMessage = stepText
+            }
+        )
 
         let assistantMsg = ChatMessage(
             role: .assistant,
-            content: responseText,
-            modelUsed: modelLabel
+            content: agentOutput.responseMarkdown,
+            modelUsed: modelLabel,
+            agentSteps: agentOutput.executedSteps,
+            suggestedFollowUps: agentOutput.suggestedFollowUps,
+            shouldCloseChat: agentOutput.shouldCloseChat
         )
         store.chatHistory.append(assistantMsg)
         store.save()
+
+        if agentOutput.shouldCloseChat {
+            shouldCloseChatSheet = true
+        }
     }
 
     public static func generateFinancialResponse(
@@ -378,69 +398,112 @@ public final class LocalLLMService: ObservableObject {
         store: FinancialDataStore,
         modelLabel: String
     ) -> String {
-        let lower = prompt.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+        let output = AgenticFinancialEngine.runAgentLoop(
+            prompt: prompt,
+            store: store,
+            modelLabel: modelLabel
+        )
+        return output.responseMarkdown
+    }
 
-        // 1. Guardrail: Chat é 100% focado em dados financeiros
-        let nonFinancialKeywords = ["receita de bolo", "receita culinaria", "futebol", "piada", "poema", "clima", "previsao do tempo", "filme", " novela "]
-        let financialSignalKeywords = [
-            "analis", "dado", "saldo", "despesa", "receita", "gasto", "gastar", "divida", "emprestimo",
-            "financiamento", "investimento", "projecao", "debito", "futuro", "mes", "ano", "conta",
-            "cartao", "mercado pago", "itau", "santander", "nubank", "categoria", "quitar", "pagar",
-            "amortiza", "cofrinho", "cdb", "extrato", "pix", "boleto", "resumo", "quanto", "quando",
-            "01/", "2025", "2026", "2027", "r$", "dinheiro", "patrimonio", "economia", "sobra",
-            "reserv", "provis", "teto", "envelope", "orcamento", "gasolina", "combustivel", "lanche", "lazer"
-        ]
-        if nonFinancialKeywords.contains(where: { lower.contains($0) }) &&
-           !financialSignalKeywords.contains(where: { lower.contains($0) }) {
-            return """
-            Sou um assistente **100% focado em análise financeira pessoal** conectado à sua base de dados local.
-            Não respondo assuntos fora do escopo financeiro.
+    // MARK: - Agent Tool Adapters (Preserving Conversational State & Follow-Ups)
 
-            Você pode me perguntar coisas como:
-            - *"Reserve R$ 500 para gasolina este mês"*
-            - *"Quanto ainda posso gastar com lanches em novembro?"*
-            - *"Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro"*
-            - *"Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida Cartão Mercado Pago?"*
-            """
+    public static func handleProvisionOrQuotaAgentTool(
+        prompt: String,
+        normalizedPrompt: String,
+        store: FinancialDataStore,
+        memory: inout AgentSessionMemory,
+        recordStep: (String) -> Void
+    ) -> (markdown: String, followUps: [String])? {
+        if let provResp = handleProvisionIntentIfApplicable(prompt: prompt, normalizedPrompt: normalizedPrompt, store: store) {
+            recordStep("⚙️ Executando Tool: `manage_and_query_provisions_and_quotas` (Envelopes Dinâmicos e Tetos do Mês)")
+            memory.activeTopic = .provisionsAndQuotas
+            memory.pendingQuestionKind = nil
+            return (
+                provResp,
+                [
+                    "Se eu continuar gastando no ritmo deste mês, terei quanto no final?",
+                    "Como estão todos os meus envelopes deste mês?",
+                    "Obrigado, pode encerrar"
+                ]
+            )
         }
+        return nil
+    }
 
-        // 1.5. Verifica comandos de configuração ou consulta de Provisão de Gastos Estimados (Orçamento por Envelopes Dinâmicos)
-        if let provisionResponse = handleProvisionIntentIfApplicable(prompt: prompt, normalizedPrompt: lower, store: store) {
-            return provisionResponse
+    public static func analyzeLoansAndFinancingsAgentTool(
+        prompt: String,
+        normalizedPrompt: String,
+        store: FinancialDataStore,
+        memory: inout AgentSessionMemory
+    ) -> (markdown: String, followUps: [String]) {
+        memory.activeTopic = .contractActionPlan
+        let md = analyzeLoansAndFinancings(prompt: prompt, normalizedPrompt: normalizedPrompt, store: store)
+        if md.localizedCaseInsensitiveContains("Qual financiamento você deseja analisar") {
+            memory.pendingQuestionKind = .selectContract
+            memory.candidateContractIds = store.activeContracts(for: .financing).map(\.id)
+            let followUps = store.activeContracts(for: .financing).prefix(3).map { "Analisar \($0.name)" } + ["Obrigado, pode encerrar"]
+            return (md, followUps)
+        } else if md.localizedCaseInsensitiveContains("Qual empréstimo você deseja analisar") || md.localizedCaseInsensitiveContains("Qual contrato") {
+            memory.pendingQuestionKind = .selectContract
+            memory.candidateContractIds = store.activeContracts(for: .loan).map(\.id)
+            let followUps = store.activeContracts(for: .loan).prefix(3).map { "Analisar \($0.name)" } + ["Obrigado, pode encerrar"]
+            return (md, followUps)
+        } else {
+            memory.pendingQuestionKind = nil
+            return (
+                md,
+                [
+                    "Se eu continuar gastando no ritmo deste mês, terei quanto no final?",
+                    "Quais são minhas dívidas em aberto?",
+                    "Obrigado, pode encerrar"
+                ]
+            )
         }
+    }
 
-        // 2. Verifica se a pergunta é sobre Empréstimos ou Financiamentos (ex: plano de ação para quitar financiamento imobiliário / consignado)
-        let mentionsContractKeywords = lower.contains("financiamento") ||
-                                       lower.contains("imobiliario") ||
-                                       lower.contains("imobilidario") ||
-                                       lower.contains("habitacao") ||
-                                       lower.contains("emprestimo") ||
-                                       lower.contains("consignado") ||
-                                       lower.contains("amortiza")
-        let matchablePrompt = normalizeForMatching(prompt)
-        let matchesSpecificContract = (store.activeContracts(for: .loan) + store.activeContracts(for: .financing)).contains { contract in
-            let normName = normalizeForMatching(contract.name)
-            if !normName.isEmpty && matchablePrompt.contains(normName) { return true }
-            if let num = contract.contractNumber, !num.isEmpty, matchablePrompt.contains(normalizeForMatching(num)) { return true }
-            return false
+    public static func analyzeDebtPayoffAgentTool(
+        prompt: String,
+        normalizedPrompt: String,
+        store: FinancialDataStore,
+        memory: inout AgentSessionMemory
+    ) -> (markdown: String, followUps: [String]) {
+        memory.activeTopic = .debtPayoff
+        let md = analyzeDebtPayoffTimeline(prompt: prompt, normalizedPrompt: normalizedPrompt, store: store)
+        if md.localizedCaseInsensitiveContains("Não identifiquei exatamente qual dívida") {
+            memory.pendingQuestionKind = .selectDebt
+            memory.candidateDebtIds = store.activeDebts.map(\.id)
+            let followUps = store.activeDebts.prefix(3).map { "Em quanto tempo devo pagar a dívida \($0.name)?" } + ["Obrigado, pode encerrar"]
+            return (md, followUps)
+        } else {
+            memory.pendingQuestionKind = nil
+            return (
+                md,
+                [
+                    "Se eu continuar gastando no ritmo deste mês, terei quanto no final?",
+                    "Monte um plano de ação para quitar meu financiamento",
+                    "Obrigado, pode encerrar"
+                ]
+            )
         }
+    }
 
-        if mentionsContractKeywords || matchesSpecificContract {
-            return analyzeLoansAndFinancings(prompt: prompt, normalizedPrompt: lower, store: store)
-        }
-
-        // 3. Verifica se a pergunta é sobre em quanto tempo pagar uma dívida específica (ex: "Cartão Mercado Pago", "Cartão de crédito Sam's")
-        if lower.contains("divida") || lower.contains("mercado pago") || (lower.contains("quanto tempo") && lower.contains("pagar")) || lower.contains("quitar") {
-            return analyzeDebtPayoffTimeline(prompt: prompt, normalizedPrompt: lower, store: store)
-        }
-
-        // 4. Verifica se a pergunta envolve análise de período (ex: 01/01/2026 até 01/12/2026) ou projeção de débito no futuro
-        if lower.contains("projecao") || lower.contains("debito") || lower.contains("futuro") || lower.contains("fututo") || lower.contains("ate") || extractDateRange(from: prompt) != nil {
-            return analyzePeriodAndOverdraftProjection(prompt: prompt, store: store)
-        }
-
-        // 5. Resposta analítica geral completa sobre a base de dados atual
-        return generateComprehensiveDatabaseOverview(store: store)
+    public static func analyzePeriodAndOverdraftAgentTool(
+        prompt: String,
+        store: FinancialDataStore,
+        memory: inout AgentSessionMemory
+    ) -> (markdown: String, followUps: [String]) {
+        memory.activeTopic = .periodOverdraftProjection
+        memory.pendingQuestionKind = nil
+        let md = analyzePeriodAndOverdraftProjection(prompt: prompt, store: store)
+        return (
+            md,
+            [
+                "Se eu continuar gastando no ritmo deste mês, terei quanto no final?",
+                "Quais contas ainda faltam pagar neste mês?",
+                "Obrigado, pode encerrar"
+            ]
+        )
     }
 
     private static func normalizeForMatching(_ text: String) -> String {
@@ -453,7 +516,7 @@ public final class LocalLLMService: ObservableObject {
 
     // MARK: - Specialized Analysis 1: Debt Payoff Timeline ("Cartão Mercado Pago", "Cartão de crédito Sam's", etc.)
 
-    private static func analyzeDebtPayoffTimeline(
+    public static func analyzeDebtPayoffTimeline(
         prompt: String,
         normalizedPrompt: String,
         store: FinancialDataStore
@@ -1231,7 +1294,7 @@ public final class LocalLLMService: ObservableObject {
         """
     }
 
-    private static func buildContractPayoffActionPlan(
+    static func buildContractPayoffActionPlan(
         for contract: CreditContract,
         store: FinancialDataStore
     ) -> String {
@@ -1417,7 +1480,7 @@ public final class LocalLLMService: ObservableObject {
         """
     }
 
-    private static func generateComprehensiveDatabaseOverview(store: FinancialDataStore) -> String {
+    static func generateComprehensiveDatabaseOverview(store: FinancialDataStore) -> String {
         let debtSummary = store.buildComprehensiveDebtSummary()
         let topExpenses = store.categoryBreakdown(for: store.selectedMonth, type: .expense).prefix(5)
         let topList = topExpenses.isEmpty
@@ -1610,7 +1673,7 @@ public final class LocalLLMService: ObservableObject {
         return nil
     }
 
-    private static func extractFirstCurrencyAmount(from text: String) -> Double? {
+    static func extractFirstCurrencyAmount(from text: String) -> Double? {
         let pattern = #"(?:r\$\s*)?(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:[.,]\d{1,2})?)"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return nil
@@ -1726,7 +1789,7 @@ public final class LocalLLMService: ObservableObject {
         return nil
     }
 
-    private static func extractDateRange(from text: String) -> (start: Date, end: Date)? {
+    static func extractDateRange(from text: String) -> (start: Date, end: Date)? {
         let pattern = #"(\d{2}/\d{2}/\d{4}).*?(\d{2}/\d{2}/\d{4})"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
             return nil

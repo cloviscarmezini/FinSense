@@ -2121,4 +2121,206 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(reSkipped, 2)
         XCTAssertEqual(jsonStore.transactions.count, 2)
     }
+
+    // MARK: - Testes do Motor Agêntico e RAG Financeiro
+
+    func testAgenticSpendingPaceAndMonthEndProjection() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente Principal", initialBalance: 3500.0)
+        let catAlim = CategoryItem(name: "Alimentação & Delivery", type: .expense, iconSymbol: "fork.knife", colorHex: "#FF5722")
+        let catComb = CategoryItem(name: "Combustível", type: .expense, iconSymbol: "car.fill", colorHex: "#4CAF50")
+        let catRent = CategoryItem(name: "Moradia & Aluguel", type: .expense, iconSymbol: "house.fill", colorHex: "#2196F3")
+        let catInv = CategoryItem(name: "Aplicações & Reservas", type: .expense, iconSymbol: "chart.line.uptrend.xyaxis", colorHex: "#9C27B0")
+
+        store.accounts = [acc]
+        store.categories = [catAlim, catComb, catRent, catInv]
+
+        let cal = Calendar.current
+        let now = Date()
+        let startOfMonth = cal.date(from: cal.dateComponents([.year, .month], from: now))!
+
+        // Gasto diário variável pago (Alimentação R$ 300)
+        let t1 = FinancialTransaction(
+            name: "Supermercado Semanal",
+            amount: 300.0,
+            date: startOfMonth,
+            type: .expense,
+            isPaid: true,
+            categoryId: catAlim.id,
+            accountId: acc.id
+        )
+        // Gasto diário variável pago (Combustível R$ 200)
+        let t2 = FinancialTransaction(
+            name: "Gasolina Posto Shell",
+            amount: 200.0,
+            date: startOfMonth,
+            type: .expense,
+            isPaid: true,
+            categoryId: catComb.id,
+            accountId: acc.id
+        )
+        // Aplicação em investimento (reserva de capital, não é queima/consumo diário)
+        let t3 = FinancialTransaction(
+            name: "Aporte Tesouro Direto Selic",
+            amount: 800.0,
+            date: startOfMonth,
+            type: .expense,
+            isPaid: true,
+            categoryId: catInv.id,
+            accountId: acc.id
+        )
+        // Despesa fixa agendada pendente para o final do mês (Aluguel R$ 1.200)
+        let t4 = FinancialTransaction(
+            name: "Aluguel Mensal",
+            amount: 1200.0,
+            date: cal.date(byAdding: .day, value: 20, to: startOfMonth)!,
+            type: .expense,
+            isPaid: false,
+            categoryId: catRent.id,
+            accountId: acc.id
+        )
+
+        store.transactions = [t1, t2, t3, t4]
+
+        // Cria provisão dinâmica (envelope) para alimentação
+        let comps = cal.dateComponents([.year, .month], from: startOfMonth)
+        let provision = CategoryProvision(
+            categoryId: catAlim.id,
+            year: comps.year ?? 2026,
+            month: comps.month ?? 11,
+            estimatedAmount: 500.0
+        )
+        store.provisions = [provision]
+
+        // Pergunta exata do usuário
+        let prompt = "Se eu continuar gastando no ritmo que eu gastei neste mês, ao final do mês terei quanto?"
+        let output = AgenticFinancialEngine.runAgentLoop(prompt: prompt, store: store, modelLabel: "Qwen2.5-3B-Local")
+
+        // Validações
+        XCTAssertFalse(output.responseMarkdown.contains("## Panorama Completo da sua Base Financeira"), "Não deve retornar o overview genérico anterior")
+        XCTAssertTrue(output.responseMarkdown.contains("Projeção de Ritmo de Gastos e Fechamento do Mês") || output.responseMarkdown.contains("Ritmo Diário"), "Deve conter o relatório especializado de ritmo e burn rate")
+        XCTAssertTrue(output.responseMarkdown.contains("Cenário 1") || output.responseMarkdown.contains("Ritmo"), "Deve apresentar cenários de fechamento")
+        XCTAssertFalse(output.executedSteps.isEmpty, "Deve registrar as etapas de raciocínio e execução de ferramentas do agente")
+        XCTAssertNotNil(output.suggestedFollowUps, "Deve fornecer perguntas e sugestões para continuidade do diálogo")
+        XCTAssertFalse(output.suggestedFollowUps.isEmpty)
+        XCTAssertFalse(output.shouldCloseChat, "Não deve encerrar a sessão em pergunta de análise")
+    }
+
+    func testAgenticMultiTurnLoopAndContractClarification() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Principal", initialBalance: 10000.0)
+        store.accounts = [acc]
+
+        _ = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Imobiliário Caixa",
+            financingSubtype: .imovel,
+            amortizationSystem: .sac,
+            totalContractedAmount: 350000.0,
+            outstandingBalance: 320000.0,
+            installmentAmount: 2800.0,
+            billingDay: 10,
+            totalInstallments: 360,
+            monthlyInterestRate: 0.75,
+            startDate: Date(),
+            accountId: acc.id
+        )
+
+        _ = store.createCreditContract(
+            kind: .loan,
+            name: "Empréstimo Santander",
+            loanSubtype: .pessoal,
+            amortizationSystem: .price,
+            totalContractedAmount: 50000.0,
+            outstandingBalance: 38000.0,
+            installmentAmount: 1650.0,
+            billingDay: 15,
+            totalInstallments: 48,
+            monthlyInterestRate: 1.9,
+            startDate: Date(),
+            accountId: acc.id
+        )
+
+        AgenticFinancialEngine.resetMemory(for: store)
+
+        // Turno 1: Usuário pergunta sobre contrato genericamente
+        let turn1 = AgenticFinancialEngine.runAgentLoop(
+            prompt: "Em quanto tempo consigo quitar meu contrato?",
+            store: store,
+            modelLabel: "Qwen2.5-3B-Local"
+        )
+
+        XCTAssertTrue(turn1.responseMarkdown.contains("2 empréstimos e financiamentos ativos") || turn1.responseMarkdown.contains("Qual contrato"), "Agente deve notar a ambiguidade e pedir esclarecimento")
+        let memAfterTurn1 = AgenticFinancialEngine.memory(for: store)
+        XCTAssertEqual(memAfterTurn1.pendingQuestionKind, .selectContract)
+
+        // Turno 2: Usuário responde especificando o Santander
+        let turn2 = AgenticFinancialEngine.runAgentLoop(
+            prompt: "O empréstimo Santander",
+            store: store,
+            modelLabel: "Qwen2.5-3B-Local"
+        )
+
+        XCTAssertTrue(turn2.responseMarkdown.contains("Santander") || turn2.responseMarkdown.contains("Plano de Ação"), "Agente deve resolver a continuidade multi-turn e analisar o contrato Santander")
+        let memAfterTurn2 = AgenticFinancialEngine.memory(for: store)
+        XCTAssertNil(memAfterTurn2.pendingQuestionKind, "A pendência de esclarecimento deve ter sido resolvida")
+    }
+
+    func testAgenticConversationClosingIntent() {
+        let store = makeIsolatedStore(seedStatement: false)
+        AgenticFinancialEngine.resetMemory(for: store)
+
+        let output = AgenticFinancialEngine.runAgentLoop(
+            prompt: "Muito obrigado pelas projeções, era só isso, pode encerrar o chat por hoje!",
+            store: store,
+            modelLabel: "Qwen2.5-3B-Local"
+        )
+
+        XCTAssertTrue(output.shouldCloseChat, "Deve sinalizar fechamento do chat")
+        XCTAssertTrue(output.responseMarkdown.contains("Encerrando") || output.responseMarkdown.contains("concluído") || output.responseMarkdown.contains("Fechar") || output.responseMarkdown.contains("disposição"), "Deve conter mensagem de despedida cordial")
+    }
+
+    func testFinancialRAGHybridIndexingAndRetrieval() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Banco Nubank Principal", initialBalance: 2500.0)
+        let cat = CategoryItem(name: "Combustível e Posto", type: .expense, iconSymbol: "fuelpump.fill", colorHex: "#FF9800")
+        store.accounts = [acc]
+        store.categories = [cat]
+
+        let t = FinancialTransaction(
+            name: "Abastecimento Posto Ipiranga",
+            amount: 185.50,
+            date: Date(),
+            type: .expense,
+            isPaid: true,
+            categoryId: cat.id,
+            accountId: acc.id
+        )
+        store.transactions = [t]
+
+        let debt = DebtItem(
+            name: "Dívida Cartão Mercado Pago",
+            originalAmount: 3200.0
+        )
+        store.debts = [debt]
+
+        let rag = FinancialRAGIndex(store: store)
+        rag.rebuildIndex(from: store)
+
+        XCTAssertFalse(rag.documents.isEmpty, "O índice RAG deve indexar contas, categorias, transações e dívidas")
+
+        let searchPosto = rag.search(query: "abastecimento no posto combustível", topK: 3)
+        XCTAssertFalse(searchPosto.isEmpty)
+        XCTAssertTrue(searchPosto.first?.document.title.contains("Abastecimento") == true || searchPosto.first?.document.title.contains("Combustível") == true)
+
+        let searchDivida = rag.search(query: "quitar mercado pago pendente", topK: 3)
+        XCTAssertFalse(searchDivida.isEmpty)
+        XCTAssertTrue(searchDivida.first?.document.title.contains("Mercado Pago") == true)
+    }
 }

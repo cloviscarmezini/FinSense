@@ -7,8 +7,10 @@ public struct AIChatSheetView: View {
 
     @State private var inputPrompt: String = ""
     @State private var showClearHistoryConfirmation: Bool = false
+    @State private var expandedAgentSteps: Set<UUID> = []
 
     private let suggestedPrompts: [String] = [
+        "Se eu continuar gastando no ritmo que eu gastei neste mês, ao final do mês terei quanto?",
         "Reserve R$ 500 para gasolina este mês",
         "Quanto ainda posso gastar com lanches em novembro?",
         "Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro",
@@ -112,9 +114,10 @@ public struct AIChatSheetView: View {
                             HStack(spacing: 8) {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("Analisando base de dados financeira...")
+                                Text(llmService.currentAgentStepMessage.isEmpty ? "Analisando base de dados financeira..." : llmService.currentAgentStepMessage)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(2)
                             }
                             .padding(10)
                         }
@@ -156,6 +159,13 @@ public struct AIChatSheetView: View {
         }
         .padding(22)
         .frame(width: 820, height: 640)
+        .onChange(of: llmService.shouldCloseChatSheet) { _, shouldClose in
+            if shouldClose {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    dismiss()
+                }
+            }
+        }
         .alert("Confirmar Limpeza do Histórico", isPresented: $showClearHistoryConfirmation) {
             Button("Limpar Histórico", role: .destructive) {
                 store.chatHistory = [
@@ -200,7 +210,7 @@ public struct AIChatSheetView: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 6) {
                         Image(systemName: "cpu.fill")
                             .font(.caption)
@@ -209,6 +219,46 @@ public struct AIChatSheetView: View {
                             .font(.caption.bold())
                             .foregroundStyle(.secondary)
                     }
+
+                    if let steps = msg.agentSteps, !steps.isEmpty {
+                        DisclosureGroup(
+                            isExpanded: Binding(
+                                get: { expandedAgentSteps.contains(msg.id) },
+                                set: { isExp in
+                                    if isExp {
+                                        expandedAgentSteps.insert(msg.id)
+                                    } else {
+                                        expandedAgentSteps.remove(msg.id)
+                                    }
+                                }
+                            )
+                        ) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(steps, id: \.self) { step in
+                                    Text(step)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.top, 4)
+                            .padding(.horizontal, 4)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "gearshape.arrow.triangle.2.circlepath")
+                                    .font(.caption2)
+                                Text("Etapas do Agente (\(steps.count))")
+                                    .font(.caption2.bold())
+                            }
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.primary.opacity(0.04))
+                        )
+                    }
+
                     Text(LocalizedStringKey(msg.content))
                         .font(.system(size: 13.5))
                         .textSelection(.enabled)
@@ -217,6 +267,53 @@ public struct AIChatSheetView: View {
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .fill(Color.primary.opacity(0.05))
                         )
+
+                    if let followUps = msg.suggestedFollowUps, !followUps.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Sugestões de continuação:")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 6) {
+                                    ForEach(followUps, id: \.self) { suggestion in
+                                        Button {
+                                            inputPrompt = suggestion
+                                            sendQuestion()
+                                        } label: {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "arrow.turn.down.right")
+                                                    .font(.caption2)
+                                                Text(suggestion)
+                                                    .font(.caption)
+                                                    .lineLimit(1)
+                                            }
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 5)
+                                            .background(
+                                                RoundedRectangle(cornerRadius: 12)
+                                                    .fill(Color(hex: "#6366F1").opacity(0.12))
+                                            )
+                                            .foregroundStyle(Color(hex: "#6366F1"))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+
+                    if msg.shouldCloseChat == true {
+                        HStack(spacing: 5) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                            Text("Conversa concluída. A janela pode ser fechada.")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 2)
+                    }
                 }
                 Spacer(minLength: 40)
             }

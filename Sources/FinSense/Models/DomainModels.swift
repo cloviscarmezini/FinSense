@@ -1001,19 +1001,28 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
     public var content: String
     public var timestamp: Date
     public var modelUsed: String?
+    public var agentSteps: [String]?
+    public var suggestedFollowUps: [String]?
+    public var shouldCloseChat: Bool?
 
     public init(
         id: UUID = UUID(),
         role: ChatMessageRole,
         content: String,
         timestamp: Date = Date(),
-        modelUsed: String? = nil
+        modelUsed: String? = nil,
+        agentSteps: [String]? = nil,
+        suggestedFollowUps: [String]? = nil,
+        shouldCloseChat: Bool? = nil
     ) {
         self.id = id
         self.role = role
         self.content = content
         self.timestamp = timestamp
         self.modelUsed = modelUsed
+        self.agentSteps = agentSteps
+        self.suggestedFollowUps = suggestedFollowUps
+        self.shouldCloseChat = shouldCloseChat
     }
 }
 
