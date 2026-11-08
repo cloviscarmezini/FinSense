@@ -632,6 +632,22 @@ public struct AgentSessionMemory {
     public var lastIntentKind: FinancialIntentKind? = nil
 
     public init() {}
+
+    public mutating func resetTopicMemory() {
+        activeTopic = nil
+        pendingQuestionKind = nil
+        candidateContractIds = []
+        candidateDebtIds = []
+        lastCategoryId = nil
+        lastAccountId = nil
+        lastDailyPaceAmount = nil
+        lastMentionedCategoryId = nil
+        lastMentionedCategoryName = nil
+        lastMentionedContractId = nil
+        lastMentionedDebtId = nil
+        lastMentionedMonth = nil
+        lastMentionedYear = nil
+    }
 }
 
 public struct AgentExecutionOutput {
@@ -670,11 +686,31 @@ public enum FinancialIntentKind: String, Codable, Hashable {
     case nonFinancial = "Fora do Escopo Financeiro"
 }
 
+public enum ConversationContextMode: Codable, Hashable {
+    case newTopic(description: String)
+    case followUp(topic: FinancialIntentKind, entityName: String?)
+    case replyToAgentClarification(questionKind: AgentPendingQuestionKind)
+
+    public var label: String {
+        switch self {
+        case .newTopic(let desc):
+            return "Novo Tópico (\(desc))"
+        case .followUp(let topic, let entity):
+            let entityStr = entity.map { ": \($0)" } ?? ""
+            return "Continuação/Follow-Up (\(topic.rawValue)\(entityStr))"
+        case .replyToAgentClarification(let qKind):
+            return "Resposta à Pergunta do Agente (\(qKind.rawValue))"
+        }
+    }
+}
+
 public struct QueryAnalysisBriefing {
     public let originalPrompt: String
     public let normalizedPrompt: String
     public let intentKind: FinancialIntentKind
     public let expectedLength: ExpectedResponseLength
+    public let contextMode: ConversationContextMode
+    public let previousTurnSummary: String?
     public let standardizedSearchQuery: String
     public let targetCategoryName: String?
     public let targetAccountName: String?
@@ -683,6 +719,38 @@ public struct QueryAnalysisBriefing {
     public let numericParameters: [Double]
     public let transactionTypeFilter: TransactionType?
     public let tone: String
+
+    public init(
+        originalPrompt: String,
+        normalizedPrompt: String,
+        intentKind: FinancialIntentKind,
+        expectedLength: ExpectedResponseLength,
+        contextMode: ConversationContextMode = .newTopic(description: "Novo tópico financeiro"),
+        previousTurnSummary: String? = nil,
+        standardizedSearchQuery: String,
+        targetCategoryName: String? = nil,
+        targetAccountName: String? = nil,
+        targetDateRange: (start: Date, end: Date)? = nil,
+        targetMonth: Date,
+        numericParameters: [Double] = [],
+        transactionTypeFilter: TransactionType? = nil,
+        tone: String
+    ) {
+        self.originalPrompt = originalPrompt
+        self.normalizedPrompt = normalizedPrompt
+        self.intentKind = intentKind
+        self.expectedLength = expectedLength
+        self.contextMode = contextMode
+        self.previousTurnSummary = previousTurnSummary
+        self.standardizedSearchQuery = standardizedSearchQuery
+        self.targetCategoryName = targetCategoryName
+        self.targetAccountName = targetAccountName
+        self.targetDateRange = targetDateRange
+        self.targetMonth = targetMonth
+        self.numericParameters = numericParameters
+        self.transactionTypeFilter = transactionTypeFilter
+        self.tone = tone
+    }
 }
 
 public struct TransactionFactDetail: Hashable {
@@ -797,9 +865,9 @@ public final class AgenticFinancialEngine {
         mem.loopTurnCount += 1
 
         // =========================================================================
-        // AGENTE 1: ANALISADOR DE INTENÇÃO, PERFIL E ESTRUTURAÇÃO DA QUERY
-        // Interpreta a pergunta inicial, identifica humor/teor e determina a
-        // extensão esperada (.concise vs .moderate vs .analytical) para orientar o RAG.
+        // AGENTE 1: ANALISADOR FIXO DE INTENÇÃO, PERFIL E CONTEXTO CONVERSACIONAL
+        // Avalia o tom, o contexto (novo tópico vs continuação/resposta) e determina
+        // a extensão esperada (.concise vs .moderate vs .analytical) para orientar o RAG.
         // =========================================================================
         let briefing = analyzeQueryIntentAndProfile(
             prompt: cleanPrompt,
@@ -807,7 +875,12 @@ public final class AgenticFinancialEngine {
             store: store,
             memory: mem
         )
-        recordStep("🤖 Agente 1 (Intenção & Perfil): Identificada intenção `\(briefing.intentKind.rawValue)` • Perfil: `\(briefing.expectedLength.rawValue)` • Tom: `\(briefing.tone)`")
+        recordStep("🤖 Agente 1 (Intenção & Contexto): Modo: `\(briefing.contextMode.label)` • Intenção: `\(briefing.intentKind.rawValue)` • Perfil: `\(briefing.expectedLength.rawValue)` • Tom: `\(briefing.tone)`")
+
+        // Caso seja novo tópico, isola o contexto e reseta travas/tópicos pendentes de turnos anteriores
+        if case .newTopic = briefing.contextMode {
+            mem.resetTopicMemory()
+        }
 
         // 0. Caso seja intenção explícita de encerramento do chat pelo usuário
         if briefing.intentKind == .conversationClosing {
@@ -831,28 +904,30 @@ public final class AgenticFinancialEngine {
             recordStep("🔍 RAG recuperou \(ragHits.count) registros relevantes (\(hitTypes))")
         }
 
-        // 2. Resolução de Continuidade Multi-Turn (Caso o usuário esteja respondendo a uma pergunta anterior do agente!)
-        if let followUpOutput = resolveMultiTurnContinuationIfApplicable(
-            prompt: cleanPrompt,
-            normPrompt: normPrompt,
-            memory: &mem,
-            store: store,
-            ragIndex: ragIndex,
-            modelLabel: modelLabel,
-            recordStep: recordStep
-        ) {
-            saveMemory(mem, for: store)
-            return followUpOutput
-        }
-
         // =========================================================================
-        // LOOP COOPERATIVO: AGENTE 2 (PLANEJADOR & BUSCA) <-> AGENTE 3 (CRÍTICO VALIDADOR)
-        // O Agente 2 executa a busca focada. O Agente 3 valida se o resultado é adequado
-        // ao teor e extensão da pergunta. Se inadequado, aponta o problema e solicita ajuste.
+        // LOOP COOPERATIVO: AGENTE 2 (PLANEJADOR & BUSCA) <-> AGENTE 3 (AGENTE JUIZ)
+        // O Agente 2 executa a ação/busca direcionada. O Agente Juiz (Agente 3)
+        // valida se o resultado é adequado, alinhado à pergunta atual e livre de
+        // vazamentos de contexto da pergunta ou turno anterior. Se inadequado, rejeita
+        // e solicita correção imediata.
         // =========================================================================
         var retryCount = 0
         var criticFeedback: String? = nil
         var approvedPayload: RetrievalExecutionPayload? = nil
+
+        let previousAssistantMessage: String? = {
+            if let last = store.chatHistory.last, last.role == .user, last.content == cleanPrompt {
+                return store.chatHistory.dropLast().last(where: { $0.role == .assistant })?.content
+            }
+            return store.chatHistory.last(where: { $0.role == .assistant })?.content
+        }()
+
+        let previousUserPrompt: String? = {
+            if let last = store.chatHistory.last, last.role == .user, last.content == cleanPrompt {
+                return store.chatHistory.dropLast().last(where: { $0.role == .user })?.content
+            }
+            return store.chatHistory.last(where: { $0.role == .user })?.content
+        }()
 
         while retryCount < 2 && approvedPayload == nil {
             let attemptLabel = retryCount > 0 ? " [Tentativa de Correção #\(retryCount + 1)]" : ""
@@ -870,20 +945,22 @@ public final class AgenticFinancialEngine {
                 recordStep: recordStep
             )
 
-            recordStep("⚖️ Agente 3 (Validador Crítico): Avaliando se os dados recuperados atendem especificamente à pergunta e ao tamanho `\(briefing.expectedLength.rawValue)`...")
+            recordStep("⚖️ Agente Juiz (Conformidade & Contexto): Avaliando alinhamento da resposta à pergunta atual e verificando isolamento de contexto anterior...")
 
-            let validation = validateRetrievalAgainstBriefing(
+            let validation = judgeRetrievalAgainstQuestionAndContext(
                 briefing: briefing,
                 payload: payload,
+                previousUserPrompt: previousUserPrompt,
+                previousAssistantResponse: previousAssistantMessage,
                 store: store
             )
 
             if validation.isValid {
                 approvedPayload = validation.approvedPayload
-                recordStep("✅ Agente 3 (Validador Crítico): Dados aprovados com sucesso. Output alinhado à pergunta do usuário.")
+                recordStep("✅ Agente 3 (Agente Juiz • Conformidade & Contexto): Dados aprovados com sucesso. Resposta validada e sem vazamento de contexto.")
             } else {
                 criticFeedback = validation.feedbackForPlanner
-                recordStep("⚠️ Agente 3 (Validador Crítico): Rejeitado – \(criticFeedback ?? "Ajustar parâmetros de busca"). Solicitando refinamento ao Agente 2...")
+                recordStep("⚠️ Agente Juiz (Conformidade & Contexto): Rejeitado – \(criticFeedback ?? "Ajustar parâmetros de busca"). Solicitando refinamento ao Agente 2...")
                 retryCount += 1
             }
         }
@@ -919,7 +996,7 @@ public final class AgenticFinancialEngine {
         return synthesized
     }
 
-    // MARK: - Agente 1: Analisador de Intenção, Perfil e Formatação da Query
+    // MARK: - Agente 1: Analisador Fixo de Intenção, Contexto e Perfil da Pergunta
 
     private static func analyzeQueryIntentAndProfile(
         prompt: String,
@@ -927,13 +1004,38 @@ public final class AgenticFinancialEngine {
         store: FinancialDataStore,
         memory: AgentSessionMemory
     ) -> QueryAnalysisBriefing {
-        // 1. Encerramento
+        let previousAssistantMessage: String? = {
+            if let last = store.chatHistory.last, last.role == .user, last.content == prompt {
+                return store.chatHistory.dropLast().last(where: { $0.role == .assistant })?.content
+            }
+            return store.chatHistory.last(where: { $0.role == .assistant })?.content
+        }()
+
+        let previousUserPrompt: String? = {
+            if let last = store.chatHistory.last, last.role == .user, last.content == prompt {
+                return store.chatHistory.dropLast().last(where: { $0.role == .user })?.content
+            }
+            return store.chatHistory.last(where: { $0.role == .user })?.content
+        }()
+
+        let previousTurnSummary: String? = {
+            guard let userQ = previousUserPrompt, !userQ.isEmpty else { return nil }
+            let shortUser = String(userQ.prefix(60))
+            let assistantSnippet = (previousAssistantMessage ?? "")
+                .replacingOccurrences(of: "\n", with: " ")
+                .prefix(80)
+            return "Turno anterior: Usuário perguntou '\(shortUser)' | Assistente respondeu: '\(assistantSnippet)...'"
+        }()
+
+        // 1. Encerramento explícito do diálogo
         if isConversationClosingIntent(normPrompt) {
             return QueryAnalysisBriefing(
                 originalPrompt: prompt,
                 normalizedPrompt: normPrompt,
                 intentKind: .conversationClosing,
                 expectedLength: .concise,
+                contextMode: .newTopic(description: "Encerramento do diálogo"),
+                previousTurnSummary: previousTurnSummary,
                 standardizedSearchQuery: "encerramento",
                 targetCategoryName: nil,
                 targetAccountName: nil,
@@ -945,13 +1047,15 @@ public final class AgenticFinancialEngine {
             )
         }
 
-        // 2. Não-financeiro
+        // 2. Não-financeiro (Guardrail)
         if isStrictlyNonFinancial(normPrompt) {
             return QueryAnalysisBriefing(
                 originalPrompt: prompt,
                 normalizedPrompt: normPrompt,
                 intentKind: .nonFinancial,
                 expectedLength: .concise,
+                contextMode: .newTopic(description: "Fora do escopo financeiro"),
+                previousTurnSummary: previousTurnSummary,
                 standardizedSearchQuery: "guardrail",
                 targetCategoryName: nil,
                 targetAccountName: nil,
@@ -963,72 +1067,11 @@ public final class AgenticFinancialEngine {
             )
         }
 
-        // 3. Última transação pontual (pergunta curta -> resposta curta)
-        if isLatestTransactionQuery(normPrompt) {
-            let filter: TransactionType?
-            if normPrompt.contains("gasto") || normPrompt.contains("despesa") || normPrompt.contains("compra") || normPrompt.contains("pagamento") {
-                filter = .expense
-            } else if normPrompt.contains("receita") || normPrompt.contains("entrada") || normPrompt.contains("salario") || normPrompt.contains("recebimento") {
-                filter = .income
-            } else {
-                filter = nil
-            }
+        // 3. Intenções independentes autônomas (NOVO TÓPICO explícito)
+        // Se a pergunta contiver sujeito e verbos próprios de uma intenção financeira,
+        // ela é SEMPRE um novo tópico, mesmo que mencione meses relativos ou termos temporais!
 
-            return QueryAnalysisBriefing(
-                originalPrompt: prompt,
-                normalizedPrompt: normPrompt,
-                intentKind: .latestTransaction,
-                expectedLength: .concise,
-                standardizedSearchQuery: "última transação recente lançamento",
-                targetCategoryName: nil,
-                targetAccountName: nil,
-                targetDateRange: nil,
-                targetMonth: store.selectedMonth,
-                numericParameters: [],
-                transactionTypeFilter: filter,
-                tone: "direto, amigável e conciso"
-            )
-        }
-
-        // 4. Lista de transações recentes (N últimas)
-        if isRecentTransactionsListQuery(normPrompt) {
-            let filter: TransactionType? = (normPrompt.contains("gasto") || normPrompt.contains("despesa")) ? .expense : nil
-            return QueryAnalysisBriefing(
-                originalPrompt: prompt,
-                normalizedPrompt: normPrompt,
-                intentKind: .recentTransactionsList,
-                expectedLength: .moderate,
-                standardizedSearchQuery: "transações recentes extrato lançamentos",
-                targetCategoryName: nil,
-                targetAccountName: nil,
-                targetDateRange: nil,
-                targetMonth: store.selectedMonth,
-                numericParameters: [],
-                transactionTypeFilter: filter,
-                tone: "direto e organizado"
-            )
-        }
-
-        // 5. Saldo imediato / Liquidez nas contas
-        if isBalanceQuery(normPrompt) {
-            return QueryAnalysisBriefing(
-                originalPrompt: prompt,
-                normalizedPrompt: normPrompt,
-                intentKind: .currentBalanceAndLiquidity,
-                expectedLength: .concise,
-                standardizedSearchQuery: "saldo contas bancárias liquidez disponível",
-                targetCategoryName: nil,
-                targetAccountName: nil,
-                targetDateRange: nil,
-                targetMonth: store.selectedMonth,
-                numericParameters: [],
-                transactionTypeFilter: nil,
-                tone: "direto e claro"
-            )
-        }
-
-        // 6. Parcelas de financiamentos e empréstimos do próximo mês / período especificado
-        // IMPORTANTE: Avaliado antes de contratos para não cair na seleção de amortização avulsa
+        // 3.1 Próximas parcelas de financiamentos e empréstimos
         if isUpcomingContractInstallmentsQuery(normPrompt) {
             let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: store.selectedMonth)
             return QueryAnalysisBriefing(
@@ -1036,6 +1079,8 @@ public final class AgenticFinancialEngine {
                 normalizedPrompt: normPrompt,
                 intentKind: .upcomingContractInstallments,
                 expectedLength: .moderate,
+                contextMode: .newTopic(description: "Próximas Parcelas de Financiamentos e Empréstimos"),
+                previousTurnSummary: previousTurnSummary,
                 standardizedSearchQuery: "parcelas financiamentos empréstimos contratos próximo mês vencimentos",
                 targetCategoryName: nil,
                 targetAccountName: nil,
@@ -1047,8 +1092,7 @@ public final class AgenticFinancialEngine {
             )
         }
 
-        // 7. Categoria em que mais gasta / Ranking de categorias
-        // IMPORTANTE: Avaliado antes de despesas por categoria genéricas
+        // 3.2 Categoria em que mais gasta / Ranking de categorias
         if isTopExpenseCategoriesQuery(normPrompt) {
             let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: store.selectedMonth)
             return QueryAnalysisBriefing(
@@ -1056,6 +1100,8 @@ public final class AgenticFinancialEngine {
                 normalizedPrompt: normPrompt,
                 intentKind: .topExpenseCategories,
                 expectedLength: .concise,
+                contextMode: .newTopic(description: "Ranking e Categoria Mais Gasta"),
+                previousTurnSummary: previousTurnSummary,
                 standardizedSearchQuery: "categoria que mais gasto maiores despesas ranking despesas",
                 targetCategoryName: nil,
                 targetAccountName: nil,
@@ -1067,7 +1113,7 @@ public final class AgenticFinancialEngine {
             )
         }
 
-        // 8. Ritmo de gastos diário (burn rate) & projeção de fim de mês
+        // 3.3 Ritmo de gastos diário (burn rate) & projeção de fim de mês
         if isSpendingPaceOrEndOfMonthBalanceQuery(normPrompt) {
             let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: store.selectedMonth)
             return QueryAnalysisBriefing(
@@ -1075,6 +1121,8 @@ public final class AgenticFinancialEngine {
                 normalizedPrompt: normPrompt,
                 intentKind: .spendingPaceAndProjection,
                 expectedLength: .analytical,
+                contextMode: .newTopic(description: "Ritmo de Gastos e Projeção de Fim de Mês"),
+                previousTurnSummary: previousTurnSummary,
                 standardizedSearchQuery: "ritmo de gastos média diária burn rate projeção fim do mês envelopes",
                 targetCategoryName: nil,
                 targetAccountName: nil,
@@ -1086,98 +1134,76 @@ public final class AgenticFinancialEngine {
             )
         }
 
-        // 7. Contratos, empréstimos e financiamentos
-        if isContractOrAmortizationQuery(prompt: prompt, normPrompt: normPrompt, store: store) {
+        // 3.4 Última transação pontual
+        if isLatestTransactionQuery(normPrompt) {
+            let filter: TransactionType?
+            if normPrompt.contains("gasto") || normPrompt.contains("despesa") || normPrompt.contains("compra") || normPrompt.contains("pagamento") {
+                filter = .expense
+            } else if normPrompt.contains("receita") || normPrompt.contains("entrada") || normPrompt.contains("salario") || normPrompt.contains("recebimento") {
+                filter = .income
+            } else {
+                filter = nil
+            }
             return QueryAnalysisBriefing(
                 originalPrompt: prompt,
                 normalizedPrompt: normPrompt,
-                intentKind: .loanOrFinancingSimulation,
-                expectedLength: .analytical,
-                standardizedSearchQuery: "empréstimos financiamentos contratos amortização quitação juros parcelas",
+                intentKind: .latestTransaction,
+                expectedLength: .concise,
+                contextMode: .newTopic(description: "Última Transação"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "última transação recente lançamento",
                 targetCategoryName: nil,
                 targetAccountName: nil,
                 targetDateRange: nil,
                 targetMonth: store.selectedMonth,
                 numericParameters: [],
-                transactionTypeFilter: nil,
-                tone: "consultivo e detalhado"
+                transactionTypeFilter: filter,
+                tone: "direto, amigável e conciso"
             )
         }
 
-        // 8. Dívidas em aberto e acordos
-        if isDebtPayoffOrNegotiationQuery(prompt: prompt, normPrompt: normPrompt, store: store) {
+        // 3.5 Lista de transações recentes
+        if isRecentTransactionsListQuery(normPrompt) {
+            let filter: TransactionType? = (normPrompt.contains("gasto") || normPrompt.contains("despesa")) ? .expense : nil
             return QueryAnalysisBriefing(
                 originalPrompt: prompt,
                 normalizedPrompt: normPrompt,
-                intentKind: .debtPayoffPlan,
-                expectedLength: .analytical,
-                standardizedSearchQuery: "dívidas em aberto acordos quitação cronograma seguro intra-mês",
-                targetCategoryName: nil,
-                targetAccountName: nil,
-                targetDateRange: nil,
-                targetMonth: store.selectedMonth,
-                numericParameters: [],
-                transactionTypeFilter: nil,
-                tone: "estratégico e cuidadoso"
-            )
-        }
-
-        // 9. Intervalo de datas / Débito futuro / Runway
-        if isPeriodOrOverdraftQuery(prompt: prompt, normPrompt: normPrompt) {
-            return QueryAnalysisBriefing(
-                originalPrompt: prompt,
-                normalizedPrompt: normPrompt,
-                intentKind: .periodOverdraftForecast,
-                expectedLength: .analytical,
-                standardizedSearchQuery: "período fluxo de caixa saldo futuro previsão de débito cheque especial",
-                targetCategoryName: nil,
-                targetAccountName: nil,
-                targetDateRange: LocalLLMService.extractDateRange(from: prompt),
-                targetMonth: store.selectedMonth,
-                numericParameters: [],
-                transactionTypeFilter: nil,
-                tone: "preventivo e analítico"
-            )
-        }
-
-        // 10. Previsões, Envelopes Dinâmicos e Cotas (ex: "Reserve R$ 500 para gasolina este mês", "Quanto ainda posso gastar...")
-        if isProvisionOrQuotaIntent(prompt: prompt, normPrompt: normPrompt) {
-            let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: store.selectedMonth)
-            return QueryAnalysisBriefing(
-                originalPrompt: prompt,
-                normalizedPrompt: normPrompt,
-                intentKind: .envelopeBudgetQuery,
+                intentKind: .recentTransactionsList,
                 expectedLength: .moderate,
-                standardizedSearchQuery: "previsões envelopes tetos de gastos cotas específicas",
+                contextMode: .newTopic(description: "Transações Recentes"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "transações recentes extrato lançamentos",
                 targetCategoryName: nil,
                 targetAccountName: nil,
                 targetDateRange: nil,
-                targetMonth: targetMonth,
+                targetMonth: store.selectedMonth,
                 numericParameters: [],
-                transactionTypeFilter: .expense,
-                tone: "organizado e orientador"
+                transactionTypeFilter: filter,
+                tone: "direto e organizado"
             )
         }
 
-        // 11. Simulador E se...
-        if isWhatIfSimulationQuery(normPrompt) {
+        // 3.6 Saldo imediato / Liquidez nas contas
+        if isBalanceQuery(normPrompt) {
             return QueryAnalysisBriefing(
                 originalPrompt: prompt,
                 normalizedPrompt: normPrompt,
-                intentKind: .whatIfSimulation,
-                expectedLength: .moderate,
-                standardizedSearchQuery: "simulação financeira impacto no caixa corte de gastos compras futuras",
+                intentKind: .currentBalanceAndLiquidity,
+                expectedLength: .concise,
+                contextMode: .newTopic(description: "Saldo e Liquidez"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "saldo contas bancárias liquidez disponível",
                 targetCategoryName: nil,
                 targetAccountName: nil,
                 targetDateRange: nil,
                 targetMonth: store.selectedMonth,
                 numericParameters: [],
                 transactionTypeFilter: nil,
-                tone: "simulador e consultivo"
+                tone: "direto e claro"
             )
         }
 
-        // 11. Contas a pagar / Boletos pendentes
+        // 3.7 Contas a pagar / Boletos pendentes
         if isPendingBillsQuery(normPrompt) {
             let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: store.selectedMonth)
             return QueryAnalysisBriefing(
@@ -1185,6 +1211,8 @@ public final class AgenticFinancialEngine {
                 normalizedPrompt: normPrompt,
                 intentKind: .pendingBillsQuery,
                 expectedLength: .moderate,
+                contextMode: .newTopic(description: "Contas e Boletos Pendentes"),
+                previousTurnSummary: previousTurnSummary,
                 standardizedSearchQuery: "contas pendentes boletos a vencer despesas não pagas",
                 targetCategoryName: nil,
                 targetAccountName: nil,
@@ -1196,7 +1224,245 @@ public final class AgenticFinancialEngine {
             )
         }
 
-        // 12. Despesas por categoria
+        // 3.8 Previsões, Envelopes Dinâmicos e Cotas
+        if isProvisionOrQuotaIntent(prompt: prompt, normPrompt: normPrompt) {
+            let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: store.selectedMonth)
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .envelopeBudgetQuery,
+                expectedLength: .moderate,
+                contextMode: .newTopic(description: "Envelopes e Tetos Orçamentários"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "previsões envelopes tetos de gastos cotas específicas",
+                targetCategoryName: nil,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: targetMonth,
+                numericParameters: [],
+                transactionTypeFilter: .expense,
+                tone: "organizado e orientador"
+            )
+        }
+
+        // 3.9 Simulador E se...
+        if isWhatIfSimulationQuery(normPrompt) {
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .whatIfSimulation,
+                expectedLength: .moderate,
+                contextMode: .newTopic(description: "Simulação de Cenários (E se...)"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "simulação financeira impacto no caixa corte de gastos compras futuras",
+                targetCategoryName: nil,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: store.selectedMonth,
+                numericParameters: [],
+                transactionTypeFilter: nil,
+                tone: "simulador e consultivo"
+            )
+        }
+
+        // 3.10 Contratos, empréstimos e financiamentos específicos
+        if isContractOrAmortizationQuery(prompt: prompt, normPrompt: normPrompt, store: store) {
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .loanOrFinancingSimulation,
+                expectedLength: .analytical,
+                contextMode: .newTopic(description: "Empréstimos e Financiamentos"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "empréstimos financiamentos contratos amortização quitação juros parcelas",
+                targetCategoryName: nil,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: store.selectedMonth,
+                numericParameters: [],
+                transactionTypeFilter: nil,
+                tone: "consultivo e detalhado"
+            )
+        }
+
+        // 3.11 Dívidas em aberto e acordos
+        if isDebtPayoffOrNegotiationQuery(prompt: prompt, normPrompt: normPrompt, store: store) {
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .debtPayoffPlan,
+                expectedLength: .analytical,
+                contextMode: .newTopic(description: "Quitação de Dívidas"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "dívidas em aberto acordos quitação cronograma seguro intra-mês",
+                targetCategoryName: nil,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: store.selectedMonth,
+                numericParameters: [],
+                transactionTypeFilter: nil,
+                tone: "estratégico e cuidadoso"
+            )
+        }
+
+        // 3.12 Intervalo de datas / Débito futuro / Runway
+        if isPeriodOrOverdraftQuery(prompt: prompt, normPrompt: normPrompt) {
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .periodOverdraftForecast,
+                expectedLength: .analytical,
+                contextMode: .newTopic(description: "Previsão de Período e Débito"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "período fluxo de caixa saldo futuro previsão de débito cheque especial",
+                targetCategoryName: nil,
+                targetAccountName: nil,
+                targetDateRange: LocalLLMService.extractDateRange(from: prompt),
+                targetMonth: store.selectedMonth,
+                numericParameters: [],
+                transactionTypeFilter: nil,
+                tone: "preventivo e analítico"
+            )
+        }
+
+        // 4. Casos de Continuidade / Resposta à pergunta do Agente (Multi-Turn)
+        // Quando a pergunta NÃO é uma intenção autônoma independente, avaliamos o contexto anterior:
+
+        // 4.1 Resposta à escolha de contrato anterior
+        if memory.pendingQuestionKind == .selectContract, !memory.candidateContractIds.isEmpty {
+            let candidates = memory.candidateContractIds.compactMap { id in store.contracts.first(where: { $0.id == id }) }
+            if matchCandidateContractFromReply(normPrompt: normPrompt, candidates: candidates) != nil && normPrompt.count <= 40 {
+                return QueryAnalysisBriefing(
+                    originalPrompt: prompt,
+                    normalizedPrompt: normPrompt,
+                    intentKind: .loanOrFinancingSimulation,
+                    expectedLength: .analytical,
+                    contextMode: .replyToAgentClarification(questionKind: .selectContract),
+                    previousTurnSummary: previousTurnSummary,
+                    standardizedSearchQuery: "amortização plano contrato",
+                    targetCategoryName: nil,
+                    targetAccountName: nil,
+                    targetDateRange: nil,
+                    targetMonth: store.selectedMonth,
+                    numericParameters: [],
+                    transactionTypeFilter: nil,
+                    tone: "prestativo e conclusivo"
+                )
+            }
+        }
+
+        // 4.2 Resposta à escolha de dívida anterior
+        if memory.pendingQuestionKind == .selectDebt, !memory.candidateDebtIds.isEmpty {
+            let candidates = memory.candidateDebtIds.compactMap { id in store.debts.first(where: { $0.id == id }) }
+            if matchCandidateDebtFromReply(normPrompt: normPrompt, candidates: candidates) != nil && normPrompt.count <= 40 {
+                return QueryAnalysisBriefing(
+                    originalPrompt: prompt,
+                    normalizedPrompt: normPrompt,
+                    intentKind: .debtPayoffPlan,
+                    expectedLength: .analytical,
+                    contextMode: .replyToAgentClarification(questionKind: .selectDebt),
+                    previousTurnSummary: previousTurnSummary,
+                    standardizedSearchQuery: "plano quitação dívida selecionada",
+                    targetCategoryName: nil,
+                    targetAccountName: nil,
+                    targetDateRange: nil,
+                    targetMonth: store.selectedMonth,
+                    numericParameters: [],
+                    transactionTypeFilter: nil,
+                    tone: "prestativo e estratégico"
+                )
+            }
+        }
+
+        // 4.3 Resposta afirmativa após análise de ritmo de gastos ("Sim", "Mostre", "Onde cortar")
+        if (memory.pendingQuestionKind == .selectFollowUpActionOnPace || memory.activeTopic == .spendingPaceAndMonthEnd) {
+            let affirmativeShortReplies = [
+                "sim", "quero", "pode mostrar", "mostre", "mostrar", "detalhe", "detalhar",
+                "quais foram", "onde cortar", "como economizar", "simule", "simular"
+            ]
+            if normPrompt.count <= 38 && affirmativeShortReplies.contains(where: { normPrompt.contains($0) }) {
+                return QueryAnalysisBriefing(
+                    originalPrompt: prompt,
+                    normalizedPrompt: normPrompt,
+                    intentKind: .spendingPaceAndProjection,
+                    expectedLength: .analytical,
+                    contextMode: .replyToAgentClarification(questionKind: .selectFollowUpActionOnPace),
+                    previousTurnSummary: previousTurnSummary,
+                    standardizedSearchQuery: "detalhamento ritmo corte de despesas",
+                    targetCategoryName: nil,
+                    targetAccountName: nil,
+                    targetDateRange: nil,
+                    targetMonth: memory.lastTargetMonth ?? store.selectedMonth,
+                    numericParameters: [],
+                    transactionTypeFilter: nil,
+                    tone: "consultivo e analítico"
+                )
+            }
+        }
+
+        // 4.4 Pergunta anafórica sobre contrato ("quanto falta para quitar o primeiro?", "qual o saldo devedor dele?")
+        if isAnaphoricContractPayoffFollowUp(normPrompt) {
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .loanOrFinancingSimulation,
+                expectedLength: .analytical,
+                contextMode: .followUp(topic: .loanOrFinancingSimulation, entityName: "contrato selecionado"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "quitação contrato valor presente saldo devedor",
+                targetCategoryName: nil,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: store.selectedMonth,
+                numericParameters: [],
+                transactionTypeFilter: nil,
+                tone: "consultivo e transparente"
+            )
+        }
+
+        // 4.5 Pergunta anafórica sobre categoria ("dessa categoria", "nela", "quanto gastei nela")
+        if isAnaphoricCategoryFollowUp(normPrompt), (memory.lastMentionedCategoryId != nil || memory.lastCategoryId != nil) {
+            let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: memory.lastTargetMonth ?? store.selectedMonth)
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .categoryExpenseQuery,
+                expectedLength: .moderate,
+                contextMode: .followUp(topic: .categoryExpenseQuery, entityName: memory.lastMentionedCategoryName),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "despesas categoria \(memory.lastMentionedCategoryName ?? "")",
+                targetCategoryName: memory.lastMentionedCategoryName,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: targetMonth,
+                numericParameters: [],
+                transactionTypeFilter: .expense,
+                tone: "prestativo e detalhado"
+            )
+        }
+
+        // 4.6 Mudança anafórica de período temporal ("e no mês passado?", "e em 2025?")
+        if isAnaphoricTimeShiftFollowUp(normPrompt), let lastIntent = memory.lastIntentKind {
+            let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: memory.lastTargetMonth ?? store.selectedMonth)
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: lastIntent,
+                expectedLength: .moderate,
+                contextMode: .followUp(topic: lastIntent, entityName: nil),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "continuidade período \(BRLFormatters.monthYear(targetMonth))",
+                targetCategoryName: memory.lastMentionedCategoryName,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: targetMonth,
+                numericParameters: [],
+                transactionTypeFilter: nil,
+                tone: "consultivo e direto"
+            )
+        }
+
+        // 5. Despesas por categoria específicas por nome
         if isTransactionsOrCategorySpecificQuery(normPrompt, store: store) {
             let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: store.selectedMonth)
             let matchedCat = store.categories.first { cat in
@@ -1208,6 +1474,8 @@ public final class AgenticFinancialEngine {
                 normalizedPrompt: normPrompt,
                 intentKind: .categoryExpenseQuery,
                 expectedLength: .moderate,
+                contextMode: .newTopic(description: "Despesas por Categoria"),
+                previousTurnSummary: previousTurnSummary,
                 standardizedSearchQuery: matchedCat != nil ? "despesas categoria \(matchedCat!.name)" : "despesas e transações",
                 targetCategoryName: matchedCat?.name,
                 targetAccountName: nil,
@@ -1219,7 +1487,7 @@ public final class AgenticFinancialEngine {
             )
         }
 
-        // 13. Panorama geral explícito (somente quando expressamente solicitado)
+        // 6. Panorama geral explícito (somente quando expressamente solicitado) ou fallback
         let isOverviewExplicit = normPrompt.contains("panorama") || normPrompt.contains("visao geral") ||
                                  normPrompt.contains("resumo geral") || normPrompt.contains("resumo completo") ||
                                  normPrompt.contains("resumo de tudo")
@@ -1228,6 +1496,8 @@ public final class AgenticFinancialEngine {
             normalizedPrompt: normPrompt,
             intentKind: .generalOverview,
             expectedLength: isOverviewExplicit ? .analytical : .moderate,
+            contextMode: .newTopic(description: "Visão Geral"),
+            previousTurnSummary: previousTurnSummary,
             standardizedSearchQuery: "panorama financeiro completo saldo patrimônio dívidas investimentos",
             targetCategoryName: nil,
             targetAccountName: nil,
@@ -1252,6 +1522,201 @@ public final class AgenticFinancialEngine {
         criticFeedback: String?,
         recordStep: (String) -> Void
     ) -> RetrievalExecutionPayload {
+        // Se o Agente Juiz solicitou correção específica, força o redirecionamento adequado
+        if let feedback = criticFeedback {
+            if feedback.contains("retrieveUpcomingContractInstallments") || briefing.intentKind == .upcomingContractInstallments {
+                return retrieveUpcomingContractInstallments(briefing: briefing, store: store, memory: &memory)
+            }
+            if feedback.contains("retrieveLatestTransaction") || briefing.intentKind == .latestTransaction {
+                return retrieveLatestTransaction(briefing: briefing, store: store)
+            }
+            if feedback.contains("retrieveTopExpenseCategories") || briefing.intentKind == .topExpenseCategories {
+                return retrieveTopExpenseCategories(briefing: briefing, store: store, memory: &memory)
+            }
+        }
+
+        // Resolução para respostas de esclarecimento à pergunta do agente (Multi-Turn)
+        if case .replyToAgentClarification(let qKind) = briefing.contextMode {
+            switch qKind {
+            case .selectContract:
+                let candidates = memory.candidateContractIds.compactMap { id in store.contracts.first(where: { $0.id == id }) }
+                if let selected = matchCandidateContractFromReply(normPrompt: briefing.normalizedPrompt, candidates: candidates) {
+                    recordStep("🔄 Continuidade Multi-Turn: Contrato '\(selected.name)' selecionado a partir da pergunta anterior")
+                    memory.pendingQuestionKind = nil
+                    let plan = LocalLLMService.buildContractPayoffActionPlan(for: selected, store: store)
+                    return RetrievalExecutionPayload(
+                        intentKind: .loanOrFinancingSimulation,
+                        expectedLength: .analytical,
+                        isSuccess: true,
+                        primaryFactSummary: "Plano de amortização para o contrato \(selected.name)",
+                        transactionFacts: [],
+                        accountFacts: [],
+                        metricFacts: [:],
+                        rawResultMarkdown: plan,
+                        ragHits: ragHits,
+                        suggestedFollowUps: [
+                            "E se eu amortizar R$ 1.000 extras por mês neste contrato?",
+                            "Compare este contrato com minhas outras dívidas",
+                            "Obrigado, pode encerrar"
+                        ],
+                        retryCount: retryCount,
+                        criticNotes: []
+                    )
+                }
+            case .selectDebt:
+                let candidates = memory.candidateDebtIds.compactMap { id in store.debts.first(where: { $0.id == id }) }
+                if let selected = matchCandidateDebtFromReply(normPrompt: briefing.normalizedPrompt, candidates: candidates) {
+                    recordStep("🔄 Continuidade Multi-Turn: Dívida '\(selected.name)' selecionada a partir da pergunta anterior")
+                    memory.pendingQuestionKind = nil
+                    let analysis = LocalLLMService.analyzeDebtPayoffTimeline(
+                        prompt: "Em quanto tempo devo pagar a dívida \(selected.name)?",
+                        normalizedPrompt: FinancialRAGIndex.normalizeText("Em quanto tempo devo pagar a dívida \(selected.name)?"),
+                        store: store
+                    )
+                    return RetrievalExecutionPayload(
+                        intentKind: .debtPayoffPlan,
+                        expectedLength: .analytical,
+                        isSuccess: true,
+                        primaryFactSummary: "Plano para a dívida \(selected.name)",
+                        transactionFacts: [],
+                        accountFacts: [],
+                        metricFacts: [:],
+                        rawResultMarkdown: analysis,
+                        ragHits: ragHits,
+                        suggestedFollowUps: [
+                            "Qual a melhor ordem para quitar todas as minhas dívidas?",
+                            "Se eu continuar gastando no ritmo deste mês, terei quanto no final?",
+                            "Obrigado, pode encerrar"
+                        ],
+                        retryCount: retryCount,
+                        criticNotes: []
+                    )
+                }
+            case .selectFollowUpActionOnPace:
+                recordStep("🔄 Continuidade Multi-Turn: Detalhando transações e metas de corte para o mês em análise")
+                let targetMonth = memory.lastTargetMonth ?? store.selectedMonth
+                let res = executeDetailedMonthPaceBreakdownFollowUp(targetMonth: targetMonth, store: store, memory: &memory)
+                return RetrievalExecutionPayload(
+                    intentKind: .spendingPaceAndProjection,
+                    expectedLength: .analytical,
+                    isSuccess: true,
+                    primaryFactSummary: "Detalhamento de transações e corte de gastos",
+                    transactionFacts: [],
+                    accountFacts: [],
+                    metricFacts: [:],
+                    rawResultMarkdown: res.markdown,
+                    ragHits: ragHits,
+                    suggestedFollowUps: res.followUps,
+                    retryCount: retryCount,
+                    criticNotes: []
+                )
+            default:
+                break
+            }
+        }
+
+        // Resolução para perguntas anafóricas de follow-up
+        if case .followUp = briefing.contextMode {
+            if isAnaphoricContractPayoffFollowUp(briefing.normalizedPrompt) {
+                let pool = memory.lastMentionedContractIds.compactMap { id in store.contracts.first(where: { $0.id == id }) }
+                let candidates = pool.isEmpty ? (store.activeContracts(for: .loan) + store.activeContracts(for: .financing)) : pool
+                if let contract = matchCandidateContractFromReply(normPrompt: briefing.normalizedPrompt, candidates: candidates) {
+                    recordStep("🔄 Continuidade Multi-Turn: Contrato '\(contract.name)' selecionado para detalhamento de quitação")
+                    memory.lastMentionedContractId = contract.id
+
+                    let outstanding = store.currentOutstandingBalance(for: contract)
+                    let payoff = store.projectedPayoffAmount(for: contract)
+                    let remainingCount = store.remainingInstallmentsCount(for: contract)
+                    let nominalRem = store.remainingNominalAmount(for: contract)
+                    let interestDiscount = max(0.0, nominalRem - payoff)
+
+                    let numStr = contract.contractNumber.map { " (Contrato nº \($0))" } ?? ""
+                    let md = """
+                    ### 🔍 Detalhes para Quitação: **\(contract.name)**\(numStr)
+                    - **Saldo Devedor Nominal Restante:** **\(BRLFormatters.currency(nominalRem))** (\(remainingCount) parcelas restantes de \(BRLFormatters.currency(contract.installmentAmount)))
+                    - **Valor Projetado para Quitação Hoje (Valor Presente):** **\(BRLFormatters.currency(payoff))**
+                    - **Economia Estimada de Juros na Quitação:** **\(BRLFormatters.currency(interestDiscount))**
+                    - **Saldo Devedor Contábil Atual:** **\(BRLFormatters.currency(outstanding))**
+                    - **Taxa de Juros:** `\(String(format: "%.2f%%", contract.monthlyInterestRate))` ao mês
+
+                    ---
+                    💬 Deseja simular uma amortização avulsa (reduzir prazo ou parcela), analisar outro contrato ou encerrar?
+                    """
+                    return RetrievalExecutionPayload(
+                        intentKind: .loanOrFinancingSimulation,
+                        expectedLength: .analytical,
+                        isSuccess: true,
+                        primaryFactSummary: "Detalhes de quitação do contrato \(contract.name)",
+                        transactionFacts: [],
+                        accountFacts: [],
+                        metricFacts: [:],
+                        rawResultMarkdown: md,
+                        ragHits: ragHits,
+                        suggestedFollowUps: [
+                            "E se eu amortizar R$ 1.000 extras neste contrato?",
+                            "Quanto falta para quitar o segundo contrato?",
+                            "Obrigado, pode encerrar"
+                        ],
+                        retryCount: retryCount,
+                        criticNotes: []
+                    )
+                }
+            }
+
+            if isAnaphoricCategoryFollowUp(briefing.normalizedPrompt),
+               let catId = memory.lastMentionedCategoryId ?? memory.lastCategoryId,
+               let cat = store.category(for: catId) {
+                let targetMonth = briefing.targetMonth
+                let monthLabel = BRLFormatters.monthYear(targetMonth)
+                recordStep("🔄 Continuidade Multi-Turn: Detalhando categoria '\(cat.name)' em \(monthLabel)")
+
+                let monthTxs = store.transactionsForMonth(targetMonth).filter { $0.categoryId == cat.id && !$0.ignoreInConsolidated }.sorted { $0.date > $1.date }
+                let catTotal = monthTxs.reduce(0.0) { $0 + $1.amount }
+                let env = store.provisionEnvelope(forCategory: cat.id, in: targetMonth)
+
+                let txLines = monthTxs.isEmpty
+                    ? "• Nenhum lançamento registrado em **\(cat.name)** em \(monthLabel)."
+                    : monthTxs.prefix(10).map { tx in
+                        "- **\(BRLFormatters.shortDate(tx.date)) — \(tx.name):** **\(BRLFormatters.currency(tx.amount))** (\(tx.isPaid ? "Pago" : "Pendente"))"
+                    }.joined(separator: "\n")
+
+                let envBlock = env.map { e in
+                    "- **Envelope/Teto no Mês:** \(BRLFormatters.currency(e.estimatedAmount)) | **Gasto:** \(BRLFormatters.currency(e.realizedExpense)) | **Restante:** **\(BRLFormatters.currency(e.remainingProvision))** (*\(e.status.rawValue)*)"
+                } ?? "- **Envelope/Teto:** Sem teto configurado para esta categoria em \(monthLabel)."
+
+                let md = """
+                ## 📂 Análise da Categoria: **\(cat.name)** (\(monthLabel))
+                - **Total Movimentado no Mês:** **\(BRLFormatters.currency(catTotal))** (\(monthTxs.count) lançamentos)
+                \(envBlock)
+
+                ### Lançamentos em \(monthLabel)
+                \(txLines)
+
+                ---
+                💬 Deseja definir um teto para **\(cat.name)**, verificar outra categoria ou encerrar?
+                """
+
+                return RetrievalExecutionPayload(
+                    intentKind: .categoryExpenseQuery,
+                    expectedLength: .moderate,
+                    isSuccess: true,
+                    primaryFactSummary: "Detalhamento da categoria \(cat.name) em \(monthLabel)",
+                    transactionFacts: [],
+                    accountFacts: [],
+                    metricFacts: [:],
+                    rawResultMarkdown: md,
+                    ragHits: ragHits,
+                    suggestedFollowUps: [
+                        "Reserve R$ 500 para \(cat.name.lowercased()) este mês",
+                        "Qual categoria eu mais gasto no ano todo?",
+                        "Obrigado, pode encerrar"
+                    ],
+                    retryCount: retryCount,
+                    criticNotes: []
+                )
+            }
+        }
+
         switch briefing.intentKind {
         case .latestTransaction:
             return retrieveLatestTransaction(briefing: briefing, store: store)
@@ -2024,14 +2489,58 @@ public final class AgenticFinancialEngine {
         )
     }
 
-    // MARK: - Agente 3: Crítico e Validador de Conformidade (Output Critic)
+    // MARK: - Agente 3: Juiz e Crítico de Conformidade Multi-Turn (Anti-Context-Bleeding & Output Validator)
 
-    private static func validateRetrievalAgainstBriefing(
+    private static func judgeRetrievalAgainstQuestionAndContext(
         briefing: QueryAnalysisBriefing,
         payload: RetrievalExecutionPayload,
+        previousUserPrompt: String?,
+        previousAssistantResponse: String?,
         store: FinancialDataStore
     ) -> CriticValidationResult {
-        // Regra 1: Pergunta sobre última transação
+        // Regra 1: Isolamento de Contexto & Prevenção de Vazamento Multi-Turn
+        if case .newTopic = briefing.contextMode {
+            // Vazamento de Categoria Campeã em novos tópicos (ex: usuário mudou de assunto para contratos/parcelas)
+            if briefing.intentKind != .topExpenseCategories {
+                if let raw = payload.rawResultMarkdown,
+                   raw.contains("A categoria em que você mais gastou") ||
+                   raw.contains("Gostaria de saber qual a categoria que você mais gastou") {
+                    return CriticValidationResult(
+                        isValid: false,
+                        feedbackForPlanner: "Vazamento crítico de contexto: a resposta reutilizou o ranking de categorias da pergunta anterior em vez de responder à pergunta atual sobre `\(briefing.intentKind.rawValue)`. Execute retrieveUpcomingContractInstallments.",
+                        approvedPayload: payload
+                    )
+                }
+            }
+
+            // Vazamento de Clarificação de Contratos quando o usuário pediu parcelas do mês
+            if briefing.intentKind == .upcomingContractInstallments {
+                if let raw = payload.rawResultMarkdown,
+                   raw.contains("Qual contrato você deseja analisar?") ||
+                   raw.contains("Qual financiamento você deseja analisar?") ||
+                   raw.contains("Qual empréstimo você deseja analisar?") {
+                    return CriticValidationResult(
+                        isValid: false,
+                        feedbackForPlanner: "Vazamento de fluxo de amortização: O usuário perguntou sobre as parcelas que vencem no próximo mês ('\(briefing.originalPrompt)'), mas o payload perguntou qual contrato analisar. Execute retrieveUpcomingContractInstallments.",
+                        approvedPayload: payload
+                    )
+                }
+            }
+
+            // Vazamento de Dívidas
+            if briefing.intentKind != .debtPayoffPlan {
+                if let raw = payload.rawResultMarkdown,
+                   raw.contains("Não identifiquei exatamente qual dívida você deseja priorizar") {
+                    return CriticValidationResult(
+                        isValid: false,
+                        feedbackForPlanner: "Vazamento de contexto de dívidas: a pergunta atual não é sobre quitação de dívidas. Execute o manipulador de `\(briefing.intentKind.rawValue)`.",
+                        approvedPayload: payload
+                    )
+                }
+            }
+        }
+
+        // Regra 2: Fidelidade à Intenção da Pergunta Atual
         if briefing.intentKind == .latestTransaction {
             if payload.transactionFacts.isEmpty && !store.transactions.isEmpty {
                 return CriticValidationResult(
@@ -2052,19 +2561,22 @@ public final class AgenticFinancialEngine {
             return CriticValidationResult(isValid: true, feedbackForPlanner: nil, approvedPayload: payload)
         }
 
-        // Regra 2: Respostas de extensão concisa (.concise) não devem conter dump panorâmico
-        if briefing.expectedLength == .concise {
-            if let raw = payload.rawResultMarkdown,
-               raw.contains("## Panorama Completo da sua Base Financeira") {
-                return CriticValidationResult(
-                    isValid: false,
-                    feedbackForPlanner: "A pergunta pediu resposta concisa (.concise), mas o resultado continha dados densos desnecessários de outras áreas.",
-                    approvedPayload: payload
-                )
+        if briefing.intentKind == .upcomingContractInstallments {
+            let hasContracts = !store.activeContracts(for: .loan).isEmpty || !store.activeContracts(for: .financing).isEmpty
+            if hasContracts {
+                if let raw = payload.rawResultMarkdown {
+                    let hasInstallments = raw.contains("Parcelas de Financiamentos") || raw.contains("Total das Parcelas") || raw.contains("• **")
+                    if !hasInstallments {
+                        return CriticValidationResult(
+                            isValid: false,
+                            feedbackForPlanner: "O payload para próximas parcelas de contratos não continha os valores e datas de vencimento. Execute retrieveUpcomingContractInstallments.",
+                            approvedPayload: payload
+                        )
+                    }
+                }
             }
         }
 
-        // Regra 3: Ritmo de gastos deve conter cenários
         if briefing.intentKind == .spendingPaceAndProjection {
             if let raw = payload.rawResultMarkdown,
                !raw.contains("Cenário") && !raw.contains("Ritmo") {
@@ -2076,7 +2588,6 @@ public final class AgenticFinancialEngine {
             }
         }
 
-        // Regra 4: Categoria mais gasta deve ser concisa e focada na categoria campeã
         if briefing.intentKind == .topExpenseCategories {
             if let raw = payload.rawResultMarkdown,
                raw.contains("## 🔎 Análise Inteligente na Base Local (RAG)") ||
@@ -2089,20 +2600,19 @@ public final class AgenticFinancialEngine {
             }
         }
 
-        // Regra 5: Parcelas de contratos devem listar valores e vencimentos futuros
-        if briefing.intentKind == .upcomingContractInstallments {
+        // Regra 3: Respostas de extensão concisa (.concise) não devem conter dump panorâmico
+        if briefing.expectedLength == .concise {
             if let raw = payload.rawResultMarkdown,
-               raw.contains("Qual contrato você deseja analisar?") ||
-               raw.contains("Qual financiamento você deseja analisar?") {
+               raw.contains("## Panorama Completo da sua Base Financeira") {
                 return CriticValidationResult(
                     isValid: false,
-                    feedbackForPlanner: "A pergunta pediu as parcelas que vencem no próximo mês, e não a escolha de um contrato para amortização.",
+                    feedbackForPlanner: "A pergunta pediu resposta concisa (.concise), mas o resultado continha dados densos desnecessários de outras áreas.",
                     approvedPayload: payload
                 )
             }
         }
 
-        // Regra 6: Rejeita dumps brutos de RAG em qualquer intenção focada
+        // Regra 4: Rejeita dumps brutos de RAG em qualquer intenção focada
         if briefing.intentKind != .generalOverview {
             if let raw = payload.rawResultMarkdown,
                raw.contains("## 🔎 Análise Inteligente na Base Local (RAG)") {
@@ -2115,6 +2625,20 @@ public final class AgenticFinancialEngine {
         }
 
         return CriticValidationResult(isValid: true, feedbackForPlanner: nil, approvedPayload: payload)
+    }
+
+    private static func validateRetrievalAgainstBriefing(
+        briefing: QueryAnalysisBriefing,
+        payload: RetrievalExecutionPayload,
+        store: FinancialDataStore
+    ) -> CriticValidationResult {
+        judgeRetrievalAgainstQuestionAndContext(
+            briefing: briefing,
+            payload: payload,
+            previousUserPrompt: nil,
+            previousAssistantResponse: nil,
+            store: store
+        )
     }
 
     // MARK: - Agente 4: Sintetizador Final & Formatador de Persona
@@ -2584,219 +3108,7 @@ public final class AgenticFinancialEngine {
         return hasOrder && hasAction
     }
 
-    // MARK: - Multi-Turn Continuation Resolver
-
-    private static func resolveMultiTurnContinuationIfApplicable(
-        prompt: String,
-        normPrompt: String,
-        memory: inout AgentSessionMemory,
-        store: FinancialDataStore,
-        ragIndex: FinancialRAGIndex,
-        modelLabel: String,
-        recordStep: (String) -> Void
-    ) -> AgentExecutionOutput? {
-        // Caso 1: O agente perguntou qual Contrato (Empréstimo ou Financiamento) o usuário desejava analisar
-        if memory.pendingQuestionKind == .selectContract, !memory.candidateContractIds.isEmpty {
-            let candidates = memory.candidateContractIds.compactMap { id in
-                store.contracts.first(where: { $0.id == id })
-            }
-            if let selected = matchCandidateContractFromReply(normPrompt: normPrompt, candidates: candidates) {
-                recordStep("🔄 Continuidade Multi-Turn: Contrato '\(selected.name)' selecionado a partir da pergunta anterior")
-                memory.pendingQuestionKind = nil
-                let plan = LocalLLMService.buildContractPayoffActionPlan(for: selected, store: store)
-                let followUps = [
-                    "E se eu amortizar R$ 1.000 extras por mês neste contrato?",
-                    "Compare este contrato com minhas outras dívidas",
-                    "Obrigado, pode encerrar"
-                ]
-                return AgentExecutionOutput(
-                    responseMarkdown: plan,
-                    executedSteps: [],
-                    suggestedFollowUps: followUps,
-                    shouldCloseChat: false,
-                    updatedMemory: memory
-                )
-            }
-        }
-
-        // Caso 2: O agente perguntou qual Dívida em aberto o usuário desejava analisar
-        if memory.pendingQuestionKind == .selectDebt, !memory.candidateDebtIds.isEmpty {
-            let candidates = memory.candidateDebtIds.compactMap { id in
-                store.debts.first(where: { $0.id == id })
-            }
-            if let selected = matchCandidateDebtFromReply(normPrompt: normPrompt, candidates: candidates) {
-                recordStep("🔄 Continuidade Multi-Turn: Dívida '\(selected.name)' selecionada a partir da pergunta anterior")
-                memory.pendingQuestionKind = nil
-                let analysis = LocalLLMService.analyzeDebtPayoffTimeline(
-                    prompt: "Em quanto tempo devo pagar a dívida \(selected.name)?",
-                    normalizedPrompt: FinancialRAGIndex.normalizeText("Em quanto tempo devo pagar a dívida \(selected.name)?"),
-                    store: store
-                )
-                let followUps = [
-                    "Qual a melhor ordem para quitar todas as minhas dívidas?",
-                    "Se eu continuar gastando no ritmo deste mês, terei quanto no final?",
-                    "Obrigado, pode encerrar"
-                ]
-                return AgentExecutionOutput(
-                    responseMarkdown: analysis,
-                    executedSteps: [],
-                    suggestedFollowUps: followUps,
-                    shouldCloseChat: false,
-                    updatedMemory: memory
-                )
-            }
-        }
-
-        // Caso 3: O usuário respondeu "Sim", "Mostre os gastos", "Detalhe", "Onde posso cortar?" após a análise de Ritmo de Gastos
-        if memory.activeTopic == .spendingPaceAndMonthEnd {
-            let affirmativeShortReplies = [
-                "sim", "quero", "pode mostrar", "mostre", "mostrar", "detalhe", "detalhar",
-                "quais foram", "onde cortar", "como economizar", "simule", "simular"
-            ]
-            let isShortAffirmative = normPrompt.count <= 38 && affirmativeShortReplies.contains(where: { normPrompt.contains($0) })
-            if isShortAffirmative && !isSpendingPaceOrEndOfMonthBalanceQuery(normPrompt) {
-                recordStep("🔄 Continuidade Multi-Turn: Detalhando transações e metas de corte para o mês em análise")
-                let targetMonth = memory.lastTargetMonth ?? store.selectedMonth
-                let res = executeDetailedMonthPaceBreakdownFollowUp(targetMonth: targetMonth, store: store, memory: &memory)
-                return AgentExecutionOutput(
-                    responseMarkdown: res.markdown,
-                    executedSteps: [],
-                    suggestedFollowUps: res.followUps,
-                    shouldCloseChat: false,
-                    updatedMemory: memory
-                )
-            }
-        }
-
-        // Caso 4: Pergunta anafórica sobre quitação de contrato específico mencionado na lista anterior ("quanto falta para quitar o primeiro?", "qual o saldo devedor dele?")
-        if isAnaphoricContractPayoffFollowUp(normPrompt) {
-            let pool = memory.lastMentionedContractIds.compactMap { id in store.contracts.first(where: { $0.id == id }) }
-            let candidates = pool.isEmpty ? (store.activeContracts(for: .loan) + store.activeContracts(for: .financing)) : pool
-            if let contract = matchCandidateContractFromReply(normPrompt: normPrompt, candidates: candidates) {
-                recordStep("🔄 Continuidade Multi-Turn: Contrato '\(contract.name)' selecionado para detalhamento de quitação")
-                memory.lastMentionedContractId = contract.id
-
-                let outstanding = store.currentOutstandingBalance(for: contract)
-                let payoff = store.projectedPayoffAmount(for: contract)
-                let remainingCount = store.remainingInstallmentsCount(for: contract)
-                let nominalRem = store.remainingNominalAmount(for: contract)
-                let interestDiscount = max(0.0, nominalRem - payoff)
-
-                let numStr = contract.contractNumber.map { " (Contrato nº \($0))" } ?? ""
-                let md = """
-                ### 🔍 Detalhes para Quitação: **\(contract.name)**\(numStr)
-                - **Saldo Devedor Nominal Restante:** **\(BRLFormatters.currency(nominalRem))** (\(remainingCount) parcelas restantes de \(BRLFormatters.currency(contract.installmentAmount)))
-                - **Valor Projetado para Quitação Hoje (Valor Presente):** **\(BRLFormatters.currency(payoff))**
-                - **Economia Estimada de Juros na Quitação:** **\(BRLFormatters.currency(interestDiscount))**
-                - **Saldo Devedor Contábil Atual:** **\(BRLFormatters.currency(outstanding))**
-                - **Taxa de Juros:** `\(String(format: "%.2f%%", contract.monthlyInterestRate))` ao mês
-
-                ---
-                💬 Deseja simular uma amortização avulsa (reduzir prazo ou parcela), analisar outro contrato ou encerrar?
-                """
-                return AgentExecutionOutput(
-                    responseMarkdown: md,
-                    executedSteps: [],
-                    suggestedFollowUps: [
-                        "E se eu amortizar R$ 1.000 extras neste contrato?",
-                        "Quanto falta para quitar o segundo contrato?",
-                        "Obrigado, pode encerrar"
-                    ],
-                    shouldCloseChat: false,
-                    updatedMemory: memory
-                )
-            }
-        }
-
-        // Caso 5: Pergunta anafórica sobre categoria anteriormente mencionada ("dessa categoria", "nela", "quanto gastei nela")
-        if isAnaphoricCategoryFollowUp(normPrompt), let catId = memory.lastMentionedCategoryId ?? memory.lastCategoryId, let cat = store.category(for: catId) {
-            let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: memory.lastTargetMonth ?? store.selectedMonth)
-            let monthLabel = BRLFormatters.monthYear(targetMonth)
-            recordStep("🔄 Continuidade Multi-Turn: Detalhando categoria '\(cat.name)' em \(monthLabel)")
-
-            let monthTxs = store.transactionsForMonth(targetMonth).filter { $0.categoryId == cat.id && !$0.ignoreInConsolidated }.sorted { $0.date > $1.date }
-            let catTotal = monthTxs.reduce(0.0) { $0 + $1.amount }
-            let env = store.provisionEnvelope(forCategory: cat.id, in: targetMonth)
-
-            let txLines = monthTxs.isEmpty
-                ? "• Nenhum lançamento registrado em **\(cat.name)** em \(monthLabel)."
-                : monthTxs.prefix(10).map { tx in
-                    "- **\(BRLFormatters.shortDate(tx.date)) — \(tx.name):** **\(BRLFormatters.currency(tx.amount))** (\(tx.isPaid ? "Pago" : "Pendente"))"
-                }.joined(separator: "\n")
-
-            let envBlock = env.map { e in
-                "- **Envelope/Teto no Mês:** \(BRLFormatters.currency(e.estimatedAmount)) | **Gasto:** \(BRLFormatters.currency(e.realizedExpense)) | **Restante:** **\(BRLFormatters.currency(e.remainingProvision))** (*\(e.status.rawValue)*)"
-            } ?? "- **Envelope/Teto:** Sem teto configurado para esta categoria em \(monthLabel)."
-
-            let md = """
-            ## 📂 Análise da Categoria: **\(cat.name)** (\(monthLabel))
-            - **Total Movimentado no Mês:** **\(BRLFormatters.currency(catTotal))** (\(monthTxs.count) lançamentos)
-            \(envBlock)
-
-            ### Lançamentos em \(monthLabel)
-            \(txLines)
-
-            ---
-            💬 Deseja definir um teto para **\(cat.name)**, verificar outra categoria ou encerrar?
-            """
-
-            return AgentExecutionOutput(
-                responseMarkdown: md,
-                executedSteps: [],
-                suggestedFollowUps: [
-                    "Reserve R$ 500 para \(cat.name.lowercased()) este mês",
-                    "Qual categoria eu mais gasto no ano todo?",
-                    "Obrigado, pode encerrar"
-                ],
-                shouldCloseChat: false,
-                updatedMemory: memory
-            )
-        }
-
-        // Caso 6: Mudança de período temporal para a mesma intenção anterior ("e no mês passado?", "e no mês anterior?", "e no próximo mês?")
-        if isAnaphoricTimeShiftFollowUp(normPrompt), let lastIntent = memory.lastIntentKind {
-            let targetMonth = resolveTargetMonth(from: normPrompt, defaultDate: memory.lastTargetMonth ?? store.selectedMonth)
-            recordStep("🔄 Continuidade Multi-Turn: Aplicando intenção anterior `\(lastIntent.rawValue)` para \(BRLFormatters.monthYear(targetMonth))")
-
-            let newBriefing = QueryAnalysisBriefing(
-                originalPrompt: prompt,
-                normalizedPrompt: normPrompt,
-                intentKind: lastIntent,
-                expectedLength: .moderate,
-                standardizedSearchQuery: "continuidade período \(BRLFormatters.monthYear(targetMonth))",
-                targetCategoryName: memory.lastMentionedCategoryName,
-                targetAccountName: nil,
-                targetDateRange: nil,
-                targetMonth: targetMonth,
-                numericParameters: [],
-                transactionTypeFilter: nil,
-                tone: "consultivo e direto"
-            )
-
-            let payload = executeRetrievalPlan(
-                briefing: newBriefing,
-                store: store,
-                ragHits: [],
-                ragIndex: ragIndex,
-                memory: &memory,
-                modelLabel: modelLabel,
-                retryCount: 0,
-                criticFeedback: nil,
-                recordStep: recordStep
-            )
-
-            let output = synthesizeFinalResponse(
-                briefing: newBriefing,
-                payload: payload,
-                store: store,
-                steps: ["🔄 Período ajustado para \(BRLFormatters.monthYear(targetMonth))"],
-                memory: memory
-            )
-            return output
-        }
-
-        return nil
-    }
+    // MARK: - Helper Matching Functions Multi-Turn
 
     private static func matchCandidateContractFromReply(normPrompt: String, candidates: [CreditContract]) -> CreditContract? {
         guard !candidates.isEmpty else { return nil }

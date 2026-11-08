@@ -2585,4 +2585,120 @@ final class FinSenseTests: XCTestCase {
         XCTAssertTrue(out4.responseMarkdown.contains("Santander"), "Deve resolver 'o primeiro' para o contrato Santander")
         XCTAssertTrue(out4.responseMarkdown.contains("Valor Projetado para Quitação") || out4.responseMarkdown.contains("Saldo Devedor"))
     }
+
+    func testAgenticMultiTurnContextIsolationAndAntiDrift() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+        AgenticFinancialEngine.resetMemory(for: store)
+
+        let acc = BankAccount(name: "Santander CC", initialBalance: 25000.0)
+        let catInvest = CategoryItem(name: "Aplicações & Reservas", type: .expense, iconSymbol: "chart.line.uptrend.xyaxis", colorHex: "#10B981")
+        let catEdu = CategoryItem(name: "Educação & Cursos", type: .expense, iconSymbol: "book.fill", colorHex: "#3B82F6")
+        let catCred = CategoryItem(name: "Contratos de Crédito", type: .expense, iconSymbol: "doc.text.fill", colorHex: "#6366F1")
+        store.accounts = [acc]
+        store.categories = [catInvest, catEdu, catCred]
+
+        let cal = Calendar.current
+        var comps = DateComponents()
+        comps.year = 2026
+        comps.month = 11 // Novembro de 2026 como mês corrente
+        comps.day = 10
+        let nov2026 = cal.date(from: comps)!
+        store.selectedMonth = nov2026
+
+        // Despesas em Outubro de 2026 (Mês Passado)
+        var octComps = DateComponents()
+        octComps.year = 2026
+        octComps.month = 10
+        octComps.day = 15
+        let oct2026 = cal.date(from: octComps)!
+
+        let tOct1 = FinancialTransaction(name: "Aplicação CDB DI", amount: 6092.0, date: oct2026, type: .expense, isPaid: true, categoryId: catInvest.id, accountId: acc.id)
+        let tOct2 = FinancialTransaction(name: "Curso Inglês", amount: 1397.38, date: oct2026, type: .expense, isPaid: true, categoryId: catEdu.id, accountId: acc.id)
+        store.transactions = [tOct1, tOct2]
+
+        // 3 Contratos com parcelas ativas
+        let c1 = CreditContract(
+            kind: .loan,
+            name: "Santander",
+            contractNumber: "783847703",
+            loanSubtype: .pessoal,
+            amortizationSystem: .price,
+            totalContractedAmount: 10000.0,
+            installmentAmount: 357.31,
+            billingDay: 4,
+            totalInstallments: 36,
+            monthlyInterestRate: 1.85,
+            startDate: nov2026,
+            accountId: acc.id,
+            categoryId: catCred.id
+        )
+
+        let c2 = CreditContract(
+            kind: .loan,
+            name: "Santander",
+            contractNumber: "783694303",
+            loanSubtype: .pessoal,
+            amortizationSystem: .price,
+            totalContractedAmount: 120000.0,
+            installmentAmount: 4509.81,
+            billingDay: 4,
+            totalInstallments: 48,
+            monthlyInterestRate: 1.65,
+            startDate: nov2026,
+            accountId: acc.id,
+            categoryId: catCred.id
+        )
+
+        let c3 = CreditContract(
+            kind: .financing,
+            name: "Financiamento Habitação CAIXA",
+            contractNumber: nil,
+            financingSubtype: .imovel,
+            amortizationSystem: .sac,
+            totalContractedAmount: 400000.0,
+            installmentAmount: 2658.04,
+            billingDay: 4,
+            totalInstallments: 360,
+            monthlyInterestRate: 0.85,
+            startDate: nov2026,
+            accountId: acc.id,
+            categoryId: catCred.id
+        )
+        store.contracts = [c1, c2, c3]
+
+        // Turno 1: "Qual categoria mais gastei no mês passado?"
+        let q1 = "Qual categoria mais gastei no mês passado?"
+        let out1 = AgenticFinancialEngine.runAgentLoop(prompt: q1, store: store, modelLabel: "Qwen2.5-3B-Local")
+        XCTAssertTrue(out1.responseMarkdown.contains("Aplicações & Reservas"), "Deve identificar Aplicações & Reservas em Outubro de 2026")
+        XCTAssertTrue(out1.responseMarkdown.contains("6.092,00"))
+
+        // Turno 2: "Quanto vou pagar de parcelas de financiamento e emprestimos próximo mês?"
+        // Deve identificar Novo Tópico, NÃO vazar o texto de categoria campeã, e responder parcelas de Dezembro de 2026
+        let q2 = "Quanto vou pagar de parcelas de financiamento e emprestimos próximo mês?"
+        let out2 = AgenticFinancialEngine.runAgentLoop(prompt: q2, store: store, modelLabel: "Qwen2.5-3B-Local")
+
+        XCTAssertFalse(out2.responseMarkdown.contains("A categoria em que você mais gastou"), "Não deve haver vazamento de contexto da categoria campeã")
+        XCTAssertFalse(out2.responseMarkdown.contains("Gostaria de saber qual a categoria"), "Não deve sugerir follow-ups de categoria no tópico de parcelas")
+        XCTAssertTrue(out2.responseMarkdown.contains("Dezembro De 2026") || out2.responseMarkdown.contains("Dezembro de 2026"), "Próximo mês a partir de Novembro/2026 deve ser Dezembro/2026")
+        XCTAssertTrue(out2.responseMarkdown.contains("357,31"))
+        XCTAssertTrue(out2.responseMarkdown.contains("4.509,81"))
+        XCTAssertTrue(out2.responseMarkdown.contains("2.658,04"))
+        XCTAssertTrue(out2.responseMarkdown.contains("7.525,16"))
+        XCTAssertTrue(out2.executedSteps.contains { $0.contains("Agente Juiz") && $0.contains("sem vazamento de contexto") })
+
+        // Turno 3: Repetição imediata da mesma pergunta ("Quanto vou pagar de parcelas de financiamento e emprestimos próximo mês?")
+        // Anti-Deriva: NÃO deve avançar para Janeiro de 2027! Deve continuar exatamente em Dezembro de 2026!
+        let out3 = AgenticFinancialEngine.runAgentLoop(prompt: q2, store: store, modelLabel: "Qwen2.5-3B-Local")
+        XCTAssertFalse(out3.responseMarkdown.contains("Janeiro De 2027"), "Repetição da pergunta não deve sofrer deriva temporal para Janeiro de 2027")
+        XCTAssertTrue(out3.responseMarkdown.contains("Dezembro De 2026") || out3.responseMarkdown.contains("Dezembro de 2026"))
+        XCTAssertTrue(out3.responseMarkdown.contains("7.525,16"))
+
+        // Turno 4: Repetição pela terceira vez
+        // Permanece estável em Dezembro de 2026
+        let out4 = AgenticFinancialEngine.runAgentLoop(prompt: q2, store: store, modelLabel: "Qwen2.5-3B-Local")
+        XCTAssertFalse(out4.responseMarkdown.contains("Fevereiro De 2027"))
+        XCTAssertTrue(out4.responseMarkdown.contains("Dezembro De 2026") || out4.responseMarkdown.contains("Dezembro de 2026"))
+        XCTAssertTrue(out4.responseMarkdown.contains("7.525,16"))
+    }
 }
