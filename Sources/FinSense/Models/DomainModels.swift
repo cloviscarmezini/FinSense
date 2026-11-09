@@ -661,6 +661,47 @@ public struct InvestmentItem: Identifiable, Codable, Hashable {
         self.movements = movements
         self.createdAt = createdAt
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, groupName, investmentAccountId, balance, showInConsolidated
+        case iconSymbol, colorHex, notes, movements, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.name = (try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))) ?? ""
+        self.groupName = (try? c.decodeIfPresent(String.self, forKey: AnyKey("groupName")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("group_name"))) ?? ""
+        self.investmentAccountId = (try? c.decode(UUID.self, forKey: AnyKey("investmentAccountId")))
+            ?? (try? c.decode(UUID.self, forKey: AnyKey("investment_account_id"))) ?? UUID()
+        self.balance = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("balance"))) ?? 0.0
+        self.showInConsolidated = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("showInConsolidated")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("show_in_consolidated"))) ?? true
+        self.iconSymbol = (try? c.decodeIfPresent(String.self, forKey: AnyKey("iconSymbol")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("icon_symbol"))) ?? "chart.line.uptrend.xyaxis"
+        self.colorHex = (try? c.decodeIfPresent(String.self, forKey: AnyKey("colorHex")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("color_hex"))) ?? "#10B981"
+        self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
+        self.movements = (try? c.decodeIfPresent([InvestmentMovement].self, forKey: AnyKey("movements"))) ?? []
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(groupName, forKey: .groupName)
+        try c.encode(investmentAccountId, forKey: .investmentAccountId)
+        try c.encode(balance, forKey: .balance)
+        try c.encode(showInConsolidated, forKey: .showInConsolidated)
+        try c.encode(iconSymbol, forKey: .iconSymbol)
+        try c.encode(colorHex, forKey: .colorHex)
+        try c.encode(notes, forKey: .notes)
+        try c.encode(movements, forKey: .movements)
+        try c.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 // MARK: - Debts (Dívidas em Aberto / Negociação)
@@ -903,6 +944,93 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.settledAccountId = settledAccountId
         self.notes = notes
         self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, name, contractNumber, loanSubtype, financingSubtype, amortizationSystem
+        case totalContractedAmount, outstandingBalance, installmentAmount, billingDay
+        case totalInstallments, monthlyInterestRate, startDate, accountId, categoryId
+        case pastInstallmentsElapsedAtCreation, extraAmortizedTotal, amortizationHistory
+        case isSettled, settledAmount, settledDate, settledAccountId, notes, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.kind = (try? c.decode(CreditContractKind.self, forKey: AnyKey("kind"))) ?? .loan
+        self.name = (try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))) ?? ""
+        self.contractNumber = (try? c.decodeIfPresent(String.self, forKey: AnyKey("contractNumber")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("contract_number")))
+        self.loanSubtype = (try? c.decodeIfPresent(LoanSubtype.self, forKey: AnyKey("loanSubtype")))
+            ?? (try? c.decodeIfPresent(LoanSubtype.self, forKey: AnyKey("loan_subtype")))
+        self.financingSubtype = (try? c.decodeIfPresent(FinancingSubtype.self, forKey: AnyKey("financingSubtype")))
+            ?? (try? c.decodeIfPresent(FinancingSubtype.self, forKey: AnyKey("financing_subtype")))
+        self.amortizationSystem = (try? c.decodeIfPresent(AmortizationSystem.self, forKey: AnyKey("amortizationSystem")))
+            ?? (try? c.decodeIfPresent(AmortizationSystem.self, forKey: AnyKey("amortization_system"))) ?? .price
+        self.totalContractedAmount = abs((try? c.decodeIfPresent(Double.self, forKey: AnyKey("totalContractedAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("total_contracted_amount"))) ?? 0.0)
+        self.outstandingBalance = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("outstandingBalance")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("outstanding_balance")))
+        self.installmentAmount = abs((try? c.decodeIfPresent(Double.self, forKey: AnyKey("installmentAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("installment_amount"))) ?? 0.0)
+        self.billingDay = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("billingDay")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("billing_day"))) ?? 1
+        self.totalInstallments = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("totalInstallments")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("total_installments"))) ?? 1
+        self.monthlyInterestRate = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthlyInterestRate")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthly_interest_rate"))) ?? 0.0
+        self.startDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("startDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("start_date")))
+        self.accountId = (try? c.decode(UUID.self, forKey: AnyKey("accountId")))
+            ?? (try? c.decode(UUID.self, forKey: AnyKey("account_id"))) ?? UUID()
+        self.categoryId = (try? c.decode(UUID.self, forKey: AnyKey("categoryId")))
+            ?? (try? c.decode(UUID.self, forKey: AnyKey("category_id"))) ?? UUID()
+        self.pastInstallmentsElapsedAtCreation = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("pastInstallmentsElapsedAtCreation")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("past_installments_elapsed_at_creation"))) ?? 0
+        self.extraAmortizedTotal = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("extraAmortizedTotal")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("extra_amortized_total"))) ?? 0.0
+        self.amortizationHistory = (try? c.decodeIfPresent([AmortizationRecord].self, forKey: AnyKey("amortizationHistory")))
+            ?? (try? c.decodeIfPresent([AmortizationRecord].self, forKey: AnyKey("amortization_history"))) ?? []
+        self.isSettled = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("isSettled")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("is_settled"))) ?? false
+        self.settledAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("settledAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("settled_amount")))
+        self.settledDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("settledDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("settled_date")))
+        self.settledAccountId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("settledAccountId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("settled_account_id")))
+        self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(contractNumber, forKey: .contractNumber)
+        try c.encodeIfPresent(loanSubtype, forKey: .loanSubtype)
+        try c.encodeIfPresent(financingSubtype, forKey: .financingSubtype)
+        try c.encode(amortizationSystem, forKey: .amortizationSystem)
+        try c.encode(totalContractedAmount, forKey: .totalContractedAmount)
+        try c.encodeIfPresent(outstandingBalance, forKey: .outstandingBalance)
+        try c.encode(installmentAmount, forKey: .installmentAmount)
+        try c.encode(billingDay, forKey: .billingDay)
+        try c.encode(totalInstallments, forKey: .totalInstallments)
+        try c.encode(monthlyInterestRate, forKey: .monthlyInterestRate)
+        try c.encodeIfPresent(startDate, forKey: .startDate)
+        try c.encode(accountId, forKey: .accountId)
+        try c.encode(categoryId, forKey: .categoryId)
+        try c.encode(pastInstallmentsElapsedAtCreation, forKey: .pastInstallmentsElapsedAtCreation)
+        try c.encode(extraAmortizedTotal, forKey: .extraAmortizedTotal)
+        try c.encode(amortizationHistory, forKey: .amortizationHistory)
+        try c.encode(isSettled, forKey: .isSettled)
+        try c.encodeIfPresent(settledAmount, forKey: .settledAmount)
+        try c.encodeIfPresent(settledDate, forKey: .settledDate)
+        try c.encodeIfPresent(settledAccountId, forKey: .settledAccountId)
+        try c.encode(notes, forKey: .notes)
+        try c.encode(createdAt, forKey: .createdAt)
     }
 
     public var subtypeDisplayName: String {

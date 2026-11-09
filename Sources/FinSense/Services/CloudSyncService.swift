@@ -191,8 +191,9 @@ public final class CloudSyncService: ObservableObject {
             return
         }
 
+        let localStoreIsEmpty = store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty && store.contracts.isEmpty && store.investments.isEmpty && store.debts.isEmpty
         let effectiveSinceRevision: Int64
-        if store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty {
+        if localStoreIsEmpty {
             effectiveSinceRevision = 0
         } else {
             effectiveSinceRevision = Int64(lastServerRevision)
