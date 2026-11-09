@@ -58,7 +58,10 @@ public final class CloudSyncService: ObservableObject {
             .sink { [weak self] isAuth in
                 guard let self else { return }
                 self.evaluateInitialStatus()
-                if isAuth && self.isEnabled {
+                if isAuth {
+                    if !self.isEnabled {
+                        self.isEnabled = true
+                    }
                     self.scheduleSync(delaySeconds: 0.5)
                 }
             }
@@ -181,10 +184,17 @@ public final class CloudSyncService: ObservableObject {
             return
         }
 
+        let effectiveSinceRevision: Int64
+        if store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty {
+            effectiveSinceRevision = 0
+        } else {
+            effectiveSinceRevision = Int64(lastServerRevision)
+        }
+
         let batchToSend = Array(outboxQueue.prefix(250))
         let payload = SyncPushPullRequest(
             clientId: clientId,
-            sinceRevision: Int64(lastServerRevision),
+            sinceRevision: effectiveSinceRevision,
             mutations: batchToSend.map { mut in
                 // Converte operação para padrão SQL esperado pela restrição de banco (INSERT, UPDATE, DELETE)
                 let opString: String = {
@@ -243,9 +253,10 @@ public final class CloudSyncService: ObservableObject {
     }
 
     private func applyServerChanges(_ response: SyncPushPullResponse, into store: FinancialDataStore) {
-        let decoder = JSONDecoder()
+        let decoder = BackendAPIClient.makeFlexibleDateDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        decoder.dateDecodingStrategy = .iso8601
+
+        var appliedChangesCount = 0
 
         if let changes = response.serverChanges, !changes.isEmpty {
             for change in changes {
@@ -261,58 +272,62 @@ public final class CloudSyncService: ObservableObject {
                     case "category_quota_rules": store.categoryQuotas.removeAll { $0.id == change.entityId }
                     default: break
                     }
+                    appliedChangesCount += 1
                 } else if let dataMap = change.data ?? change.payload,
                           let rawData = try? JSONEncoder().encode(dataMap) {
-                    switch change.entityName {
-                    case "financial_transactions":
-                        if let item = try? decoder.decode(FinancialTransaction.self, from: rawData) {
+                    do {
+                        switch change.entityName {
+                        case "financial_transactions":
+                            let item = try decoder.decode(FinancialTransaction.self, from: rawData)
                             if let idx = store.transactions.firstIndex(where: { $0.id == item.id }) { store.transactions[idx] = item }
                             else { store.transactions.append(item) }
-                        }
-                    case "bank_accounts":
-                        if let item = try? decoder.decode(BankAccount.self, from: rawData) {
+                            appliedChangesCount += 1
+                        case "bank_accounts":
+                            let item = try decoder.decode(BankAccount.self, from: rawData)
                             if let idx = store.accounts.firstIndex(where: { $0.id == item.id }) { store.accounts[idx] = item }
                             else { store.accounts.append(item) }
-                        }
-                    case "categories":
-                        if let item = try? decoder.decode(CategoryItem.self, from: rawData) {
+                            appliedChangesCount += 1
+                        case "categories":
+                            let item = try decoder.decode(CategoryItem.self, from: rawData)
                             if let idx = store.categories.firstIndex(where: { $0.id == item.id }) { store.categories[idx] = item }
                             else { store.categories.append(item) }
-                        }
-                    case "investment_items":
-                        if let item = try? decoder.decode(InvestmentItem.self, from: rawData) {
+                            appliedChangesCount += 1
+                        case "investment_items":
+                            let item = try decoder.decode(InvestmentItem.self, from: rawData)
                             if let idx = store.investments.firstIndex(where: { $0.id == item.id }) { store.investments[idx] = item }
                             else { store.investments.append(item) }
-                        }
-                    case "debt_items":
-                        if let item = try? decoder.decode(DebtItem.self, from: rawData) {
+                            appliedChangesCount += 1
+                        case "debt_items":
+                            let item = try decoder.decode(DebtItem.self, from: rawData)
                             if let idx = store.debts.firstIndex(where: { $0.id == item.id }) { store.debts[idx] = item }
                             else { store.debts.append(item) }
-                        }
-                    case "credit_contracts":
-                        if let item = try? decoder.decode(CreditContract.self, from: rawData) {
+                            appliedChangesCount += 1
+                        case "credit_contracts":
+                            let item = try decoder.decode(CreditContract.self, from: rawData)
                             if let idx = store.contracts.firstIndex(where: { $0.id == item.id }) { store.contracts[idx] = item }
                             else { store.contracts.append(item) }
-                        }
-                    case "category_provisions":
-                        if let item = try? decoder.decode(CategoryProvision.self, from: rawData) {
+                            appliedChangesCount += 1
+                        case "category_provisions":
+                            let item = try decoder.decode(CategoryProvision.self, from: rawData)
                             if let idx = store.provisions.firstIndex(where: { $0.id == item.id }) { store.provisions[idx] = item }
                             else { store.provisions.append(item) }
-                        }
-                    case "category_quota_rules":
-                        if let item = try? decoder.decode(CategoryQuotaRule.self, from: rawData) {
+                            appliedChangesCount += 1
+                        case "category_quota_rules":
+                            let item = try decoder.decode(CategoryQuotaRule.self, from: rawData)
                             if let idx = store.categoryQuotas.firstIndex(where: { $0.id == item.id }) { store.categoryQuotas[idx] = item }
                             else { store.categoryQuotas.append(item) }
+                            appliedChangesCount += 1
+                        default: break
                         }
-                    default: break
+                    } catch {
+                        print("⚠️ [applyServerChanges] Falha ao decodificar \(change.entityName) id=\(change.entityId): \(error)")
                     }
                 }
             }
         }
 
-        if (response.serverChanges == nil || response.serverChanges?.isEmpty == true),
-           let deltas = response.deltas, let tombstones = response.tombstones {
-            applyDeltasToLocalStore(deltas, tombstones: tombstones, into: store)
+        if appliedChangesCount == 0, let deltas = response.deltas {
+            applyDeltasToLocalStore(deltas, tombstones: response.tombstones ?? [], into: store)
         } else {
             store.save()
         }

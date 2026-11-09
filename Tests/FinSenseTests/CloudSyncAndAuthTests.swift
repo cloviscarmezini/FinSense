@@ -146,4 +146,107 @@ final class CloudSyncAndAuthTests: XCTestCase {
         AuthService.shared.logout()
         try? FileManager.default.removeItem(at: tempDir)
     }
+
+    func testSyncMutationDTODecodingWithOmittedUpdatedAtOrTimestamp() throws {
+        // Testa a resposta real enviada pelo backend Go onde updated_at é omitido por omitempty
+        let jsonWithoutUpdatedAt = """
+        {
+            "mutation_id": "c948e4cf-3456-4a8d-948b-56fe9d4b94f0",
+            "entity_name": "financial_transactions",
+            "entity_id": "2fdb22cd-c48e-4a8d-948b-56fe9d4b94f0",
+            "operation": "INSERT",
+            "timestamp": "2026-11-08T22:43:21.74302+00:00",
+            "data": {
+                "name": "Supermercado",
+                "amount": 150.0
+            }
+        }
+        """.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(SyncMutationDTO.self, from: jsonWithoutUpdatedAt)
+        XCTAssertEqual(decoded.entityName, "financial_transactions")
+        XCTAssertEqual(decoded.operation, "INSERT")
+        XCTAssertEqual(decoded.timestamp, "2026-11-08T22:43:21.74302+00:00")
+        XCTAssertEqual(decoded.updatedAt, "2026-11-08T22:43:21.74302+00:00", "Deve usar timestamp como fallback quando updated_at for omitido")
+        XCTAssertEqual(decoded.data?["name"], .string("Supermercado"))
+
+        // Testa payload com apenas updated_at
+        let jsonWithoutTimestamp = """
+        {
+            "mutation_id": "c948e4cf-3456-4a8d-948b-56fe9d4b94f0",
+            "entity_name": "bank_accounts",
+            "entity_id": "38d3008b-b356-4976-973a-caf0788c1b0e",
+            "operation": "UPDATE",
+            "updated_at": "2026-11-08T20:00:00Z"
+        }
+        """.data(using: .utf8)!
+
+        let decoded2 = try decoder.decode(SyncMutationDTO.self, from: jsonWithoutTimestamp)
+        XCTAssertEqual(decoded2.timestamp, "2026-11-08T20:00:00Z", "Deve usar updated_at como fallback quando timestamp for omitido")
+    }
+
+    func testSyncDeltasContainerDTODecodingFromSnakeCase() throws {
+        let json = """
+        {
+            "bank_accounts": [
+                {
+                    "id": "38d3008b-b356-4976-973a-caf0788c1b0e",
+                    "name": "Itaú Unibanco",
+                    "bank_preset_id": "itau",
+                    "icon_symbol": "building.columns.fill",
+                    "color_hex": "#EC7000",
+                    "initial_balance": 2500.50,
+                    "agency": "1234",
+                    "account_number": "56789-0",
+                    "created_at": "2026-11-08T22:43:21.74302+00:00"
+                }
+            ],
+            "categories": [
+                {
+                    "id": "10000000-0000-0000-0000-000000000001",
+                    "name": "Alimentação",
+                    "type": "expense",
+                    "icon_symbol": "fork.knife",
+                    "color_hex": "#EF4444",
+                    "keywords": ["mercado", "comida"],
+                    "is_system_default": true
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let decoder = JSONDecoder()
+        let deltas = try decoder.decode(SyncDeltasContainerDTO.self, from: json)
+
+        XCTAssertEqual(deltas.bankAccounts?.count, 1)
+        XCTAssertEqual(deltas.bankAccounts?.first?.name, "Itaú Unibanco")
+        XCTAssertEqual(deltas.bankAccounts?.first?.initialBalance, 2500.50)
+        XCTAssertEqual(deltas.bankAccounts?.first?.bankPresetId, "itau")
+
+        XCTAssertEqual(deltas.categories?.count, 1)
+        XCTAssertEqual(deltas.categories?.first?.name, "Alimentação")
+    }
+
+    func testCloudSyncSettingsToggleReactivityAndCombinePiping() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let syncService = CloudSyncService(store: store)
+        store.cloudSyncService = syncService
+
+        var storeNotificationCount = 0
+        let cancellable = store.objectWillChange.sink {
+            storeNotificationCount += 1
+        }
+
+        // Alterar isEnabled no CloudSyncService deve propagar sinal para o store
+        syncService.isEnabled = true
+        XCTAssertTrue(syncService.isEnabled)
+        XCTAssertGreaterThan(storeNotificationCount, 0, "Mudança de estado no CloudSyncService deve notificar o FinancialDataStore via Combine")
+
+        cancellable.cancel()
+        try? FileManager.default.removeItem(at: tempDir)
+    }
 }

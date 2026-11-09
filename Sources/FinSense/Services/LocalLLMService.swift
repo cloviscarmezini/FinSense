@@ -459,7 +459,7 @@ public final class LocalLLMService: ObservableObject {
         memory: inout AgentSessionMemory
     ) -> (markdown: String, followUps: [String]) {
         memory.activeTopic = .contractActionPlan
-        let md = analyzeLoansAndFinancings(prompt: prompt, normalizedPrompt: normalizedPrompt, store: store)
+        let md = analyzeLoansAndFinancings(prompt: prompt, normalizedPrompt: normalizedPrompt, store: store, memory: memory)
         if md.localizedCaseInsensitiveContains("Qual financiamento você deseja analisar") {
             memory.pendingQuestionKind = .selectContract
             memory.candidateContractIds = store.activeContracts(for: .financing).map(\.id)
@@ -1197,7 +1197,8 @@ public final class LocalLLMService: ObservableObject {
     private static func analyzeLoansAndFinancings(
         prompt: String,
         normalizedPrompt: String,
-        store: FinancialDataStore
+        store: FinancialDataStore,
+        memory: AgentSessionMemory? = nil
     ) -> String {
         let loans = store.activeContracts(for: .loan)
         let financings = store.activeContracts(for: .financing)
@@ -1232,12 +1233,36 @@ public final class LocalLLMService: ObservableObject {
             ]
             let tokenMatches = allContracts.filter { c in
                 let tokens = normalizeForMatching(c.name)
-                    .components(separatedBy: CharacterSet.alphanumerics.inverted)
-                    .filter { $0.count >= 3 && !genericContractWords.contains($0) }
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { $0.count >= 3 && !genericContractWords.contains($0) }
                 return !tokens.isEmpty && tokens.contains { matchablePrompt.contains($0) }
             }
             if tokenMatches.count == 1 {
                 matchedContract = tokenMatches.first
+            }
+        }
+
+        // 2.1 Resolução anafórica multi-turno (ex: "quanto falta para quitar o primeiro?")
+        if matchedContract == nil {
+            if matchablePrompt.contains("primeiro") || matchablePrompt.contains("1o") || matchablePrompt.contains("1") {
+                if let firstId = memory?.candidateContractIds.first ?? memory?.lastMentionedContractIds.first,
+                   let c = allContracts.first(where: { $0.id == firstId }) {
+                    matchedContract = c
+                } else if let first = allContracts.first {
+                    matchedContract = first
+                }
+            } else if matchablePrompt.contains("segundo") || matchablePrompt.contains("2o") || matchablePrompt.contains("2") {
+                if let ids = memory?.candidateContractIds, ids.count > 1,
+                   let c = allContracts.first(where: { $0.id == ids[1] }) {
+                    matchedContract = c
+                } else if let ids = memory?.lastMentionedContractIds, ids.count > 1,
+                          let c = allContracts.first(where: { $0.id == ids[1] }) {
+                    matchedContract = c
+                } else if allContracts.count > 1 {
+                    matchedContract = allContracts[1]
+                }
+            } else if allContracts.count == 1 && (matchablePrompt.contains("quitar") || matchablePrompt.contains("saldo devedor") || matchablePrompt.contains("contrato")) {
+                matchedContract = allContracts.first
             }
         }
 

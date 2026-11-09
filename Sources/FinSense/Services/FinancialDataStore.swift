@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 // MARK: - Persistent Snapshot
 
@@ -208,7 +209,15 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var isLLMInstallAlertPresented: Bool = false
     @Published public var pendingAIFeatureName: String = ""
 
-    public weak var cloudSyncService: CloudSyncService?
+    private var cloudSyncCancellable: AnyCancellable? = nil
+    public weak var cloudSyncService: CloudSyncService? {
+        didSet {
+            cloudSyncCancellable = cloudSyncService?.objectWillChange
+                .sink { [weak self] _ in
+                    self?.objectWillChange.send()
+                }
+        }
+    }
 
     public let persistenceEnvironment: PersistenceEnvironment
     public let storageDirectory: URL

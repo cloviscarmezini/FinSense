@@ -78,6 +78,44 @@ public final class BackendAPIClient {
         }
     }
 
+    public static func makeFlexibleDateDecoder() -> JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom { decoder in
+            let container = try decoder.singleValueContainer()
+            if let dateStr = try? container.decode(String.self) {
+                let isoFormatter = ISO8601DateFormatter()
+                isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let d = isoFormatter.date(from: dateStr) { return d }
+                isoFormatter.formatOptions = [.withInternetDateTime]
+                if let d = isoFormatter.date(from: dateStr) { return d }
+
+                let df = DateFormatter()
+                df.locale = Locale(identifier: "en_US_POSIX")
+                for fmt in [
+                    "yyyy-MM-dd'T'HH:mm:ss.SSSSSSZZZZZ",
+                    "yyyy-MM-dd'T'HH:mm:ss.SSSSSSZ",
+                    "yyyy-MM-dd'T'HH:mm:ssZZZZZ",
+                    "yyyy-MM-dd'T'HH:mm:ssZ",
+                    "yyyy-MM-dd HH:mm:ss",
+                    "yyyy-MM-dd"
+                ] {
+                    df.dateFormat = fmt
+                    if let d = df.date(from: dateStr) { return d }
+                }
+            } else if let num = try? container.decode(Double.self) {
+                if num > 1e11 {
+                    return Date(timeIntervalSince1970: num / 1000.0)
+                } else if num > 1e9 {
+                    return Date(timeIntervalSince1970: num)
+                } else {
+                    return Date(timeIntervalSinceReferenceDate: num)
+                }
+            }
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Formato de data inválido para sincronização")
+        }
+        return decoder
+    }
+
     private func sendRequest<T: Decodable>(_ req: URLRequest) async throws -> T {
         let (data, response) = try await session.data(for: req)
         guard let httpRes = response as? HTTPURLResponse else {
@@ -98,8 +136,7 @@ public final class BackendAPIClient {
             throw URLError(.init(rawValue: httpRes.statusCode))
         }
 
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
+        let decoder = Self.makeFlexibleDateDecoder()
         return try decoder.decode(T.self, from: data)
     }
 }

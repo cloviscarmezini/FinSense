@@ -153,6 +153,39 @@ public struct SyncMutationDTO: Codable {
         case data
         case payload
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.mutationId = try container.decode(UUID.self, forKey: .mutationId)
+        self.entityName = try container.decode(String.self, forKey: .entityName)
+        self.entityId = try container.decode(UUID.self, forKey: .entityId)
+        self.operation = try container.decode(String.self, forKey: .operation)
+
+        let timeStr = try? container.decode(String.self, forKey: .timestamp)
+        let updateStr = try? container.decode(String.self, forKey: .updatedAt)
+        let fallback = ISO8601DateFormatter().string(from: Date())
+        let resolved = updateStr ?? timeStr ?? fallback
+
+        self.timestamp = timeStr ?? resolved
+        self.updatedAt = updateStr ?? resolved
+
+        let d = try? container.decodeIfPresent([String: AnyCodableValue].self, forKey: .data)
+        let p = try? container.decodeIfPresent([String: AnyCodableValue].self, forKey: .payload)
+        self.data = d ?? p
+        self.payload = p ?? d
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(mutationId, forKey: .mutationId)
+        try container.encode(entityName, forKey: .entityName)
+        try container.encode(entityId, forKey: .entityId)
+        try container.encode(operation, forKey: .operation)
+        try container.encode(timestamp, forKey: .timestamp)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(data, forKey: .data)
+        try container.encodeIfPresent(payload, forKey: .payload)
+    }
 }
 
 // MARK: - 4. Resposta do Servidor (Push/Pull Response)
@@ -307,6 +340,35 @@ public struct SyncDeltasContainerDTO: Codable {
         case creditContracts = "credit_contracts"
         case categoryProvisions = "category_provisions"
         case categoryQuotaRules = "category_quota_rules"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        let snakeDecoder = JSONDecoder()
+        snakeDecoder.keyDecodingStrategy = .convertFromSnakeCase
+        snakeDecoder.dateDecodingStrategy = .iso8601
+
+        func decodeItems<T: Codable>(_ key: CodingKeys) -> [T]? {
+            if let direct = try? container.decodeIfPresent([T].self, forKey: key) {
+                return direct
+            }
+            if let anyVals = try? container.decodeIfPresent([AnyCodableValue].self, forKey: key),
+               let data = try? JSONEncoder().encode(anyVals),
+               let items = try? snakeDecoder.decode([T].self, from: data) {
+                return items
+            }
+            return nil
+        }
+
+        self.bankAccounts = decodeItems(.bankAccounts)
+        self.categories = decodeItems(.categories)
+        self.financialTransactions = decodeItems(.financialTransactions)
+        self.investmentItems = decodeItems(.investmentItems)
+        self.debtItems = decodeItems(.debtItems)
+        self.creditContracts = decodeItems(.creditContracts)
+        self.categoryProvisions = decodeItems(.categoryProvisions)
+        self.categoryQuotaRules = decodeItems(.categoryQuotaRules)
     }
 }
 

@@ -1285,6 +1285,26 @@ public final class AgenticFinancialEngine {
             )
         }
 
+        // 3.10.1 Pergunta anafórica sobre contrato ("quanto falta para quitar o primeiro?", "qual o saldo devedor dele?")
+        if isAnaphoricContractPayoffFollowUp(normPrompt) {
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .loanOrFinancingSimulation,
+                expectedLength: .analytical,
+                contextMode: .followUp(topic: .loanOrFinancingSimulation, entityName: "contrato selecionado"),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "quitação contrato valor presente saldo devedor",
+                targetCategoryName: nil,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: store.selectedMonth,
+                numericParameters: [],
+                transactionTypeFilter: nil,
+                tone: "consultivo e transparente"
+            )
+        }
+
         // 3.11 Dívidas em aberto e acordos
         if isDebtPayoffOrNegotiationQuery(prompt: prompt, normPrompt: normPrompt, store: store) {
             return QueryAnalysisBriefing(
@@ -1400,25 +1420,7 @@ public final class AgenticFinancialEngine {
             }
         }
 
-        // 4.4 Pergunta anafórica sobre contrato ("quanto falta para quitar o primeiro?", "qual o saldo devedor dele?")
-        if isAnaphoricContractPayoffFollowUp(normPrompt) {
-            return QueryAnalysisBriefing(
-                originalPrompt: prompt,
-                normalizedPrompt: normPrompt,
-                intentKind: .loanOrFinancingSimulation,
-                expectedLength: .analytical,
-                contextMode: .followUp(topic: .loanOrFinancingSimulation, entityName: "contrato selecionado"),
-                previousTurnSummary: previousTurnSummary,
-                standardizedSearchQuery: "quitação contrato valor presente saldo devedor",
-                targetCategoryName: nil,
-                targetAccountName: nil,
-                targetDateRange: nil,
-                targetMonth: store.selectedMonth,
-                numericParameters: [],
-                transactionTypeFilter: nil,
-                tone: "consultivo e transparente"
-            )
-        }
+
 
         // 4.5 Pergunta anafórica sobre categoria ("dessa categoria", "nela", "quanto gastei nela")
         if isAnaphoricCategoryFollowUp(normPrompt), (memory.lastMentionedCategoryId != nil || memory.lastCategoryId != nil) {

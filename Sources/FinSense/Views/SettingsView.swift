@@ -50,6 +50,147 @@ public struct SettingsView: View {
     }
 }
 
+// MARK: - Painel Reativo de Sincronização em Nuvem (Observador Direto de CloudSyncService)
+
+public struct CloudSyncSettingsCardView: View {
+    @ObservedObject public var sync: CloudSyncService
+    @ObservedObject public var store: FinancialDataStore
+
+    public init(sync: CloudSyncService, store: FinancialDataStore) {
+        self.sync = sync
+        self.store = store
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle("Ativar Sincronização em Nuvem", isOn: Binding(
+                get: { sync.isEnabled },
+                set: { newValue in
+                    sync.isEnabled = newValue
+                    if newValue {
+                        sync.performSync()
+                    } else {
+                        sync.syncStatus = .disabled
+                    }
+                }
+            ))
+            .font(.system(size: 14, weight: .semibold))
+
+            Text("Quando ativado, as alterações salvas localmente são enviadas silenciosamente ao servidor em segundo plano e sincronizadas bidirecionalmente.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            // Opções avançadas de sync (APENAS se ativado)
+            if sync.isEnabled {
+                Divider()
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Configurações do Servidor")
+                        .font(.subheadline.bold())
+
+                    HStack(spacing: 12) {
+                        Text("URL da API:")
+                            .font(.caption.bold())
+                            .frame(width: 80, alignment: .leading)
+                        TextField("URL da API Backend", text: Binding(
+                            get: { sync.baseURLString },
+                            set: { sync.baseURLString = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                    }
+
+                    HStack(spacing: 12) {
+                        Text("Client ID:")
+                            .font(.caption.bold())
+                            .frame(width: 80, alignment: .leading)
+                        Text(sync.clientId)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+
+                    HStack(spacing: 12) {
+                        Text("Status:")
+                            .font(.caption.bold())
+                            .frame(width: 80, alignment: .leading)
+                        HStack(spacing: 6) {
+                            Image(systemName: sync.syncStatus.iconSymbol)
+                            Text(sync.syncStatus.statusDescription)
+                                .font(.caption)
+                        }
+                        Spacer()
+                        if let last = sync.lastSyncDate {
+                            Text("Último sync: \(BRLFormatters.shortDate(last))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Divider()
+
+                    HStack(spacing: 12) {
+                        Button {
+                            sync.performSync()
+                        } label: {
+                            if sync.isSyncing {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Sincronizando...")
+                                }
+                            } else {
+                                Label("Sincronizar Agora", systemImage: "arrow.clockwise")
+                                    .fontWeight(.semibold)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
+
+                        Button {
+                            sync.triggerInitialSeed()
+                        } label: {
+                            if sync.isSeeding {
+                                HStack(spacing: 6) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                    Text("Preparando Envio...")
+                                }
+                            } else {
+                                Label("Forçar Envio Completo da Base (Initial Seed)", systemImage: "arrow.up.to.line")
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
+
+                        Spacer()
+                    }
+
+                    if sync.isSyncing {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Sincronizando dados com o servidor...")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 4)
+                    }
+
+                    if sync.isSeeding {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ProgressView(value: sync.seedProgress, total: 1.0)
+                                .progressViewStyle(.linear)
+                            Text(sync.seedStatusText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 4)
+                    }
+                }
+            }
+        }
+    }
+}
+
 // MARK: - 0. Configurações Gerais ("Recomeçar do zero")
 
 public struct GeneralSettingsSectionView: View {
@@ -162,6 +303,7 @@ public struct GeneralSettingsSectionView: View {
 
                             Button {
                                 authService.logout()
+                                store.cloudSyncService?.resetSyncState()
                                 store.cloudSyncService?.syncStatus = .disabled
                             } label: {
                                 Text("Sair da Conta")
@@ -173,134 +315,9 @@ public struct GeneralSettingsSectionView: View {
 
                         Divider()
 
-                        // Toggle de Sincronização
+                        // Painel Reativo de Sincronização em Nuvem
                         if let sync = store.cloudSyncService {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Toggle("Ativar Sincronização em Nuvem", isOn: Binding(
-                                    get: { sync.isEnabled },
-                                    set: { newValue in
-                                        sync.isEnabled = newValue
-                                        if newValue {
-                                            sync.performSync()
-                                        } else {
-                                            sync.syncStatus = .disabled
-                                        }
-                                    }
-                                ))
-                                .font(.system(size: 14, weight: .semibold))
-
-                                Text("Quando ativado, as alterações salvas localmente são enviadas silenciosamente ao servidor em segundo plano e sincronizadas bidirecionalmente.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                // Opções avançadas de sync (APENAS se ativado)
-                                if sync.isEnabled {
-                                    Divider()
-
-                                    VStack(alignment: .leading, spacing: 12) {
-                                        Text("Configurações do Servidor")
-                                            .font(.subheadline.bold())
-
-                                        HStack(spacing: 12) {
-                                            Text("URL da API:")
-                                                .font(.caption.bold())
-                                                .frame(width: 80, alignment: .leading)
-                                            TextField("URL da API Backend", text: Binding(
-                                                get: { sync.baseURLString },
-                                                set: { sync.baseURLString = $0 }
-                                            ))
-                                            .textFieldStyle(.roundedBorder)
-                                            .font(.system(.body, design: .monospaced))
-                                        }
-
-                                        HStack(spacing: 12) {
-                                            Text("Client ID:")
-                                                .font(.caption.bold())
-                                                .frame(width: 80, alignment: .leading)
-                                            Text(sync.clientId)
-                                                .font(.system(.caption, design: .monospaced))
-                                                .foregroundStyle(.secondary)
-                                            Spacer()
-                                        }
-
-                                        HStack(spacing: 12) {
-                                            Text("Status:")
-                                                .font(.caption.bold())
-                                                .frame(width: 80, alignment: .leading)
-                                            HStack(spacing: 6) {
-                                                Image(systemName: sync.syncStatus.iconSymbol)
-                                                Text(sync.syncStatus.statusDescription)
-                                                    .font(.caption)
-                                            }
-                                            Spacer()
-                                            if let last = sync.lastSyncDate {
-                                                Text("Último sync: \(BRLFormatters.shortDate(last))")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                        }
-
-                                        Divider()
-
-                                        HStack(spacing: 12) {
-                                            Button {
-                                                sync.performSync()
-                                            } label: {
-                                                if sync.isSyncing {
-                                                    HStack(spacing: 6) {
-                                                        ProgressView().controlSize(.small)
-                                                        Text("Sincronizando...")
-                                                    }
-                                                } else {
-                                                    Label("Sincronizar Agora", systemImage: "arrow.clockwise")
-                                                        .fontWeight(.semibold)
-                                                }
-                                            }
-                                            .buttonStyle(.borderedProminent)
-                                            .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
-
-                                            Button {
-                                                sync.triggerInitialSeed()
-                                            } label: {
-                                                if sync.isSeeding {
-                                                    HStack(spacing: 6) {
-                                                        ProgressView()
-                                                            .controlSize(.small)
-                                                        Text("Preparando Envio...")
-                                                    }
-                                                } else {
-                                                    Label("Forçar Envio Completo da Base (Initial Seed)", systemImage: "arrow.up.to.line")
-                                                }
-                                            }
-                                            .buttonStyle(.bordered)
-                                            .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
-
-                                            Spacer()
-                                        }
-
-                                        if sync.isSyncing {
-                                            HStack(spacing: 6) {
-                                                ProgressView().controlSize(.small)
-                                                Text("Sincronizando dados com o servidor...")
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            .padding(.top, 4)
-                                        }
-
-                                        if sync.isSeeding {
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                ProgressView(value: sync.seedProgress, total: 1.0)
-                                                    .progressViewStyle(.linear)
-                                                Text(sync.seedStatusText)
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                            }
-                                            .padding(.top, 4)
-                                        }
-                                    }
-                                }
-                            }
+                            CloudSyncSettingsCardView(sync: sync, store: store)
                         }
                     }
                     .padding(20)
