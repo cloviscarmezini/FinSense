@@ -13,6 +13,34 @@ public final class LocalLLMService: ObservableObject {
     @Published public var isTypingResponse: Bool = false
     @Published public var shouldCloseChatSheet: Bool = false
 
+    public static let systemPrompt: String = """
+    Você é um Agente Financeiro Pessoal de Inteligência Artificial, rodando localmente de forma privada no dispositivo do usuário. Sua missão é ser um consultor financeiro analítico, preciso e altamente contextual.
+
+    DIRETIVAS DE CONVERSAÇÃO E MEMÓRIA:
+    1. CONTINUIDADE (MULTI-TURN): O usuário fará perguntas curtas como 'E no cenário 3?', 'quanto gastei nela?', 'como pagar mais rápido?'. Você DEVE analisar o histórico do chat para entender a qual entidade (contrato, dívida, categoria, mês ou simulação) ele está se referindo. Nunca responda 'Não sei a qual cenário você se refere' se isso foi dito nas mensagens anteriores.
+    2. RESET DE CONTEXTO EXPLÍCITO: Se a última mensagem começar com '[NOVA SIMULAÇÃO DO SISTEMA]', esqueça o assunto anterior e concentre-se exclusivamente nos dados desta nova mensagem.
+    3. RESPOSTAS DIRETAS E CONCISAS: Não dê voltas. Responda exatamente o que o usuário perguntou com dados, números e clareza.
+    4. ZERO ALUCINAÇÃO: Baseie-se 100% nos dados fornecidos na tag [CONTEXTO DO BANCO DE DADOS ATUALIZADO]. Se um dado não estiver lá nem no histórico, declare que não possui essa informação.
+
+    DIRETIVAS DE NEGÓCIO E VIABILIDADE (MUITO IMPORTANTE):
+    1. ANÁLISE DE CAIXA REAL: Antes de recomendar amortizações, quitações ou gastos, cruze OBRIGATORIAMENTE o valor sugerido com a 'Sobra Líquida Mensal' e o 'Saldo Disponível' informados no contexto.
+    2. NUNCA SUGIRA O IMPOSSÍVEL: Se o usuário tem Sobra Líquida de R$ 500,00, você JAMAIS pode sugerir uma parcela de amortização de R$ 1.500,00 sem alertar explicitamente de onde esse dinheiro virá (ex: cortar outras despesas ou usar reserva).
+    3. ALERTA DE RUNWAY / QUEIMA DE CAIXA: Se as despesas superam as receitas, ou se a quitação sugerida zerar a reserva de emergência, emita um aviso de risco financeiro em destaque.
+
+    ESTRUTURA DA SUA RESPOSTA:
+    - Use Markdown limpo (títulos # ou ##, listas com bullets e negrito nos valores e métricas chave).
+    - Seja empático, analítico e técnico como um CFO pessoal.
+    - SEMPRE termine com exatamente UMA sugestão ou pergunta de seguimento instigante para manter a conversa fluindo.
+    """
+
+    public static func ensureSystemPromptInjected(store: FinancialDataStore) {
+        if store.chatHistory.first?.role != .system {
+            store.chatHistory.insert(ChatMessage(role: .system, content: systemPrompt), at: 0)
+        } else if store.chatHistory.first?.content != systemPrompt {
+            store.chatHistory[0] = ChatMessage(role: .system, content: systemPrompt)
+        }
+    }
+
     public static let suggestedModels: [(id: String, name: String, description: String, sizeEstimate: String)] = [
         (
             id: "Qwen/Qwen2.5-3B-Instruct-GGUF",
@@ -355,6 +383,8 @@ public final class LocalLLMService: ObservableObject {
         }
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        Self.ensureSystemPromptInjected(store: store)
 
         let userMsg = ChatMessage(role: .user, content: trimmed)
         store.chatHistory.append(userMsg)
@@ -1476,53 +1506,33 @@ public final class LocalLLMService: ObservableObject {
         if !shorterTermContracts.isEmpty {
             let otherList = shorterTermContracts.map { c in
                 let r = store.remainingInstallmentsCount(for: c)
-                return "• **\(c.name):** \(r)x restantes de **\(BRLFormatters.currency(c.installmentAmount))/mês** (Taxa: `\(String(format: "%.2f", c.monthlyInterestRate))% a.m.`)"
-            }.joined(separator: "\n")
+                return "\(c.name) (\(r)x restantes de \(BRLFormatters.currency(c.installmentAmount))/mês, taxa \(String(format: "%.2f", c.monthlyInterestRate))% a.m.)"
+            }.joined(separator: "; ")
 
             snowballSection = """
-
-            ### 3. Estratégia "Bola de Neve" com Seus Demais Contratos
-            Você possui outros contratos de prazo mais curto que atualmente consomem **\(BRLFormatters.currency(extraCashFreedWhenShorterEnd))/mês** do seu fluxo:
-            \(otherList)
-            - **Alavanca de Aceleração:** Assim que esses contratos encerrarem (em até **\(shorterTermMaxMonths) meses**), direcione integralmente os **+\(BRLFormatters.currency(extraCashFreedWhenShorterEnd))/mês** liberados para amortizar o saldo devedor de **\(contract.name)**!
+            - Estratégia Efeito Bola de Neve com Demais Contratos:
+              - Contratos menores que encerram antes: \(otherList)
+              - Fluxo que será liberado ao quitar menores: +\(BRLFormatters.currency(extraCashFreedWhenShorterEnd))/mês em até \(shorterTermMaxMonths) meses
             """
         }
 
         return """
-        ## Plano de Ação para Quitação no Menor Prazo: **\(contract.name)**
-        *Simulação personalizada cruzando o saldo devedor do contrato com o seu fluxo de caixa mensal diluído*
-
-        ### 1. Diagnóstico Atual do \(contract.kind.title)
-        - **Contrato:** **\(contract.name)**\(contractNoText) (*\(contract.kind.title) - \(contract.subtypeDisplayName) • Sistema \(contract.amortizationSystem.rawValue)*)
-        - **Parcelas Restantes:** **\(formatYearsAndMonths(remCount))** × **\(BRLFormatters.currency(contract.installmentAmount))/mês** (Vencimento todo dia \(contract.billingDay))
-        - **Taxa de Juros do Contrato:** `\(String(format: "%.2f", contract.monthlyInterestRate))% a.m.`
-        - **Soma Nominal das Parcelas Futuras (com juros até o fim):** **\(BRLFormatters.currency(nominalRemaining))**
-        - **Saldo Devedor Atual / Projeção para Quitar Hoje:** **\(BRLFormatters.currency(payoffToday))** *(Juros futuros embutidos que podem ser eliminados: **\(BRLFormatters.currency(totalInterestEmbedded))**)*
-
-        ### 2. Sua Capacidade Mensal de Amortização (Fluxo de Caixa)
-        - **Receita Operacional Média:** **\(BRLFormatters.currency(avgMonthlyIncome)) / mês**
-        - **Despesa Operacional Média (já incluindo a parcela de \(BRLFormatters.currency(contract.installmentAmount))):** **\(BRLFormatters.currency(avgMonthlyExpense)) / mês**
-        - **Sobra Líquida Mensal (Capacidade de Amortização Extra):** **\(avgMonthlySurplus >= 0 ? "+" : "")\(BRLFormatters.currency(avgMonthlySurplus)) / mês**
-        - **Saldo Disponível Hoje:** \(BRLFormatters.currency(immediateLiquidityNow)) | **Saldo Projetado Fim de \(currentMonthLabel):** **\(BRLFormatters.currency(projectedEndOfCurrentMonth))**
+        Fatos do Contrato para Quitação (Dados Brutos):
+        - Contrato: \(contract.name) (\(contract.kind.title) - \(contract.subtypeDisplayName), Sistema \(contract.amortizationSystem.rawValue))\(contractNoText)
+        - Parcelas Restantes: \(remCount)x de \(BRLFormatters.currency(contract.installmentAmount))/mês (Vencimento todo dia \(contract.billingDay))
+        - Taxa de Juros: \(String(format: "%.2f", contract.monthlyInterestRate))% a.m.
+        - Saldo Devedor Atual / Valor para Quitar Hoje: \(BRLFormatters.currency(payoffToday))
+        - Soma Nominal das Parcelas Futuras (com juros até o fim): \(BRLFormatters.currency(nominalRemaining))
+        - Juros Futuros Embutidos que Podem Ser Eliminados: \(BRLFormatters.currency(totalInterestEmbedded))
+        - Receita Operacional Média: \(BRLFormatters.currency(avgMonthlyIncome))/mês
+        - Despesa Operacional Média: \(BRLFormatters.currency(avgMonthlyExpense))/mês
+        - Sobra Líquida Mensal: \(BRLFormatters.currency(avgMonthlySurplus))/mês
+        - Saldo Disponível Hoje: \(BRLFormatters.currency(immediateLiquidityNow))
+        - Saldo Projetado Fim de \(currentMonthLabel): \(BRLFormatters.currency(projectedEndOfCurrentMonth))
+        - Cenário 1 (Ritmo Original): Prazo \(formatYearsAndMonths(remCount)), Total Desembolsado: \(BRLFormatters.currency(nominalRemaining))
+        - Cenário 2 (Amortização Moderada +\(BRLFormatters.currency(moderateExtra))/mês): Prazo \(formatYearsAndMonths(simModerate.months)) (\(simModerate.payoffDateLabel)), Economia de Juros: \(BRLFormatters.currency(simModerate.interestSaved)), \(formatYearsAndMonths(monthsCutModerate)) a menos
+        - Cenário 3 (Amortização Agressiva +\(BRLFormatters.currency(aggressiveExtra))/mês): Prazo \(formatYearsAndMonths(simAggressive.months)) (\(simAggressive.payoffDateLabel)), Economia de Juros: \(BRLFormatters.currency(simAggressive.interestSaved)), \(formatYearsAndMonths(monthsCutAggressive)) a menos
         \(snowballSection)
-
-        ### \(shorterTermContracts.isEmpty ? "3" : "4"). Simulação de Prazo e Economia de Juros
-        - **Cenário 1 — Ritmo Original (Sem Amortizações Extras):**
-          - Prazo restante: **\(formatYearsAndMonths(remCount))**
-          - Total desembolsado: \(BRLFormatters.currency(nominalRemaining))
-        - **Cenário 2 — Plano Moderado (Amortizando +\(BRLFormatters.currency(moderateExtra))/mês no Prazo):**
-          - **Novo Prazo Estimado:** **\(formatYearsAndMonths(simModerate.months))** (previsão de quitação em **\(simModerate.payoffDateLabel)**)
-          - **Tempo Eliminado:** **\(formatYearsAndMonths(monthsCutModerate)) a menos**
-          - **Economia Estimada de Juros:** **\(BRLFormatters.currency(simModerate.interestSaved))**
-        - **🚀 Cenário 3 — Plano Agressivo de Menor Prazo Possível (Amortizando +\(BRLFormatters.currency(aggressiveExtra))/mês\(shorterTermContracts.isEmpty ? "" : " + Efeito Bola de Neve de +\(BRLFormatters.currency(extraCashFreedWhenShorterEnd))/mês")):**
-          - **Novo Prazo Mínimo Projetado:** **\(formatYearsAndMonths(simAggressive.months))** (previsão de quitação em **\(simAggressive.payoffDateLabel)**!)
-          - **Tempo Eliminado:** **\(formatYearsAndMonths(monthsCutAggressive)) eliminados do contrato**
-          - **Economia Estimada de Juros:** **\(BRLFormatters.currency(simAggressive.interestSaved))** economizados!
-
-        ### \(shorterTermContracts.isEmpty ? "4" : "5"). Passo a Passo Recomendado para Executar Agora
-        1. **Sempre escolha "Redução de Prazo" (e nunca redução de parcela):** Na aba **\(contract.kind == .loan ? "Empréstimos" : "Financiamentos") → Amortizar Parcelas / Saldo**, aplique as amortizações extras abatendo as últimas parcelas de trás para frente, eliminando quase 100% dos juros compostos futuros.
-        2. **Amortize sempre na data de vencimento da prestação (dia \(contract.billingDay)) ou no fechamento do mês:** Após receber todos os salários do mês e garantir o pagamento das contas do mês, direcione a sobra líquida (**\(BRLFormatters.currency(aggressiveExtra))/mês**) para amortização extraordinária.
-        3. **Use 13º Salário, PLR/Bônus\(contract.kind == .financing && contract.financingSubtype == .imovel ? " e FGTS a cada 2 anos" : ""):** Qualquer aporte extraordinário direto no saldo devedor de **\(BRLFormatters.currency(payoffToday))** acelera drasticamente a queda dos juros mensais.
         """
     }
 
@@ -1530,37 +1540,33 @@ public final class LocalLLMService: ObservableObject {
         let debtSummary = store.buildComprehensiveDebtSummary()
         let topExpenses = store.categoryBreakdown(for: store.selectedMonth, type: .expense).prefix(5)
         let topList = topExpenses.isEmpty
-            ? "• Nenhuma despesa registrada no mês selecionado."
-            : topExpenses.map { "• **\($0.category.name):** \(BRLFormatters.currency($0.total)) (`\(String(format: "%.1f", $0.percentage))%`)" }.joined(separator: "\n")
+            ? "Nenhuma despesa registrada no mês selecionado."
+            : topExpenses.map { "- \($0.category.name): \(BRLFormatters.currency($0.total)) (\(String(format: "%.1f", $0.percentage))%)" }.joined(separator: "\n")
 
         let envelopes = store.provisionEnvelopes(for: store.selectedMonth)
         let remainingTotal = store.totalRemainingProvision(for: store.selectedMonth)
         let projectedEndOfMonth = store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
         let envelopesList = envelopes.isEmpty
-            ? "• Nenhuma provisão/teto configurado para este mês."
+            ? "Nenhuma provisão/teto configurado para este mês."
             : envelopes.map { env in
-                "• **\(env.category.name):** Gasto Real \(BRLFormatters.currency(env.realizedExpense)) de \(BRLFormatters.currency(env.estimatedAmount)) → Restante: **\(BRLFormatters.currency(env.remainingProvision))** (`\(String(format: "%.0f%%", env.clampedProgressPercentage))` • *\(env.status.rawValue)*)"
+                "- \(env.category.name): Gasto Real \(BRLFormatters.currency(env.realizedExpense)) de \(BRLFormatters.currency(env.estimatedAmount)), Restante: \(BRLFormatters.currency(env.remainingProvision)) (\(String(format: "%.0f%%", env.clampedProgressPercentage)), Status: \(env.status.rawValue))"
             }.joined(separator: "\n")
 
         return """
-        ## Panorama Completo da sua Base Financeira
-        - **Saldo Disponível em Contas:** **\(BRLFormatters.currency(store.totalCheckingBalanceNow))**
-        - **Total em Investimentos Consolidados:** **\(BRLFormatters.currency(store.consolidatedInvestmentsBalance))** *(Total geral investido: \(BRLFormatters.currency(store.totalInvestmentsBalance)))*
-        - **Patrimônio Consolidado Atual:** **\(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))**
-        - **Saldo Projetado de Fim de Mês (\(BRLFormatters.monthYear(store.selectedMonth))):** **\(BRLFormatters.currency(projectedEndOfMonth))** *(Provisão de Gastos Variáveis: **\(BRLFormatters.currency(remainingTotal)) restantes**)*
-
-        ### Previsões & Tetos do Mês (Envelopes Dinâmicos)
+        Fatos Gerais da Base Financeira (Dados Brutos):
+        - Saldo Disponível em Contas: \(BRLFormatters.currency(store.totalCheckingBalanceNow))
+        - Total em Investimentos Consolidados: \(BRLFormatters.currency(store.consolidatedInvestmentsBalance)) (Total geral investido: \(BRLFormatters.currency(store.totalInvestmentsBalance)))
+        - Patrimônio Consolidado Atual: \(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))
+        - Saldo Projetado de Fim de Mês (\(BRLFormatters.monthYear(store.selectedMonth))): \(BRLFormatters.currency(projectedEndOfMonth)) (Provisão de Gastos Variáveis: \(BRLFormatters.currency(remainingTotal)) restantes)
+        - Despesas pendentes no mês atual: \(BRLFormatters.currency(debtSummary.currentMonthUnpaidTotal))
+        - Despesas futuras agendadas: \(BRLFormatters.currency(debtSummary.futureRegularExpensesTotal))
+        - Dívidas em aberto: \(BRLFormatters.currency(debtSummary.unpaidDebtsTotal)) (\(debtSummary.activeDebts.count) item(ns))
+        - Empréstimos (Quitação): \(BRLFormatters.currency(debtSummary.loansProjectedPayoffTotal)) (Nominal: \(BRLFormatters.currency(debtSummary.loansRemainingNominalTotal)))
+        - Financiamentos (Quitação): \(BRLFormatters.currency(debtSummary.financingsProjectedPayoffTotal)) (Nominal: \(BRLFormatters.currency(debtSummary.financingsRemainingNominalTotal)))
+        - Total Acumulado de Passivos: \(BRLFormatters.currency(debtSummary.grandTotalNominal)) (Quitação à vista: \(BRLFormatters.currency(debtSummary.grandTotalWithPayoffProjection)))
+        - Envelopes do Mês:
         \(envelopesList)
-
-        ### Resumo de Dívidas e Compromissos
-        - **Despesas pendentes no mês atual:** \(BRLFormatters.currency(debtSummary.currentMonthUnpaidTotal))
-        - **Despesas futuras agendadas (parceladas/repetidas):** \(BRLFormatters.currency(debtSummary.futureRegularExpensesTotal))
-        - **Dívidas em aberto (aba Dívidas):** \(BRLFormatters.currency(debtSummary.unpaidDebtsTotal)) (\(debtSummary.activeDebts.count) item(ns))
-        - **Empréstimos (Projeção p/ quitar):** \(BRLFormatters.currency(debtSummary.loansProjectedPayoffTotal)) *(Nominal: \(BRLFormatters.currency(debtSummary.loansRemainingNominalTotal)))*
-        - **Financiamentos (Projeção p/ quitar):** \(BRLFormatters.currency(debtSummary.financingsProjectedPayoffTotal)) *(Nominal: \(BRLFormatters.currency(debtSummary.financingsRemainingNominalTotal)))*
-        - **Total Acumulado de Passivos:** **\(BRLFormatters.currency(debtSummary.grandTotalNominal))** *(Para quitação à vista hoje: **\(BRLFormatters.currency(debtSummary.grandTotalWithPayoffProjection))**)*
-
-        ### Maiores Despesas por Categoria (\(BRLFormatters.monthYear(store.selectedMonth)))
+        - Maiores Despesas por Categoria:
         \(topList)
         """
     }

@@ -209,7 +209,7 @@ public struct DebtsView: View {
                 Spacer()
 
                 Button {
-                    let question = "Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida \"\(debt.name)\"?"
+                    let question = "[NOVA SIMULAÇÃO DO SISTEMA] Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida \"\(debt.name)\"?"
                     store.requireInstalledLLM(forFeature: "Simular Prazo da Dívida '\(debt.name)' na IA Local") {
                         store.isAIChatPresented = true
                         Task {

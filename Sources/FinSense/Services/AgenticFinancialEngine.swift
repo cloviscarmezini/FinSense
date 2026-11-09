@@ -845,6 +845,40 @@ public final class AgenticFinancialEngine {
         return mem
     }
 
+    public static func buildEnrichedUserPrompt(
+        originalPrompt: String,
+        store: FinancialDataStore,
+        ragHits: [RAGSearchResult] = [],
+        rawFacts: String? = nil
+    ) -> String {
+        let saldoDisponivel = BRLFormatters.currency(store.totalCheckingBalanceNow)
+        let monthlyIncome = store.monthlyIncome(for: store.selectedMonth)
+        let monthlyExpense = store.monthlyExpense(for: store.selectedMonth)
+        let surplus = monthlyIncome - monthlyExpense
+        let surplusFormatted = (surplus >= 0 ? "+" : "") + BRLFormatters.currency(surplus) + " / mês (Receitas: \(BRLFormatters.currency(monthlyIncome)), Despesas: \(BRLFormatters.currency(monthlyExpense)))"
+
+        var entitiesLines: [String] = []
+        if let raw = rawFacts, !raw.isEmpty {
+            entitiesLines.append(raw)
+        }
+        for hit in ragHits.prefix(6) {
+            entitiesLines.append("• [\(hit.document.entityType.rawValue)] \(hit.document.title): \(hit.document.content)")
+        }
+        let entitiesBlock = entitiesLines.isEmpty ? "Nenhum registro específico adicional." : entitiesLines.joined(separator: "\n")
+
+        return """
+        [CONTEXTO DO BANCO DE DADOS ATUALIZADO]
+        - Saldo Disponível Hoje: \(saldoDisponivel)
+        - Sobra Líquida Real (Receitas - Despesas): \(surplusFormatted)
+        - Entidades relevantes encontradas:
+        \(entitiesBlock)
+        [FIM DO CONTEXTO]
+
+        Mensagem do usuário:
+        \(originalPrompt)
+        """
+    }
+
     // MARK: - Multi-Agent Collaborative Architecture: Agente 1 -> Agente 2 <-> Agente 3 -> Agente 4
 
     public static func runAgentLoop(
@@ -863,6 +897,12 @@ public final class AgenticFinancialEngine {
         let normPrompt = FinancialRAGIndex.normalizeText(cleanPrompt)
         var mem = memory(for: store)
         mem.loopTurnCount += 1
+
+        // Diretiva 2 do System Prompt: Reset explícito de contexto para novas simulações disparadas pelo sistema
+        if cleanPrompt.contains("[NOVA SIMULAÇÃO DO SISTEMA]") {
+            mem.resetTopicMemory()
+            recordStep("🔄 Reset de Contexto: Nova simulação do sistema detectada. Tópico iniciado sem herdar histórico prévio.")
+        }
 
         // =========================================================================
         // AGENTE 1: ANALISADOR FIXO DE INTENÇÃO, PERFIL E CONTEXTO CONVERSACIONAL
@@ -982,6 +1022,24 @@ public final class AgenticFinancialEngine {
         // Aplica o tom, humor e tamanho ideal definidos pelo Agente 1 (curto e direto
         // para perguntas pontuais, analítico para simulações e projeções complexas).
         // =========================================================================
+        let rawFactsText: String = {
+            var parts: [String] = []
+            if !finalPayload.primaryFactSummary.isEmpty {
+                parts.append(finalPayload.primaryFactSummary)
+            }
+            if let raw = finalPayload.rawResultMarkdown, !raw.isEmpty {
+                parts.append(raw)
+            }
+            return parts.joined(separator: "\n")
+        }()
+
+        _ = buildEnrichedUserPrompt(
+            originalPrompt: cleanPrompt,
+            store: store,
+            ragHits: ragHits,
+            rawFacts: rawFactsText
+        )
+        recordStep("📥 Injeção de Contexto RAG: Sobra Líquida e Saldo Disponível vinculados ao prompt analítico")
         recordStep("✍️ Agente 4 (Síntese & Formatação): Gerando resposta final no tom `\(briefing.tone)` com tamanho `\(briefing.expectedLength.rawValue)`...")
 
         let synthesized = synthesizeFinalResponse(
@@ -1302,6 +1360,26 @@ public final class AgenticFinancialEngine {
                 numericParameters: [],
                 transactionTypeFilter: nil,
                 tone: "consultivo e transparente"
+            )
+        }
+
+        // 3.10.2 Pergunta de seguimento sobre cenários ou amortização ("E no Cenário 3?", "Como arrumo esse valor?")
+        if isScenarioOrAmortizationFollowUp(normPrompt) {
+            return QueryAnalysisBriefing(
+                originalPrompt: prompt,
+                normalizedPrompt: normPrompt,
+                intentKind: .loanOrFinancingSimulation,
+                expectedLength: .analytical,
+                contextMode: .followUp(topic: .loanOrFinancingSimulation, entityName: memory.lastMentionedContractId != nil ? "contrato em análise" : nil),
+                previousTurnSummary: previousTurnSummary,
+                standardizedSearchQuery: "cenário amortização simulação quitação contrato",
+                targetCategoryName: nil,
+                targetAccountName: nil,
+                targetDateRange: nil,
+                targetMonth: store.selectedMonth,
+                numericParameters: [],
+                transactionTypeFilter: nil,
+                tone: "consultivo, analítico e motivador"
             )
         }
 
@@ -1657,6 +1735,35 @@ public final class AgenticFinancialEngine {
                         suggestedFollowUps: [
                             "E se eu amortizar R$ 1.000 extras neste contrato?",
                             "Quanto falta para quitar o segundo contrato?",
+                            "Obrigado, pode encerrar"
+                        ],
+                        retryCount: retryCount,
+                        criticNotes: []
+                    )
+                }
+            }
+
+            if isScenarioOrAmortizationFollowUp(briefing.normalizedPrompt) {
+                let pool = memory.lastMentionedContractIds.compactMap { id in store.contracts.first(where: { $0.id == id }) }
+                let candidates = pool.isEmpty ? (store.activeContracts(for: .loan) + store.activeContracts(for: .financing)) : pool
+                let targetContract = candidates.first(where: { $0.id == memory.lastMentionedContractId }) ?? candidates.first
+                if let contract = targetContract {
+                    recordStep("🔄 Continuidade Multi-Turn: Detalhando cenário de amortização para o contrato '\(contract.name)'")
+                    memory.lastMentionedContractId = contract.id
+                    let rawPlan = LocalLLMService.buildContractPayoffActionPlan(for: contract, store: store)
+                    return RetrievalExecutionPayload(
+                        intentKind: .loanOrFinancingSimulation,
+                        expectedLength: .analytical,
+                        isSuccess: true,
+                        primaryFactSummary: "Simulação de amortização do contrato \(contract.name)",
+                        transactionFacts: [],
+                        accountFacts: [],
+                        metricFacts: [:],
+                        rawResultMarkdown: rawPlan,
+                        ragHits: ragHits,
+                        suggestedFollowUps: [
+                            "E no Cenário 3?",
+                            "Como arrumo esse valor para amortizar?",
                             "Obrigado, pode encerrar"
                         ],
                         retryCount: retryCount,
@@ -2742,16 +2849,305 @@ public final class AgenticFinancialEngine {
                 updatedMemory: memory
             )
 
-        default:
-            let resolved = payload.rawResultMarkdown ?? LocalLLMService.generateComprehensiveDatabaseOverview(store: store)
+        case .loanOrFinancingSimulation:
+            if let raw = payload.rawResultMarkdown {
+                if raw.contains("Qual financiamento") || raw.contains("Qual empréstimo") || raw.contains("Qual contrato") {
+                    return AgentExecutionOutput(
+                        responseMarkdown: raw,
+                        executedSteps: steps,
+                        suggestedFollowUps: payload.suggestedFollowUps,
+                        shouldCloseChat: false,
+                        updatedMemory: memory
+                    )
+                }
+                if raw.contains("Fatos do Contrato para Quitação") {
+                    let formatted = synthesizeContractActionPlanMarkdown(from: raw, store: store, briefing: briefing)
+                    return AgentExecutionOutput(
+                        responseMarkdown: formatted,
+                        executedSteps: steps,
+                        suggestedFollowUps: payload.suggestedFollowUps,
+                        shouldCloseChat: false,
+                        updatedMemory: memory
+                    )
+                }
+                return AgentExecutionOutput(
+                    responseMarkdown: raw,
+                    executedSteps: steps,
+                    suggestedFollowUps: payload.suggestedFollowUps,
+                    shouldCloseChat: false,
+                    updatedMemory: memory
+                )
+            }
             return AgentExecutionOutput(
-                responseMarkdown: resolved,
+                responseMarkdown: "Não foi possível carregar os dados dos contratos.",
+                executedSteps: steps,
+                suggestedFollowUps: payload.suggestedFollowUps,
+                shouldCloseChat: false,
+                updatedMemory: memory
+            )
+
+        case .generalOverview:
+            let raw = payload.rawResultMarkdown ?? LocalLLMService.generateComprehensiveDatabaseOverview(store: store)
+            let formatted = synthesizeGeneralOverviewMarkdown(from: raw, store: store)
+            return AgentExecutionOutput(
+                responseMarkdown: formatted,
+                executedSteps: steps,
+                suggestedFollowUps: payload.suggestedFollowUps,
+                shouldCloseChat: false,
+                updatedMemory: memory
+            )
+
+        default:
+            if let raw = payload.rawResultMarkdown {
+                if raw.contains("Fatos do Contrato para Quitação") {
+                    let formatted = synthesizeContractActionPlanMarkdown(from: raw, store: store, briefing: briefing)
+                    return AgentExecutionOutput(
+                        responseMarkdown: formatted,
+                        executedSteps: steps,
+                        suggestedFollowUps: payload.suggestedFollowUps,
+                        shouldCloseChat: false,
+                        updatedMemory: memory
+                    )
+                }
+                if raw.contains("Fatos Gerais da Base Financeira") {
+                    let formatted = synthesizeGeneralOverviewMarkdown(from: raw, store: store)
+                    return AgentExecutionOutput(
+                        responseMarkdown: formatted,
+                        executedSteps: steps,
+                        suggestedFollowUps: payload.suggestedFollowUps,
+                        shouldCloseChat: false,
+                        updatedMemory: memory
+                    )
+                }
+                return AgentExecutionOutput(
+                    responseMarkdown: raw,
+                    executedSteps: steps,
+                    suggestedFollowUps: payload.suggestedFollowUps,
+                    shouldCloseChat: false,
+                    updatedMemory: memory
+                )
+            }
+            let overviewRaw = LocalLLMService.generateComprehensiveDatabaseOverview(store: store)
+            let formatted = synthesizeGeneralOverviewMarkdown(from: overviewRaw, store: store)
+            return AgentExecutionOutput(
+                responseMarkdown: formatted,
                 executedSteps: steps,
                 suggestedFollowUps: payload.suggestedFollowUps,
                 shouldCloseChat: false,
                 updatedMemory: memory
             )
         }
+    }
+
+    private static func synthesizeContractActionPlanMarkdown(
+        from raw: String,
+        store: FinancialDataStore,
+        briefing: QueryAnalysisBriefing
+    ) -> String {
+        var facts: [String: String] = [:]
+        for line in raw.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("- ") {
+                let content = String(trimmed.dropFirst(2))
+                if let colonIdx = content.firstIndex(of: ":") {
+                    let key = String(content[..<colonIdx]).trimmingCharacters(in: .whitespaces)
+                    let val = String(content[content.index(after: colonIdx)...]).trimmingCharacters(in: .whitespaces)
+                    facts[key] = val
+                }
+            }
+        }
+
+        let contractRaw = facts["Contrato"] ?? "Contrato de Crédito"
+        let contractName: String = {
+            let beforeParen = contractRaw.components(separatedBy: "(").first?.trimmingCharacters(in: .whitespaces) ?? ""
+            return beforeParen.isEmpty ? "Seu Contrato" : beforeParen
+        }()
+        let contractDetails: String = {
+            if let startParen = contractRaw.firstIndex(of: "(") {
+                return " (*" + String(contractRaw[startParen...]) + "*)"
+            }
+            return ""
+        }()
+
+        let remCount = facts["Parcelas Restantes"] ?? "Parcelas restantes"
+        let rate = facts["Taxa de Juros"] ?? "Não informada"
+        let payoffToday = facts["Saldo Devedor Atual / Valor para Quitar Hoje"] ?? "R$ 0,00"
+        let nominalTotal = facts["Soma Nominal das Parcelas Futuras (com juros até o fim)"] ?? "R$ 0,00"
+        let interestEmbedded = facts["Juros Futuros Embutidos que Podem Ser Eliminados"] ?? "R$ 0,00"
+
+        let income = facts["Receita Operacional Média"] ?? BRLFormatters.currency(store.monthlyIncome(for: store.selectedMonth))
+        let expense = facts["Despesa Operacional Média"] ?? BRLFormatters.currency(store.monthlyExpense(for: store.selectedMonth))
+        let surplus = facts["Sobra Líquida Mensal"] ?? "R$ 0,00"
+        let immediateLiquidity = facts["Saldo Disponível Hoje"] ?? BRLFormatters.currency(store.totalCheckingBalanceNow)
+        let projectedEndMonth = facts["Saldo Projetado Fim de \(BRLFormatters.monthYear(store.selectedMonth))"] ?? "R$ 0,00"
+
+        let cenario1 = facts["Cenário 1 (Ritmo Original)"] ?? "Prazo original do contrato"
+        let cenario2 = facts["Cenário 2 (Amortização Moderada)"] ?? facts.first(where: { $0.key.contains("Cenário 2") })?.value ?? ""
+        let cenario3 = facts["Cenário 3 (Amortização Agressiva)"] ?? facts.first(where: { $0.key.contains("Cenário 3") })?.value ?? ""
+
+        let norm = briefing.normalizedPrompt
+        if norm.contains("cenario 3") || norm.contains("cenario 03") || norm.contains("terceiro cenario") {
+            return """
+            ## Detalhamento do Cenário 3: **\(contractName)**
+            *Simulação aprofundada de amortização agressiva com impacto direto no saldo devedor*
+
+            ### 🎯 Projeção do Cenário 3
+            - **Amortização Extra Sugerida:** \(cenario3)
+            - **Saldo Devedor Atual a Quitar:** **\(payoffToday)**
+            - **Sobra Líquida Mensal Disponível:** **\(surplus)** (Saldo Livre Hoje: **\(immediateLiquidity)**)
+
+            ### ⚖️ Análise de Viabilidade do CFO
+            - Para aplicar o aporte do Cenário 3 com máxima segurança financeira, reserve primeiro o valor de segurança mensal e utilize a sobra líquida consolidada.
+            - Abatendo parcelas no modelo de **Redução de Prazo**, cada aporte extraordinário elimina quase 100% dos juros futuros daquela parcela.
+
+            ---
+            💬 Gostaria de simular um aporte único com FGTS/13º ou calcular metas de corte para alcançar esse valor mensal?
+            """
+        }
+
+        if norm.contains("cenario 2") || norm.contains("cenario 02") || norm.contains("segundo cenario") {
+            return """
+            ## Detalhamento do Cenário 2: **\(contractName)**
+            *Simulação equilibrada de amortização moderada*
+
+            ### 🎯 Projeção do Cenário 2
+            - **Amortização Extra:** \(cenario2)
+            - **Saldo Devedor Atual:** **\(payoffToday)**
+            - **Sobra Líquida Mensal:** **\(surplus)**
+
+            ### ⚖️ Análise de Viabilidade do CFO
+            - Este cenário é altamente viável com sua geração de caixa atual, preservando margem para despesas imprevistas enquanto acelera a quitação do contrato.
+
+            ---
+            💬 Deseja comparar o Cenário 2 com o Cenário 3 ou simular a quitação à vista com recursos já investidos?
+            """
+        }
+
+        if norm.contains("como arrumo esse valor") || norm.contains("como arrumar esse valor") || norm.contains("de onde tiro") || norm.contains("como pagar mais rapido") {
+            return """
+            ## Estratégia de Composição de Caixa para Amortização: **\(contractName)**
+            *Análise de orçamento para viabilizar aportes extras sem comprometer a sua reserva de emergência*
+
+            ### 📊 Capacidade Atual de Poupança
+            - **Sobra Líquida Mensal:** **\(surplus)** (Saldo Disponível Hoje: **\(immediateLiquidity)**)
+            - **Recomendação:** Aporte sempre na data do vencimento ou no fechamento mensal, garantindo que todas as contas fixas já foram liquidadas.
+
+            ### 💡 Fontes de Recursos Recomendadas
+            1. **Otimização de Despesas Flexíveis:** Reduza gastos nas categorias variáveis com maior peso no seu mês.
+            2. **Receitas Extraordinárias:** Direcione 13º salário, férias ou bônus/PLR integralmente para amortização com **redução de prazo**, cortando anos de juros futuros.
+            3. **Efeito Bola de Neve:** Ao quitar contratos menores ou dívidas em aberto, use o valor das parcelas encerradas para turbinar a quitação deste contrato.
+
+            ---
+            💬 Deseja simular um aporte de valor específico ou analisar suas maiores despesas para corte?
+            """
+        }
+
+        let viabilityAlert: String = {
+            if surplus.contains("-") || surplus.hasPrefix("-") {
+                return """
+                > ⚠️ **ALERTA DE RUNWAY / QUEIMA DE CAIXA:** No momento seu fluxo médio opera com déficit mensal (\(surplus)). Antes de realizar aportes extraordinários, é recomendável reestruturar despesas essenciais para não consumir sua reserva de emergência.
+                """
+            } else {
+                return """
+                > 💡 **DIAGNÓSTICO DE CAIXA DO CFO:** Sua sobra operacional de **\(surplus)** permite manter as contas em dia e planejar amortizações extras com segurança, preservando a liquidez imediata de **\(immediateLiquidity)**.
+                """
+            }
+        }()
+
+        let snowballBlock: String = {
+            if raw.contains("Demais Contratos") || raw.contains("Bola de Neve") {
+                return """
+
+                ### 4. Estratégia Recomendada & Efeito Bola de Neve
+                - **Sempre escolha "Redução de Prazo" (e nunca redução de parcela):** Ao amortizar extraordinariamente, elimine as últimas parcelas de trás para frente. Isso abate o saldo devedor puro e corta juros futuros exponencialmente.
+                - **Efeito Bola de Neve com Demais Contratos:** Conforme seus contratos de menor prazo forem sendo quitados, direcione integralmente a parcela liberada para acelerar a quitação de **\(contractName)**.
+                """
+            } else {
+                return """
+
+                ### 4. Estratégia Recomendada & Efeito Bola de Neve
+                - **Sempre escolha "Redução de Prazo" (e nunca redução de parcela):** Ao amortizar extraordinariamente, elimine as últimas parcelas de trás para frente. Isso abate o saldo devedor puro e corta juros compostos futuros.
+                - **Amortize sempre na data de vencimento da prestação:** Garanta que todas as despesas do mês já tenham sido cobertas antes de enviar a sobra para amortização extraordinária.
+                """
+            }
+        }()
+
+        return """
+        ## Plano de Ação para Quitação no Menor Prazo: **\(contractName)**
+        *Simulação personalizada cruzando o saldo devedor do contrato com o seu fluxo de caixa mensal diluído*
+
+        ### 1. Diagnóstico do Contrato
+        - **Contrato:** **\(contractName)**\(contractDetails)
+        - **Parcelas Restantes:** **\(remCount)**
+        - **Taxa de Juros do Contrato:** `\(rate)`
+        - **Saldo Devedor Atual / Projeção para Quitar Hoje:** **\(payoffToday)** *(Juros futuros embutidos que podem ser eliminados: **\(interestEmbedded)**)*
+        - **Soma Nominal das Parcelas Futuras (com juros até o fim):** **\(nominalTotal)**
+
+        ### 2. Análise de Viabilidade de Caixa e Capacidade de Aporte
+        - **Receita Operacional Média:** \(income) | **Despesa Operacional Média:** \(expense)
+        - **Sobra Líquida Mensal Real:** **\(surplus)**
+        - **Saldo Disponível Hoje:** \(immediateLiquidity) | **Saldo Projetado Fim do Mês:** \(projectedEndMonth)
+        \(viabilityAlert)
+
+        ### 3. Simulação de Prazo e Economia de Juros
+        - **Cenário 1 (Ritmo Original):** \(cenario1)
+        - **Cenário 2 (Amortização Moderada):** \(cenario2)
+        - **Cenário 3 (Amortização Agressiva):** \(cenario3)
+        \(snowballBlock)
+
+        ---
+        💬 Deseja detalhar o impacto do Cenário 3 no seu saldo ou simular um aporte único de valor específico?
+        """
+    }
+
+    private static func synthesizeGeneralOverviewMarkdown(
+        from raw: String,
+        store: FinancialDataStore
+    ) -> String {
+        let checking = BRLFormatters.currency(store.totalCheckingBalanceNow)
+        let investConsol = BRLFormatters.currency(store.consolidatedInvestmentsBalance)
+        let investTotal = BRLFormatters.currency(store.totalInvestmentsBalance)
+        let patrimony = BRLFormatters.currency(store.totalConsolidatedPatrimonyNow)
+        let projectedMonthEnd = BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth))
+        let remainingProvisions = BRLFormatters.currency(store.totalRemainingProvision(for: store.selectedMonth))
+
+        let debtSummary = store.buildComprehensiveDebtSummary()
+        let topExpenses = store.categoryBreakdown(for: store.selectedMonth, type: .expense).prefix(5)
+        let topList = topExpenses.isEmpty
+            ? "• Nenhuma despesa registrada no mês selecionado."
+            : topExpenses.map { "• **\($0.category.name):** \(BRLFormatters.currency($0.total)) (`\(String(format: "%.1f", $0.percentage))%`)" }.joined(separator: "\n")
+
+        let envelopes = store.provisionEnvelopes(for: store.selectedMonth)
+        let envelopesList = envelopes.isEmpty
+            ? "• Nenhuma provisão/teto configurado para este mês."
+            : envelopes.map { env in
+                "• **\(env.category.name):** Gasto Real \(BRLFormatters.currency(env.realizedExpense)) de \(BRLFormatters.currency(env.estimatedAmount)) → Restante: **\(BRLFormatters.currency(env.remainingProvision))** (`\(String(format: "%.0f%%", env.clampedProgressPercentage))` • *\(env.status.rawValue)*)"
+            }.joined(separator: "\n")
+
+        return """
+        ## Panorama Completo da sua Base Financeira
+        - **Saldo Disponível em Contas:** **\(checking)**
+        - **Total em Investimentos Consolidados:** **\(investConsol)** *(Total geral investido: \(investTotal))*
+        - **Patrimônio Consolidado Atual:** **\(patrimony)**
+        - **Saldo Projetado de Fim de Mês (\(BRLFormatters.monthYear(store.selectedMonth))):** **\(projectedMonthEnd)** *(Provisão de Gastos Variáveis: **\(remainingProvisions) restantes**)*
+
+        ### Previsões & Tetos do Mês (Envelopes Dinâmicos)
+        \(envelopesList)
+
+        ### Resumo de Dívidas e Compromissos
+        - **Despesas pendentes no mês atual:** \(BRLFormatters.currency(debtSummary.currentMonthUnpaidTotal))
+        - **Despesas futuras agendadas (parceladas/repetidas):** \(BRLFormatters.currency(debtSummary.futureRegularExpensesTotal))
+        - **Dívidas em aberto (aba Dívidas):** \(BRLFormatters.currency(debtSummary.unpaidDebtsTotal)) (\(debtSummary.activeDebts.count) item(ns))
+        - **Empréstimos (Projeção p/ quitar):** \(BRLFormatters.currency(debtSummary.loansProjectedPayoffTotal)) *(Nominal: \(BRLFormatters.currency(debtSummary.loansRemainingNominalTotal)))*
+        - **Financiamentos (Projeção p/ quitar):** \(BRLFormatters.currency(debtSummary.financingsProjectedPayoffTotal)) *(Nominal: \(BRLFormatters.currency(debtSummary.financingsRemainingNominalTotal)))*
+        - **Total Acumulado de Passivos:** **\(BRLFormatters.currency(debtSummary.grandTotalNominal))** *(Para quitação à vista hoje: **\(BRLFormatters.currency(debtSummary.grandTotalWithPayoffProjection))**)*
+
+        ### Maiores Despesas por Categoria (\(BRLFormatters.monthYear(store.selectedMonth)))
+        \(topList)
+
+        ---
+        💬 Deseja aprofundar alguma categoria, simular quitação de dívidas ou analisar o ritmo de gastos deste mês?
+        """
     }
 
     private static func synthesizeClosingResponse(
@@ -3108,6 +3504,17 @@ public final class AgenticFinancialEngine {
                         normPrompt.contains("amortizar") || normPrompt.contains("termina quando") ||
                         normPrompt.contains("valor presente")
         return hasOrder && hasAction
+    }
+
+    private static func isScenarioOrAmortizationFollowUp(_ normPrompt: String) -> Bool {
+        let scenarioTriggers = [
+            "cenario 1", "cenario 2", "cenario 3", "cenario 01", "cenario 02", "cenario 03",
+            "primeiro cenario", "segundo cenario", "terceiro cenario",
+            "como arrumo esse valor", "como arrumar esse valor", "de onde tiro esse valor",
+            "como pagar mais rapido", "como quitar mais rapido", "pagar mais rapido",
+            "amortizar mais", "amortizacao extra", "amortizar esse valor"
+        ]
+        return scenarioTriggers.contains(where: { normPrompt.contains($0) })
     }
 
     // MARK: - Helper Matching Functions Multi-Turn

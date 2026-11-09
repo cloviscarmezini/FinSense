@@ -106,8 +106,10 @@ public struct AIChatSheetView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(store.chatHistory) { msg in
-                            chatBubble(msg)
-                                .id(msg.id)
+                            if msg.role != .system {
+                                chatBubble(msg)
+                                    .id(msg.id)
+                            }
                         }
 
                         if llmService.isProcessingChat {
@@ -238,9 +240,17 @@ public struct AIChatSheetView: View {
     private func chatBubble(_ msg: ChatMessage) -> some View {
         HStack(alignment: .top) {
             if msg.role == .user {
+                let displayContent: String = {
+                    if msg.content.hasPrefix("[NOVA SIMULAÇÃO DO SISTEMA]") {
+                        return msg.content
+                            .replacingOccurrences(of: "[NOVA SIMULAÇÃO DO SISTEMA] ", with: "")
+                            .replacingOccurrences(of: "[NOVA SIMULAÇÃO DO SISTEMA]", with: "")
+                    }
+                    return msg.content
+                }()
                 Spacer(minLength: 80)
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(msg.content)
+                    Text(displayContent)
                         .font(.body)
                         .padding(12)
                         .background(

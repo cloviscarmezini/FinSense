@@ -2701,4 +2701,91 @@ final class FinSenseTests: XCTestCase {
         XCTAssertTrue(out4.responseMarkdown.contains("Dezembro De 2026") || out4.responseMarkdown.contains("Dezembro de 2026"))
         XCTAssertTrue(out4.responseMarkdown.contains("7.525,16"))
     }
+
+    func testRefactoredAIChatArchitectureAndMultiTurnContinuity() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+        AgenticFinancialEngine.resetMemory(for: store)
+
+        // 1. Validação do System Prompt Mandatório (Passo 1)
+        XCTAssertTrue(LocalLLMService.systemPrompt.contains("Você é um Agente Financeiro Pessoal de Inteligência Artificial"))
+        XCTAssertTrue(LocalLLMService.systemPrompt.contains("CONTINUIDADE (MULTI-TURN)"))
+        XCTAssertTrue(LocalLLMService.systemPrompt.contains("RESET DE CONTEXTO EXPLÍCITO"))
+        XCTAssertTrue(LocalLLMService.systemPrompt.contains("ANÁLISE DE CAIXA REAL"))
+        XCTAssertTrue(LocalLLMService.systemPrompt.contains("ALERTA DE RUNWAY / QUEIMA DE CAIXA"))
+
+        LocalLLMService.ensureSystemPromptInjected(store: store)
+        XCTAssertEqual(store.chatHistory.first?.role, .system)
+        XCTAssertEqual(store.chatHistory.first?.content, LocalLLMService.systemPrompt)
+
+        // 2. Validação da Injeção de Contexto RAG (Passo 3)
+        let acc = BankAccount(name: "Conta Corrente Itaú", initialBalance: 8500.0)
+        let catHab = CategoryItem(name: "Habitação", type: .expense, iconSymbol: "house.fill", colorHex: "#4F46E5")
+        store.accounts = [acc]
+        store.categories = [catHab]
+
+        _ = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Habitação CAIXA",
+            contractNumber: "12345678",
+            loanSubtype: nil,
+            financingSubtype: .imovel,
+            amortizationSystem: .sac,
+            totalContractedAmount: 200000.0,
+            outstandingBalance: 180000.0,
+            installmentAmount: 1850.0,
+            billingDay: 10,
+            totalInstallments: 360,
+            monthlyInterestRate: 0.85,
+            startDate: Date(),
+            accountId: acc.id
+        )
+
+        let enrichedPrompt = AgenticFinancialEngine.buildEnrichedUserPrompt(
+            originalPrompt: "Monte um plano de ação para eu quitar meu financiamento no menor prazo possível",
+            store: store,
+            rawFacts: "- Contrato: Financiamento Habitação CAIXA"
+        )
+        XCTAssertTrue(enrichedPrompt.contains("[CONTEXTO DO BANCO DE DADOS ATUALIZADO]"))
+        XCTAssertTrue(enrichedPrompt.contains("- Saldo Disponível Hoje:"))
+        XCTAssertTrue(enrichedPrompt.contains("- Sobra Líquida Real (Receitas - Despesas):"))
+        XCTAssertTrue(enrichedPrompt.contains("- Entidades relevantes encontradas:"))
+        XCTAssertTrue(enrichedPrompt.contains("[FIM DO CONTEXTO]"))
+        XCTAssertTrue(enrichedPrompt.contains("Mensagem do usuário:"))
+
+        // 3. Turno 1: Geração de Plano de Ação em Markdown pelo Agente Sintetizador (Passos 1 e 2)
+        let out1 = AgenticFinancialEngine.runAgentLoop(
+            prompt: "Monte um plano de ação para eu quitar meu financiamento no menor prazo possível",
+            store: store,
+            modelLabel: "Qwen2.5-3B-Local"
+        )
+        XCTAssertTrue(out1.responseMarkdown.contains("Plano de Ação para Quitação no Menor Prazo"))
+        XCTAssertTrue(out1.responseMarkdown.contains("Financiamento Habitação CAIXA"))
+        XCTAssertTrue(out1.responseMarkdown.contains("Simulação de Prazo e Economia de Juros"))
+        XCTAssertTrue(out1.responseMarkdown.contains("Cenário 1"))
+        XCTAssertTrue(out1.responseMarkdown.contains("Cenário 2"))
+        XCTAssertTrue(out1.responseMarkdown.contains("Cenário 3"))
+        XCTAssertTrue(out1.responseMarkdown.contains("Efeito Bola de Neve"))
+
+        // 4. Turno 2: Pergunta de Seguimento Multi-Turn "E no Cenário 3?" (Passo 5)
+        let out2 = AgenticFinancialEngine.runAgentLoop(
+            prompt: "E no Cenário 3?",
+            store: store,
+            modelLabel: "Qwen2.5-3B-Local"
+        )
+        XCTAssertTrue(out2.responseMarkdown.contains("Cenário 3"))
+        XCTAssertTrue(out2.responseMarkdown.contains("Financiamento Habitação CAIXA") || out2.responseMarkdown.contains("Amortização Extra"))
+        XCTAssertFalse(out2.responseMarkdown.contains("Não sei a qual cenário você se refere"))
+
+        // 5. Turno 3: Reset Explícito de Contexto com [NOVA SIMULAÇÃO DO SISTEMA] (Passo 4)
+        let out3 = AgenticFinancialEngine.runAgentLoop(
+            prompt: "[NOVA SIMULAÇÃO DO SISTEMA] qual o meu saldo disponível nas contas?",
+            store: store,
+            modelLabel: "Qwen2.5-3B-Local"
+        )
+        XCTAssertTrue(out3.responseMarkdown.contains("8.500,00"))
+        XCTAssertFalse(out3.responseMarkdown.contains("Plano de Ação"))
+        XCTAssertFalse(out3.responseMarkdown.contains("Cenário 3"))
+        XCTAssertTrue(out3.executedSteps.contains { $0.contains("Reset de Contexto") })
+    }
 }
