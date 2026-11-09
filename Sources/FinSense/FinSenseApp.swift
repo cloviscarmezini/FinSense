@@ -242,6 +242,28 @@ public struct MainContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "banknote.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(hex: "#10B981"))
+                        Text("Patrimônio Total: ")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        + Text(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(store.totalConsolidatedPatrimonyNow >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+                        + Text(" (Contas: \(BRLFormatters.currency(store.totalCheckingBalanceNow)) • Investimentos: \(BRLFormatters.currency(store.consolidatedInvestmentsBalance)))")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(Color(nsColor: .controlBackgroundColor).opacity(0.8))
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                }
+
                 ToolbarItem(placement: .primaryAction) {
                     SyncStatusIndicatorView(syncService: syncService)
                 }

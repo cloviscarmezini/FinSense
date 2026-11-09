@@ -2892,13 +2892,109 @@ final class FinSenseTests: XCTestCase {
         // Fixa a data atual como 09/11/2026
         store.simulatedCurrentDate = nov2026
 
-        // Outubro/2026 é mês anterior (fechado)
-        XCTAssertEqual(store.monthEndBalanceCardTitle(for: oct2026), "Saldo ao final do mês")
+        // Outubro/2026 é mês anterior (fechado): "Resultado Consolidado"
+        XCTAssertEqual(store.monthEndBalanceCardTitle(for: oct2026), "Resultado Consolidado")
 
         // Novembro/2026 é o mês atual em andamento (termina em 30/11)
-        XCTAssertEqual(store.monthEndBalanceCardTitle(for: nov2026), "Saldo previsto para 30/11")
+        XCTAssertEqual(store.monthEndBalanceCardTitle(for: nov2026), "Saldo Previsto para 30/11")
 
         // Dezembro/2026 é mês futuro (termina em 31/12)
-        XCTAssertEqual(store.monthEndBalanceCardTitle(for: dec2026), "Saldo previsto para 31/12")
+        XCTAssertEqual(store.monthEndBalanceCardTitle(for: dec2026), "Saldo Previsto para 31/12")
+    }
+
+    func testDecoupledCashRealizedVsPredictiveMetricsAndCashFlowSeries() throws {
+        let store = makeIsolatedStore(seedStatement: false)
+        let cal = Calendar(identifier: .gregorian)
+
+        let acc = BankAccount(name: "Conta Corrente", bankPresetId: "itau", initialBalance: 1000.0)
+        store.accounts = [acc]
+        let catIncome = store.categories.first { $0.type == .income }!
+        let catExpense = store.categories.first { $0.type == .expense }!
+
+        let novDate = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+        store.simulatedCurrentDate = novDate
+
+        // Receita: 5000 (3000 paga, 2000 pendente)
+        _ = store.createTransaction(
+            name: "Salário Recebido",
+            amount: 3000.0,
+            date: novDate,
+            type: .income,
+            isPaid: true,
+            categoryId: catIncome.id,
+            accountId: acc.id,
+            referenceNow: novDate
+        )
+        _ = store.createTransaction(
+            name: "Freelance a Receber",
+            amount: 2000.0,
+            date: novDate,
+            type: .income,
+            isPaid: false,
+            categoryId: catIncome.id,
+            accountId: acc.id,
+            referenceNow: novDate
+        )
+
+        // Despesa: 2000 (1200 paga, 800 pendente)
+        _ = store.createTransaction(
+            name: "Aluguel Pago",
+            amount: 1200.0,
+            date: novDate,
+            type: .expense,
+            isPaid: true,
+            categoryId: catExpense.id,
+            accountId: acc.id,
+            referenceNow: novDate
+        )
+        _ = store.createTransaction(
+            name: "Internet a Pagar",
+            amount: 800.0,
+            date: novDate,
+            type: .expense,
+            isPaid: false,
+            categoryId: catExpense.id,
+            accountId: acc.id,
+            referenceNow: novDate
+        )
+
+        // Previsão/Teto restante: 1000 (Teto de 3000 para categoria com 2000 de gastos -> 1000 restante)
+        store.setCategoryProvision(
+            categoryId: catExpense.id,
+            estimatedAmount: 3000.0,
+            for: novDate,
+            repeatForFutureMonths: false,
+            editScope: .onlyThisMonth
+        )
+
+        // Verificações rigorosas de desacoplamento:
+        // 1. Receitas
+        XCTAssertEqual(store.monthlyIncome(for: novDate), 5000.0, accuracy: 0.01)
+        XCTAssertEqual(store.monthlyReceivedIncome(for: novDate), 3000.0, accuracy: 0.01)
+        XCTAssertEqual(store.monthlyPendingIncome(for: novDate), 2000.0, accuracy: 0.01)
+
+        // 2. Despesas lançadas (NUNCA deve somar os 1000 de teto!)
+        XCTAssertEqual(store.monthlyExpense(for: novDate), 2000.0, accuracy: 0.01)
+        XCTAssertEqual(store.monthlyPaidExpense(for: novDate), 1200.0, accuracy: 0.01)
+        XCTAssertEqual(store.monthlyPendingExpense(for: novDate), 800.0, accuracy: 0.01)
+
+        // 3. Balanço Operacional (5000 - 2000 = 3000) e Taxa de Poupança (3000/5000 = 60%)
+        XCTAssertEqual(store.monthlyOperatingNet(for: novDate), 3000.0, accuracy: 0.01)
+        XCTAssertEqual(try XCTUnwrap(store.monthlySavingsRate(for: novDate)), 60.0, accuracy: 0.01)
+
+        // 4. Previsões restantes
+        XCTAssertEqual(store.totalRemainingProvision(for: novDate), 1000.0, accuracy: 0.01)
+
+        // 5. Série do gráfico de fluxo de caixa empilhado
+        let series = store.cashFlowSeries(around: novDate, monthsBack: 1, monthsForward: 1)
+        let novPoint = try XCTUnwrap(series.first { cal.component(.month, from: $0.monthDate) == 11 })
+        XCTAssertEqual(novPoint.expense, 2000.0, accuracy: 0.01)
+        XCTAssertEqual(novPoint.remainingProvisions, 1000.0, accuracy: 0.01)
+        XCTAssertEqual(novPoint.totalBudgetedExpense, 3000.0, accuracy: 0.01)
+        XCTAssertFalse(novPoint.isPastMonth)
+
+        let octPoint = try XCTUnwrap(series.first { cal.component(.month, from: $0.monthDate) == 10 })
+        XCTAssertTrue(octPoint.isPastMonth)
+        XCTAssertEqual(octPoint.remainingProvisions, 0.0, accuracy: 0.01)
     }
 }

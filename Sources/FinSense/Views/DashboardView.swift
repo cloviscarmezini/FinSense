@@ -26,20 +26,37 @@ public struct DashboardView: View {
     public var body: some View {
         let isAnnual = store.dashboardPeriodMode == .annual
         let yearStr = BRLFormatters.yearString(store.selectedMonth)
-        let periodLabel = isAnnual
-            ? "Ano \(yearStr)"
-            : BRLFormatters.shortMonthYearFormatter.string(from: store.selectedMonth).capitalized
         let periodFullLabel = isAnnual
             ? "31/12/\(yearStr)"
             : BRLFormatters.monthYear(store.selectedMonth)
 
+        let isPastPeriod = isAnnual
+            ? (store.calendar.component(.year, from: store.selectedMonth) < store.calendar.component(.year, from: store.effectiveCurrentDate))
+            : store.isMonthPriorToCurrent(store.selectedMonth)
+
         let periodIncome = isAnnual
             ? store.annualIncome(for: store.selectedMonth)
             : store.monthlyIncome(for: store.selectedMonth)
+        let periodReceivedIncome = isAnnual
+            ? store.annualReceivedIncome(for: store.selectedMonth)
+            : store.monthlyReceivedIncome(for: store.selectedMonth)
+        let periodPendingIncome = isAnnual
+            ? store.annualPendingIncome(for: store.selectedMonth)
+            : store.monthlyPendingIncome(for: store.selectedMonth)
+
         let periodExpense = isAnnual
             ? store.annualExpense(for: store.selectedMonth)
             : store.monthlyExpense(for: store.selectedMonth)
+        let periodPaidExpense = isAnnual
+            ? store.annualPaidExpense(for: store.selectedMonth)
+            : store.monthlyPaidExpense(for: store.selectedMonth)
+        let periodPendingExpense = isAnnual
+            ? store.annualPendingExpense(for: store.selectedMonth)
+            : store.monthlyPendingExpense(for: store.selectedMonth)
+
         let periodNet = periodIncome - periodExpense
+        let savingsRate: Double? = periodIncome > 0 ? ((periodNet / periodIncome) * 100.0) : nil
+
         let accumulatedBalance = isAnnual
             ? store.accumulatedConsolidatedBalanceThroughYear(store.selectedMonth)
             : store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
@@ -56,23 +73,45 @@ public struct DashboardView: View {
         let monthEnvelopes = store.provisionEnvelopes(for: store.selectedMonth)
         let monthQuotas = store.allQuotaEnvelopes(for: store.selectedMonth)
         let hasAnyProvisionOrQuota = !monthEnvelopes.isEmpty || !monthQuotas.isEmpty
-        let remainingProvisionsTotal = store.totalRemainingProvision(for: store.selectedMonth)
+        let remainingProvisionsTotal = isPastPeriod ? 0.0 : store.totalRemainingProvision(for: store.selectedMonth)
         let estimatedProvisionsTotal = store.totalEstimatedProvision(for: store.selectedMonth)
 
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                // MARK: - Top Header Bar with Local LLM Chat Button
+                // MARK: - Top Header Bar with Local LLM Chat Button & Global Net Worth
                 HStack(alignment: .center, spacing: 14) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Dashboard & Insights Financeiros")
                             .font(.system(size: 26, weight: .bold, design: .rounded))
-                        Text(
-                            isAnnual
-                                ? "Projeção consolidada para o último dia do ano (31/12/\(yearStr))"
-                                : "Visão consolidada de contas, categorias, investimentos, passivos e projeções"
-                        )
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text(
+                                isAnnual
+                                    ? "Projeção consolidada para o último dia do ano (31/12/\(yearStr))"
+                                    : "Visão consolidada de contas, categorias, investimentos, passivos e projeções"
+                            )
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                            Text("•")
+                                .foregroundStyle(.secondary.opacity(0.6))
+
+                            HStack(spacing: 4) {
+                                Image(systemName: "banknote.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                                Text("Patrimônio Total: ")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(.secondary)
+                                + Text(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(store.totalConsolidatedPatrimonyNow >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+                                + Text(" (Contas: \(BRLFormatters.currency(store.totalCheckingBalanceNow)) • Investimentos: \(BRLFormatters.currency(store.consolidatedInvestmentsBalance)))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                     }
 
                     Spacer()
@@ -162,48 +201,74 @@ public struct DashboardView: View {
                     }
                 }
 
-                // MARK: - Top KPI Cards
+                // MARK: - Top KPI Cards (4 Sequential Lifecycle Cards)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 14) {
+                    // Card 1 — Receitas do Mês / Ano
                     MetricCardView(
-                        title: "Patrimônio Consolidado",
-                        value: BRLFormatters.currency(store.totalConsolidatedPatrimonyNow),
-                        subtitle: "Contas (\(BRLFormatters.currency(store.totalCheckingBalanceNow))) + Invest. Consolidados (\(BRLFormatters.currency(store.consolidatedInvestmentsBalance)))",
-                        icon: "building.columns.fill",
-                        tint: Color(hex: "#3B82F6")
-                    )
-
-                    MetricCardView(
-                        title: "Receitas (\(periodLabel))",
+                        title: isAnnual ? "Receitas do Ano" : "Receitas do Mês",
                         value: BRLFormatters.currency(periodIncome),
-                        subtitle: isAnnual ? "Entradas projetadas até 31/12/\(yearStr)" : "Entradas consolidadas no mês",
+                        subtitle: "\(BRLFormatters.currency(periodReceivedIncome)) recebidos • \(BRLFormatters.currency(periodPendingIncome)) a receber",
                         icon: "arrow.down.left.circle.fill",
                         tint: Color(hex: "#10B981")
                     )
 
+                    // Card 2 — Despesas do Mês / Ano (Estritamente compromissos/transações lançadas, NUNCA somar tetos/cotas)
                     MetricCardView(
-                        title: "Despesas (\(periodLabel))",
+                        title: isAnnual ? "Despesas do Ano" : "Despesas do Mês",
                         value: BRLFormatters.currency(periodExpense),
-                        subtitle: isAnnual ? "Saídas projetadas até 31/12/\(yearStr)" : "Saídas consolidadas no mês",
+                        subtitle: "\(BRLFormatters.currency(periodPaidExpense)) pagas • \(BRLFormatters.currency(periodPendingExpense)) pendentes",
                         icon: "arrow.up.right.circle.fill",
                         tint: Color(hex: "#EF4444")
                     )
 
-                    let currentYear = store.calendar.component(.year, from: store.effectiveCurrentDate)
-                    let selectedYear = store.calendar.component(.year, from: store.selectedMonth)
-                    let monthEndTitle = isAnnual
-                        ? (selectedYear < currentYear ? "Saldo ao final de \(yearStr)" : "Saldo previsto para 31/12/\(yearStr)")
-                        : store.monthEndBalanceCardTitle(for: store.selectedMonth)
+                    // Card 3 — Balanço Operacional (Receitas - Despesas com Taxa de Poupança / Margem Líquida)
+                    let operationalSubtitle: String = {
+                        if let rate = savingsRate {
+                            return rate >= 0
+                                ? String(format: "%.1f%% sobre a Receita", rate)
+                                : String(format: "Déficit operacional (%.1f%%)", abs(rate))
+                        } else {
+                            return periodNet >= 0 ? "Superávit operacional" : "Déficit operacional"
+                        }
+                    }()
 
                     MetricCardView(
-                        title: monthEndTitle,
+                        title: "Balanço Operacional",
+                        value: BRLFormatters.currency(periodNet),
+                        subtitle: operationalSubtitle,
+                        icon: "equal.circle.fill",
+                        tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                    )
+
+                    // Card 4 — Saldo Projetado / Resultado Final
+                    let finalTitle: String = {
+                        if isAnnual {
+                            return isPastPeriod
+                                ? "Resultado Consolidado"
+                                : "Saldo Previsto para 31/12/\(yearStr)"
+                        } else {
+                            return store.monthEndBalanceCardTitle(for: store.selectedMonth)
+                        }
+                    }()
+
+                    let finalSubtitle: String = {
+                        if isPastPeriod {
+                            return isAnnual ? "Ano encerrado" : "Mês encerrado"
+                        } else if remainingProvisionsTotal > 0 {
+                            return "Deduzindo \(BRLFormatters.currency(remainingProvisionsTotal)) restantes em tetos/cotas"
+                        } else {
+                            return "Projeção de caixa final"
+                        }
+                    }()
+
+                    MetricCardView(
+                        title: finalTitle,
                         value: BRLFormatters.currency(accumulatedBalance),
-                        subtitle: isAnnual ? "Balanço anual projetado: \(BRLFormatters.currency(periodNet))" : "Balanço mensal: \(BRLFormatters.currency(periodNet))",
-                        icon: "chart.line.uptrend.xyaxis",
-                        tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#F59E0B"),
-                        footnote: (!isAnnual && hasAnyProvisionOrQuota && remainingProvisionsTotal > 0)
-                            ? "Provisão de Gastos Variáveis: \(BRLFormatters.currency(remainingProvisionsTotal)) restantes"
-                            : nil,
-                        footnoteColor: remainingProvisionsTotal > 0 ? Color(hex: "#6366F1") : .secondary
+                        subtitle: finalSubtitle,
+                        icon: isPastPeriod ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis",
+                        tint: accumulatedBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
+                        footnote: (!isPastPeriod && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
+                        footnoteColor: Color(hex: "#EF4444")
                     )
                 }
 
@@ -461,59 +526,11 @@ public struct DashboardView: View {
                             .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                     )
 
-                    // Chart 2: Evolução de Receitas vs Despesas e Acumulado
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(isAnnual ? "Projeção Anual Mês a Mês (\(yearStr))" : "Fluxo de Caixa Mensal & Projeção")
-                                    .font(.headline)
-                                Text(isAnnual ? "Receitas e despesas projetadas de Janeiro a 31/12/\(yearStr)" : "Comparativo de receitas e despesas entre os meses")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            HStack(spacing: 12) {
-                                HStack(spacing: 4) {
-                                    Circle().fill(Color(hex: "#10B981")).frame(width: 8, height: 8)
-                                    Text("Receitas").font(.caption2)
-                                }
-                                HStack(spacing: 4) {
-                                    Circle().fill(Color(hex: "#EF4444")).frame(width: 8, height: 8)
-                                    Text("Despesas").font(.caption2)
-                                }
-                            }
-                        }
-
-                        Chart {
-                            ForEach(cashFlowPoints) { pt in
-                                BarMark(
-                                    x: .value("Mês", pt.label),
-                                    y: .value("Valor", pt.income)
-                                )
-                                .foregroundStyle(Color(hex: "#10B981"))
-                                .position(by: .value("Tipo", "Receitas"))
-                                .cornerRadius(4)
-
-                                BarMark(
-                                    x: .value("Mês", pt.label),
-                                    y: .value("Valor", pt.expense)
-                                )
-                                .foregroundStyle(Color(hex: "#EF4444"))
-                                .position(by: .value("Tipo", "Despesas"))
-                                .cornerRadius(4)
-                            }
-                        }
-                        .frame(height: 205)
-                    }
-                    .padding(18)
-                    .frame(maxWidth: .infinity, minHeight: 290, alignment: .topLeading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                    // Chart 2: Evolução de Receitas vs Despesas e Projeção Empilhada
+                    MonthlyCashFlowChartView(
+                        points: cashFlowPoints,
+                        isAnnual: isAnnual,
+                        yearStr: yearStr
                     )
                 }
 
@@ -1942,5 +1959,166 @@ public struct QuotaRedemptionSheet: View {
             actualUnitPriceString = String(format: "%.2f", quotaEnvelope.estimatedUnitPrice).replacingOccurrences(of: ".", with: ",")
             selectedAccountId = store.accounts.first?.id ?? UUID()
         }
+    }
+}
+
+// MARK: - Gráfico de Fluxo de Caixa Empilhado & Tooltip de Projeção
+
+public struct MonthlyCashFlowChartView: View {
+    public let points: [MonthlyCashFlowPoint]
+    public let isAnnual: Bool
+    public let yearStr: String
+
+    @State private var hoveredPoint: MonthlyCashFlowPoint? = nil
+
+    public init(points: [MonthlyCashFlowPoint], isAnnual: Bool, yearStr: String) {
+        self.points = points
+        self.isAnnual = isAnnual
+        self.yearStr = yearStr
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(isAnnual ? "Projeção Anual Mês a Mês (\(yearStr))" : "Fluxo de Caixa Mensal & Projeção")
+                        .font(.headline)
+                    Text(isAnnual ? "Receitas e despesas projetadas de Janeiro a 31/12/\(yearStr)" : "Comparativo de receitas e despesas entre os meses")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                HStack(spacing: 12) {
+                    HStack(spacing: 4) {
+                        Circle().fill(Color(hex: "#10B981")).frame(width: 8, height: 8)
+                        Text("Receitas").font(.caption2)
+                    }
+                    HStack(spacing: 4) {
+                        Circle().fill(Color(hex: "#EF4444")).frame(width: 8, height: 8)
+                        Text("Despesas").font(.caption2)
+                    }
+                    HStack(spacing: 4) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color(hex: "#EF4444").opacity(0.45))
+                            .frame(width: 8, height: 8)
+                        Text("Previsões & Tetos").font(.caption2)
+                    }
+                    HStack(spacing: 4) {
+                        Circle().fill(Color(hex: "#3B82F6")).frame(width: 8, height: 8)
+                        Text("Saldo").font(.caption2)
+                    }
+                }
+            }
+
+            // Hover Tooltip Display no macOS detalhando valores da barra
+            if let pt = hoveredPoint {
+                HStack(spacing: 10) {
+                    Image(systemName: "cursorarrow.rays")
+                        .font(.caption)
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                    Text(pt.label)
+                        .font(.caption.weight(.bold))
+                    Text("•")
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text("Despesas Lançadas: ")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    + Text(BRLFormatters.currency(pt.expense))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color(hex: "#EF4444"))
+                    Text("•")
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text("Previsões/Tetos: ")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    + Text(BRLFormatters.currency(pt.remainingProvisions))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                    Text("•")
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text("Total Orçado: ")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    + Text(BRLFormatters.currency(pt.totalBudgetedExpense))
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(0.05))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .transition(.opacity)
+            }
+
+            Chart {
+                ForEach(points) { pt in
+                    // Receitas
+                    BarMark(
+                        x: .value("Mês", pt.label),
+                        y: .value("Valor", pt.income)
+                    )
+                    .foregroundStyle(Color(hex: "#10B981"))
+                    .position(by: .value("Tipo", "Receitas"))
+                    .cornerRadius(4)
+
+                    // Base sólida: Despesas já lançadas
+                    BarMark(
+                        x: .value("Mês", pt.label),
+                        yStart: .value("Base", 0),
+                        yEnd: .value("Valor", pt.expense)
+                    )
+                    .foregroundStyle(Color(hex: "#EF4444"))
+                    .position(by: .value("Tipo", "Despesas"))
+                    .cornerRadius(!pt.isPastMonth && pt.remainingProvisions > 0 ? 0 : 4)
+
+                    // Topo translúcido: Margem de Previsões & Tetos restantes
+                    if !pt.isPastMonth && pt.remainingProvisions > 0 {
+                        BarMark(
+                            x: .value("Mês", pt.label),
+                            yStart: .value("Base", pt.expense),
+                            yEnd: .value("Valor", pt.totalBudgetedExpense)
+                        )
+                        .foregroundStyle(Color(hex: "#EF4444").opacity(0.45))
+                        .position(by: .value("Tipo", "Despesas"))
+                        .cornerRadius(4)
+                    }
+                }
+            }
+            .frame(height: 205)
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Rectangle()
+                        .fill(Color.clear)
+                        .contentShape(Rectangle())
+                        .onContinuousHover { phase in
+                            switch phase {
+                            case .active(let location):
+                                if let plotFrame = proxy.plotFrame {
+                                    let origin = geometry[plotFrame].origin
+                                    let xInPlot = location.x - origin.x
+                                    if let label: String = proxy.value(atX: xInPlot) {
+                                        hoveredPoint = points.first(where: { $0.label == label })
+                                        return
+                                    }
+                                }
+                                hoveredPoint = nil
+                            case .ended:
+                                hoveredPoint = nil
+                            }
+                        }
+                }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, minHeight: 290, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        )
     }
 }

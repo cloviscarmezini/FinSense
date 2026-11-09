@@ -106,9 +106,11 @@ public struct TransactionsView: View {
         let monthPendingIncome = store.monthlyPendingIncome(for: store.selectedMonth)
 
         let monthExpense = store.monthlyExpense(for: store.selectedMonth)
+        let monthPaidExpense = store.monthlyPaidExpense(for: store.selectedMonth)
         let monthPendingExpense = store.monthlyPendingExpense(for: store.selectedMonth)
 
         let monthBalance = monthIncome - monthExpense
+        let savingsRate: Double? = monthIncome > 0 ? ((monthBalance / monthIncome) * 100.0) : nil
         let accumulatedBalance = store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
         let isPastMonth = store.isMonthPriorToCurrent(store.selectedMonth)
         let monthRemainingProvisions = store.totalRemainingProvision(for: store.selectedMonth)
@@ -134,36 +136,50 @@ public struct TransactionsView: View {
             switch store.selectedTransactionsSubmenu {
             case .all:
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
+                    // 1: Receitas (Total) com subtotal de pendentes
                     MetricCardView(
-                        title: "Receitas no Mês",
+                        title: "Receitas (Total)",
                         value: BRLFormatters.currency(monthIncome),
-                        subtitle: BRLFormatters.monthYear(store.selectedMonth),
+                        subtitle: "\(BRLFormatters.currency(monthReceivedIncome)) recebidos • \(BRLFormatters.currency(monthPendingIncome)) a receber",
                         icon: "arrow.down.left.circle.fill",
                         tint: Color(hex: "#10B981")
                     )
 
+                    // 2: Despesas (Total) estritamente transacionadas (sem previsões)
                     MetricCardView(
-                        title: "Despesas no Mês",
+                        title: "Despesas (Total)",
                         value: BRLFormatters.currency(monthExpense),
-                        subtitle: BRLFormatters.monthYear(store.selectedMonth),
+                        subtitle: "\(BRLFormatters.currency(monthPaidExpense)) pagas • \(BRLFormatters.currency(monthPendingExpense)) pendentes",
                         icon: "arrow.up.right.circle.fill",
                         tint: Color(hex: "#EF4444")
                     )
 
+                    // 3: Balanço do Mês (Real)
+                    let operationalSubtitle: String = {
+                        if let rate = savingsRate {
+                            return rate >= 0
+                                ? String(format: "%.1f%% sobre a Receita", rate)
+                                : String(format: "Déficit: %.1f%% sobre a Receita", abs(rate))
+                        } else {
+                            return monthBalance >= 0 ? "Superávit operacional" : "Déficit operacional"
+                        }
+                    }()
+
                     MetricCardView(
-                        title: "Balanço do Mês",
+                        title: "Balanço do Mês (Real)",
                         value: BRLFormatters.currency(monthBalance),
-                        subtitle: monthBalance >= 0 ? "Superávit no período" : "Déficit no período",
+                        subtitle: operationalSubtitle,
                         icon: "equal.circle.fill",
                         tint: monthBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
                     )
 
+                    // 4: Previsões & Tetos Restantes com botão integrado
                     MetricCardView(
-                        title: "Previsões & Tetos",
+                        title: "Previsões & Tetos Restantes",
                         value: BRLFormatters.currency(isPastMonth ? 0.0 : monthRemainingProvisions),
                         subtitle: isPastMonth
                             ? "Mês já encerrado"
-                            : (monthRemainingProvisions > 0 ? "Reservado p/ gastos variáveis" : "Nenhuma provisão ativa"),
+                            : (monthRemainingProvisions > 0 ? "Orçamento não consumido" : "Nenhuma provisão ativa"),
                         icon: "tray.full.fill",
                         tint: Color(hex: "#6366F1"),
                         footnote: (!isPastMonth && monthEstimatedProvisions > 0)
@@ -177,21 +193,26 @@ public struct TransactionsView: View {
                         actionIcon: "pencil"
                     )
 
+                    // 5: Saldo Previsto para [DD/MM] ou Resultado Consolidado
                     MetricCardView(
                         title: store.monthEndBalanceCardTitle(for: store.selectedMonth),
                         value: BRLFormatters.currency(accumulatedBalance),
-                        subtitle: "Saldo + Invest. Consolidados",
-                        icon: "chart.line.uptrend.xyaxis.circle.fill",
-                        tint: Color(hex: "#3B82F6")
+                        subtitle: isPastMonth
+                            ? "Mês encerrado"
+                            : (monthRemainingProvisions > 0 ? "Deduzindo \(BRLFormatters.currency(monthRemainingProvisions)) em tetos" : "Projeção de caixa"),
+                        icon: isPastMonth ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis.circle.fill",
+                        tint: accumulatedBalance >= 0 ? Color(hex: "#3B82F6") : Color(hex: "#EF4444"),
+                        footnote: (!isPastMonth && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
+                        footnoteColor: Color(hex: "#EF4444")
                     )
                 }
 
             case .expenses:
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2), spacing: 12) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
                     MetricCardView(
                         title: "Total de Despesas",
                         value: BRLFormatters.currency(monthExpense),
-                        subtitle: "Despesas consolidadas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                        subtitle: "\(BRLFormatters.currency(monthPaidExpense)) pagas • \(BRLFormatters.currency(monthPendingExpense)) pendentes",
                         icon: "arrow.up.right.circle.fill",
                         tint: Color(hex: "#EF4444")
                     )
@@ -202,6 +223,22 @@ public struct TransactionsView: View {
                         subtitle: "Despesas ainda não pagas em \(BRLFormatters.monthYear(store.selectedMonth))",
                         icon: "clock.badge.exclamationmark",
                         tint: Color(hex: "#F59E0B")
+                    )
+
+                    let remainingForExpenses = isPastMonth ? 0.0 : monthRemainingProvisions
+                    let totalCommitted = monthExpense + remainingForExpenses
+
+                    MetricCardView(
+                        title: "Orçamento Restante (Tetos & Cotas)",
+                        value: BRLFormatters.currency(remainingForExpenses),
+                        subtitle: "Comprometimento Total Previsto: \(BRLFormatters.currency(totalCommitted))",
+                        icon: "tray.full.fill",
+                        tint: Color(hex: "#6366F1"),
+                        action: {
+                            showProvisionsSheet = true
+                        },
+                        actionLabel: "Editar",
+                        actionIcon: "pencil"
                     )
                 }
 

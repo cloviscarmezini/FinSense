@@ -153,6 +153,32 @@ public struct MonthlyCashFlowPoint: Identifiable, Hashable {
     public let expense: Double
     public let net: Double
     public let accumulatedBalance: Double
+    public let remainingProvisions: Double
+    public let isPastMonth: Bool
+
+    public var totalBudgetedExpense: Double {
+        expense + remainingProvisions
+    }
+
+    public init(
+        monthDate: Date,
+        label: String,
+        income: Double,
+        expense: Double,
+        net: Double,
+        accumulatedBalance: Double,
+        remainingProvisions: Double = 0.0,
+        isPastMonth: Bool = false
+    ) {
+        self.monthDate = monthDate
+        self.label = label
+        self.income = income
+        self.expense = expense
+        self.net = net
+        self.accumulatedBalance = accumulatedBalance
+        self.remainingProvisions = remainingProvisions
+        self.isPastMonth = isPastMonth
+    }
 }
 
 public struct DebtLineItem: Identifiable, Hashable {
@@ -1740,14 +1766,14 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Título contextualizado para o card de saldo ao final do período:
-    /// - Meses já fechados: "Saldo ao final do mês"
-    /// - Mês atual ou futuro: "Saldo previsto para DD/MM" (ex: "Saldo previsto para 31/12")
+    /// - Meses já fechados: "Resultado Consolidado"
+    /// - Mês atual ou futuro: "Saldo Previsto para DD/MM" (ex: "Saldo Previsto para 31/12")
     public func monthEndBalanceCardTitle(for monthReference: Date) -> String {
         if isMonthPriorToCurrent(monthReference) {
-            return "Saldo ao final do mês"
+            return "Resultado Consolidado"
         } else {
             let lastDay = endOfMonth(for: monthReference)
-            return "Saldo previsto para \(BRLFormatters.dayMonth(lastDay))"
+            return "Saldo Previsto para \(BRLFormatters.dayMonth(lastDay))"
         }
     }
 
@@ -3290,6 +3316,19 @@ public final class FinancialDataStore: ObservableObject {
         monthlyIncome(for: monthReference, onlyPaid: onlyPaid) - monthlyExpense(for: monthReference, onlyPaid: onlyPaid)
     }
 
+    /// Balanço Operacional estritamente realizado/lançado (Receitas Totais - Despesas Lançadas no mês)
+    public func monthlyOperatingNet(for monthReference: Date) -> Double {
+        monthlyIncome(for: monthReference) - monthlyExpense(for: monthReference)
+    }
+
+    /// Taxa de Poupança / Margem Líquida em porcentagem (% sobre a Receita do mês)
+    public func monthlySavingsRate(for monthReference: Date) -> Double? {
+        let income = monthlyIncome(for: monthReference)
+        guard income > 0 else { return nil }
+        let net = monthlyOperatingNet(for: monthReference)
+        return (net / income) * 100.0
+    }
+
     // MARK: - Category Provisions & Specific Quotas (Orçamento por Envelopes Dinâmicos)
 
     /// Define ou atualiza a Verba Livre (`CategoryProvision`) para uma categoria em um mês específico,
@@ -4042,6 +4081,37 @@ public final class FinancialDataStore: ObservableObject {
         annualIncome(for: yearReference, onlyPaid: onlyPaid) - annualExpense(for: yearReference, onlyPaid: onlyPaid)
     }
 
+    public func annualOperatingNet(for yearReference: Date) -> Double {
+        annualIncome(for: yearReference) - annualExpense(for: yearReference)
+    }
+
+    public func annualSavingsRate(for yearReference: Date) -> Double? {
+        let income = annualIncome(for: yearReference)
+        guard income > 0 else { return nil }
+        let net = annualOperatingNet(for: yearReference)
+        return (net / income) * 100.0
+    }
+
+    public func annualReceivedIncome(for yearReference: Date) -> Double {
+        annualIncome(for: yearReference, onlyPaid: true)
+    }
+
+    public func annualPendingIncome(for yearReference: Date) -> Double {
+        transactionsForYear(yearReference)
+            .filter { $0.type == .income && !$0.ignoreInConsolidated && !$0.isPaid }
+            .reduce(0) { $0 + $1.amount }
+    }
+
+    public func annualPaidExpense(for yearReference: Date) -> Double {
+        annualExpense(for: yearReference, onlyPaid: true)
+    }
+
+    public func annualPendingExpense(for yearReference: Date) -> Double {
+        transactionsForYear(yearReference)
+            .filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isPaid }
+            .reduce(0) { $0 + $1.amount }
+    }
+
     /// Saldo acumulado consolidado projetado até o último dia do ano (31/12 do ano de `yearReference`)
     public func accumulatedConsolidatedBalanceThroughYear(_ yearReference: Date, includeProjectedUnpaid: Bool = true) -> Double {
         let cutoff = endOfYear(for: yearReference)
@@ -4095,6 +4165,8 @@ public final class FinancialDataStore: ObservableObject {
                 let inc = monthlyIncome(for: mDate)
                 let exp = monthlyExpense(for: mDate)
                 let acc = accumulatedConsolidatedBalance(throughMonth: mDate, includeProjectedUnpaid: true)
+                let remProv = isMonthPriorToCurrent(mDate) ? 0.0 : totalRemainingProvision(for: mDate)
+                let isPast = isMonthPriorToCurrent(mDate)
                 points.append(
                     MonthlyCashFlowPoint(
                         monthDate: mDate,
@@ -4102,7 +4174,9 @@ public final class FinancialDataStore: ObservableObject {
                         income: inc,
                         expense: exp,
                         net: inc - exp,
-                        accumulatedBalance: acc
+                        accumulatedBalance: acc,
+                        remainingProvisions: remProv,
+                        isPastMonth: isPast
                     )
                 )
             }
@@ -4211,6 +4285,8 @@ public final class FinancialDataStore: ObservableObject {
                 let inc = monthlyIncome(for: mDate)
                 let exp = monthlyExpense(for: mDate)
                 let acc = accumulatedConsolidatedBalance(throughMonth: mDate, includeProjectedUnpaid: true)
+                let remProv = isMonthPriorToCurrent(mDate) ? 0.0 : totalRemainingProvision(for: mDate)
+                let isPast = isMonthPriorToCurrent(mDate)
                 points.append(
                     MonthlyCashFlowPoint(
                         monthDate: mDate,
@@ -4218,7 +4294,9 @@ public final class FinancialDataStore: ObservableObject {
                         income: inc,
                         expense: exp,
                         net: inc - exp,
-                        accumulatedBalance: acc
+                        accumulatedBalance: acc,
+                        remainingProvisions: remProv,
+                        isPastMonth: isPast
                     )
                 )
             }
