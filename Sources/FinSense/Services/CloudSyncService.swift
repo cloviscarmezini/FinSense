@@ -234,6 +234,14 @@ public final class CloudSyncService: ObservableObject {
 
             applyServerChanges(response, into: store)
 
+            let serverIsEmpty = response.latestRevision == 0 && (response.serverChanges?.isEmpty ?? true) && (response.deltas?.isEmpty ?? true)
+            let hasLocalData = !store.transactions.isEmpty || !store.accounts.isEmpty || !store.categories.isEmpty || !store.contracts.isEmpty || !store.investments.isEmpty || !store.debts.isEmpty || !store.provisions.isEmpty || !store.categoryQuotas.isEmpty
+
+            if serverIsEmpty && hasLocalData && outboxQueue.isEmpty {
+                print("⚡️ [CloudSync] Conta conectada com dados locais e servidor vazio: enfileirando envio automático...")
+                enqueueAllLocalData()
+            }
+
             lastServerRevision = Int(response.latestRevision)
             let now = Date()
             lastSyncDate = now
@@ -252,6 +260,59 @@ public final class CloudSyncService: ObservableObject {
         isSyncing = false
     }
 
+    public func enqueueAllLocalData() {
+        guard let store else { return }
+
+        let accounts = store.accounts
+        let categories = store.categories
+        let contracts = store.contracts
+        let investments = store.investments
+        let debts = store.debts
+        let provisions = store.provisions
+        let quotas = store.categoryQuotas
+        let transactions = store.transactions
+
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+
+        var allMutations: [LocalSyncMutation] = []
+
+        func addItems<T: Codable>(items: [T], entityName: String, idKeyPath: KeyPath<T, UUID>) {
+            for item in items {
+                let entityId = item[keyPath: idKeyPath]
+                let payloadJSON: String? = {
+                    guard let data = try? encoder.encode(item) else { return nil }
+                    return String(data: data, encoding: .utf8)
+                }()
+                let mutation = LocalSyncMutation(
+                    entityName: entityName,
+                    entityId: entityId,
+                    operation: .insert,
+                    updatedAt: Date(),
+                    payloadJSON: payloadJSON
+                )
+                allMutations.append(mutation)
+            }
+        }
+
+        // Enqueue in strict dependency order:
+        addItems(items: accounts, entityName: "bank_accounts", idKeyPath: \.id)
+        addItems(items: categories, entityName: "categories", idKeyPath: \.id)
+        addItems(items: contracts, entityName: "credit_contracts", idKeyPath: \.id)
+        addItems(items: investments, entityName: "investment_items", idKeyPath: \.id)
+        addItems(items: debts, entityName: "debt_items", idKeyPath: \.id)
+        addItems(items: provisions, entityName: "category_provisions", idKeyPath: \.id)
+        addItems(items: quotas, entityName: "category_quota_rules", idKeyPath: \.id)
+        addItems(items: transactions, entityName: "financial_transactions", idKeyPath: \.id)
+
+        for mutation in allMutations {
+            enqueueMutation(mutation)
+        }
+        saveOutboxQueue()
+        pendingMutationsCount = outboxQueue.count
+    }
+
     private func applyServerChanges(_ response: SyncPushPullResponse, into store: FinancialDataStore) {
         let decoder = BackendAPIClient.makeFlexibleDateDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -260,6 +321,20 @@ public final class CloudSyncService: ObservableObject {
 
         if let changes = response.serverChanges, !changes.isEmpty {
             for change in changes {
+                let changeDate: Date = {
+                    let f = ISO8601DateFormatter()
+                    if let d = f.date(from: change.timestamp) { return d }
+                    if let d = f.date(from: change.updatedAt) { return d }
+                    return Date.distantPast
+                }()
+
+                // LWW: If local outbox has a pending mutation for this entity that is newer, retain local state
+                if let pending = outboxQueue.first(where: { $0.entityId == change.entityId }) {
+                    if pending.updatedAt >= changeDate {
+                        continue
+                    }
+                }
+
                 if change.operation == "DELETE" {
                     switch change.entityName {
                     case "financial_transactions": store.transactions.removeAll { $0.id == change.entityId }
@@ -338,8 +413,16 @@ public final class CloudSyncService: ObservableObject {
         tombstones: [SyncTombstoneDTO],
         into store: FinancialDataStore
     ) {
-        // Aplicação de tombstones
+        // Aplicação de tombstones com resolução de conflito LWW
         for tomb in tombstones {
+            let tombDate = ISO8601DateFormatter().date(from: tomb.deletedAt) ?? Date.distantPast
+            if let pending = outboxQueue.first(where: { $0.entityId == tomb.entityId }) {
+                if pending.updatedAt >= tombDate && pending.operation != .delete {
+                    // Local edit is newer than server delete
+                    continue
+                }
+            }
+
             switch tomb.entityName {
             case "financial_transactions": store.transactions.removeAll { $0.id == tomb.entityId }
             case "bank_accounts": store.accounts.removeAll { $0.id == tomb.entityId }
@@ -353,51 +436,59 @@ public final class CloudSyncService: ObservableObject {
             }
         }
 
-        // Aplicação de upserts
+        // Aplicação de upserts preservando mutações locais mais recentes
         if let txs = deltas.financialTransactions {
             for item in txs {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.transactions.firstIndex(where: { $0.id == item.id }) { store.transactions[idx] = item }
                 else { store.transactions.append(item) }
             }
         }
         if let accounts = deltas.bankAccounts {
             for item in accounts {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.accounts.firstIndex(where: { $0.id == item.id }) { store.accounts[idx] = item }
                 else { store.accounts.append(item) }
             }
         }
         if let categories = deltas.categories {
             for item in categories {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.categories.firstIndex(where: { $0.id == item.id }) { store.categories[idx] = item }
                 else { store.categories.append(item) }
             }
         }
         if let investments = deltas.investmentItems {
             for item in investments {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.investments.firstIndex(where: { $0.id == item.id }) { store.investments[idx] = item }
                 else { store.investments.append(item) }
             }
         }
         if let debts = deltas.debtItems {
             for item in debts {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.debts.firstIndex(where: { $0.id == item.id }) { store.debts[idx] = item }
                 else { store.debts.append(item) }
             }
         }
         if let contracts = deltas.creditContracts {
             for item in contracts {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.contracts.firstIndex(where: { $0.id == item.id }) { store.contracts[idx] = item }
                 else { store.contracts.append(item) }
             }
         }
         if let provisions = deltas.categoryProvisions {
             for item in provisions {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.provisions.firstIndex(where: { $0.id == item.id }) { store.provisions[idx] = item }
                 else { store.provisions.append(item) }
             }
         }
         if let quotas = deltas.categoryQuotaRules {
             for item in quotas {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.categoryQuotas.firstIndex(where: { $0.id == item.id }) { store.categoryQuotas[idx] = item }
                 else { store.categoryQuotas.append(item) }
             }
@@ -511,5 +602,18 @@ public final class CloudSyncService: ObservableObject {
         }
         self.outboxQueue = deduped.reversed()
         self.pendingMutationsCount = self.outboxQueue.count
+    }
+
+    // MARK: - Test Helpers
+    public var outboxMutations: [LocalSyncMutation] {
+        outboxQueue
+    }
+
+    public func enqueueMutationForTesting(_ mutation: LocalSyncMutation) {
+        enqueueMutation(mutation)
+    }
+
+    public func applyServerChangesForTesting(_ response: SyncPushPullResponse, into store: FinancialDataStore) {
+        applyServerChanges(response, into: store)
     }
 }

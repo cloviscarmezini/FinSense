@@ -249,4 +249,91 @@ final class CloudSyncAndAuthTests: XCTestCase {
         cancellable.cancel()
         try? FileManager.default.removeItem(at: tempDir)
     }
+
+    func testAutoSeedWhenServerEmptyAndLocalStoreHasData() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let syncService = CloudSyncService(store: store)
+        store.cloudSyncService = syncService
+
+        // Cria contas e transações locais
+        let acc = BankAccount(id: UUID(), name: "Conta Teste", initialBalance: 1000.0)
+        let cat = CategoryItem(id: UUID(), name: "Mercado", type: .expense, iconSymbol: "cart", colorHex: "#FF0000")
+        let tx = FinancialTransaction(id: UUID(), name: "Compras", amount: 50.0, date: Date(), type: .expense, categoryId: cat.id, accountId: acc.id)
+
+        store.accounts.append(acc)
+        store.categories.append(cat)
+        store.transactions.append(tx)
+
+        // Limpa outbox para simular base pré-existente
+        syncService.resetSyncState()
+        XCTAssertEqual(syncService.pendingMutationsCount, 0)
+
+        // Dispara auto-seed
+        syncService.enqueueAllLocalData()
+
+        XCTAssertGreaterThan(syncService.pendingMutationsCount, 0, "enqueueAllLocalData deve enfileirar entidades locais para envio automático")
+        XCTAssertTrue(syncService.outboxMutations.contains(where: { $0.entityName == "bank_accounts" && $0.entityId == acc.id }))
+        XCTAssertTrue(syncService.outboxMutations.contains(where: { $0.entityName == "categories" && $0.entityId == cat.id }))
+        XCTAssertTrue(syncService.outboxMutations.contains(where: { $0.entityName == "financial_transactions" && $0.entityId == tx.id }))
+
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    func testLastWriteWinsClientSideConflictResolution() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let syncService = CloudSyncService(store: store)
+        store.cloudSyncService = syncService
+        syncService.isEnabled = true
+
+        let entityId = UUID()
+        let catId = UUID()
+        let accId = UUID()
+
+        // Local edit at 10:00 AM
+        let localActionDate = Date()
+        let localTx = FinancialTransaction(id: entityId, name: "Picolé", amount: 6.0, date: localActionDate, type: .expense, categoryId: catId, accountId: accId)
+        store.transactions.append(localTx)
+
+        let payloadData = try? JSONEncoder().encode(localTx)
+        let payloadStr = payloadData.flatMap { String(data: $0, encoding: .utf8) }
+
+        let localMutation = LocalSyncMutation(
+            entityName: "financial_transactions",
+            entityId: entityId,
+            operation: .insert,
+            updatedAt: localActionDate,
+            payloadJSON: payloadStr
+        )
+        syncService.enqueueMutationForTesting(localMutation)
+
+        // Simula recebimento de DELETE do servidor ocorrido às 9:00 AM (mais antigo que a edição local)
+        let olderServerDate = localActionDate.addingTimeInterval(-3600)
+        let olderDelete = SyncMutationDTO(
+            mutationId: UUID(),
+            entityName: "financial_transactions",
+            entityId: entityId,
+            operation: "DELETE",
+            timestamp: ISO8601DateFormatter().string(from: olderServerDate)
+        )
+
+        let response = SyncPushPullResponse(
+            latestRevision: 10,
+            appliedMutationIds: [],
+            serverChanges: [olderDelete]
+        )
+
+        syncService.applyServerChangesForTesting(response, into: store)
+
+        // A transação NÃO deve ser deletada, pois a alteração local é mais recente (10AM vs 9AM)
+        XCTAssertTrue(store.transactions.contains(where: { $0.id == entityId }), "Edição local mais recente (10AM) deve prevalecer sobre exclusão remota anterior (9AM)")
+        XCTAssertEqual(store.transactions.first(where: { $0.id == entityId })?.amount, 6.0)
+
+        try? FileManager.default.removeItem(at: tempDir)
+    }
 }

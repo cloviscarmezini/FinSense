@@ -146,22 +146,6 @@ public struct CloudSyncSettingsCardView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
 
-                        Button {
-                            sync.triggerInitialSeed()
-                        } label: {
-                            if sync.isSeeding {
-                                HStack(spacing: 6) {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                    Text("Preparando Envio...")
-                                }
-                            } else {
-                                Label("Forçar Envio Completo da Base (Initial Seed)", systemImage: "arrow.up.to.line")
-                            }
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
-
                         Spacer()
                     }
 

@@ -370,6 +370,17 @@ public struct SyncDeltasContainerDTO: Codable {
         self.categoryProvisions = decodeItems(.categoryProvisions)
         self.categoryQuotaRules = decodeItems(.categoryQuotaRules)
     }
+
+    public var isEmpty: Bool {
+        (bankAccounts?.isEmpty ?? true) &&
+        (categories?.isEmpty ?? true) &&
+        (financialTransactions?.isEmpty ?? true) &&
+        (investmentItems?.isEmpty ?? true) &&
+        (debtItems?.isEmpty ?? true) &&
+        (creditContracts?.isEmpty ?? true) &&
+        (categoryProvisions?.isEmpty ?? true) &&
+        (categoryQuotaRules?.isEmpty ?? true)
+    }
 }
 
 // MARK: - 5. Tipo Utilitário para Payload Dinâmico
