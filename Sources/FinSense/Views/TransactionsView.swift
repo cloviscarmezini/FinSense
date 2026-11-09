@@ -194,16 +194,24 @@ public struct TransactionsView: View {
                     )
 
                     // 5: Saldo Previsto para [DD/MM] ou Resultado Consolidado
+                    let transFinalSubtitle = store.deductionSubtitleForProjectedBalance(
+                        periodMode: .monthly,
+                        selectedMonth: store.selectedMonth
+                    )
+                    let transFinalTooltip = store.deductionBreakdownTooltipForProjectedBalance(
+                        periodMode: .monthly,
+                        selectedMonth: store.selectedMonth
+                    )
+
                     MetricCardView(
                         title: store.monthEndBalanceCardTitle(for: store.selectedMonth),
                         value: BRLFormatters.currency(accumulatedBalance),
-                        subtitle: isPastMonth
-                            ? "Mês encerrado"
-                            : (monthRemainingProvisions > 0 ? "Deduzindo \(BRLFormatters.currency(monthRemainingProvisions)) em tetos" : "Projeção de caixa"),
+                        subtitle: transFinalSubtitle,
                         icon: isPastMonth ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis.circle.fill",
                         tint: accumulatedBalance >= 0 ? Color(hex: "#3B82F6") : Color(hex: "#EF4444"),
                         footnote: (!isPastMonth && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
-                        footnoteColor: Color(hex: "#EF4444")
+                        footnoteColor: Color(hex: "#EF4444"),
+                        subtitleHelp: transFinalTooltip
                     )
                 }
 

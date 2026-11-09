@@ -2997,4 +2997,120 @@ final class FinSenseTests: XCTestCase {
         XCTAssertTrue(octPoint.isPastMonth)
         XCTAssertEqual(octPoint.remainingProvisions, 0.0, accuracy: 0.01)
     }
+
+    func testProjectedBalanceDynamicSubtitleAndBreakdownTooltipAcrossTimeline() throws {
+        let store = makeIsolatedStore(seedStatement: false)
+        let cal = Calendar.current
+        let referenceNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+        let octDate = cal.date(from: DateComponents(year: 2026, month: 10, day: 10))!
+        let novDate = cal.date(from: DateComponents(year: 2026, month: 11, day: 10))!
+        let decDate = cal.date(from: DateComponents(year: 2026, month: 12, day: 10))!
+        let year2025Date = cal.date(from: DateComponents(year: 2025, month: 6, day: 15))!
+
+        let cat = store.categories.first!
+
+        // Provisão em Outubro (Mês passado fechado): R$ 500
+        store.setCategoryProvision(categoryId: cat.id, estimatedAmount: 500.0, for: octDate, repeatForFutureMonths: false, editScope: .onlyThisMonth)
+        // Provisão em Novembro (Mês atual): R$ 1.000
+        store.setCategoryProvision(categoryId: cat.id, estimatedAmount: 1000.0, for: novDate, repeatForFutureMonths: false, editScope: .onlyThisMonth)
+        // Provisão em Dezembro (Mês futuro): R$ 800
+        store.setCategoryProvision(categoryId: cat.id, estimatedAmount: 800.0, for: decDate, repeatForFutureMonths: false, editScope: .onlyThisMonth)
+
+        // 1. Visão Mensal - Mês passado encerrado
+        let pastSubtitle = store.deductionSubtitleForProjectedBalance(periodMode: .monthly, selectedMonth: octDate, referenceNow: referenceNow)
+        XCTAssertEqual(pastSubtitle, "Mês encerrado")
+        let pastTooltip = store.deductionBreakdownTooltipForProjectedBalance(periodMode: .monthly, selectedMonth: octDate, referenceNow: referenceNow)
+        XCTAssertNil(pastTooltip)
+
+        // 2. Visão Mensal - Mês atual
+        let currentSubtitle = store.deductionSubtitleForProjectedBalance(periodMode: .monthly, selectedMonth: novDate, referenceNow: referenceNow)
+        XCTAssertTrue(currentSubtitle.contains("restantes em tetos/cotas deste mês"))
+        XCTAssertTrue(currentSubtitle.contains("1.000"))
+
+        // 3. Visão Mensal - Mês futuro
+        let futureSubtitle = store.deductionSubtitleForProjectedBalance(periodMode: .monthly, selectedMonth: decDate, referenceNow: referenceNow)
+        XCTAssertTrue(futureSubtitle.contains("planejados em tetos/cotas para este mês"))
+        XCTAssertTrue(futureSubtitle.contains("800"))
+
+        // 4. Visão Anual - Exercício 2026 (Novembro + Dezembro = R$ 1.800 ativos, desconsiderando Outubro que já encerrou)
+        let annual2026Subtitle = store.deductionSubtitleForProjectedBalance(periodMode: .annual, selectedMonth: novDate, referenceNow: referenceNow)
+        XCTAssertTrue(annual2026Subtitle.contains("acumulados em cotas"))
+        XCTAssertTrue(annual2026Subtitle.contains("1.800"))
+
+        let annual2026Tooltip = try XCTUnwrap(store.deductionBreakdownTooltipForProjectedBalance(periodMode: .annual, selectedMonth: novDate, referenceNow: referenceNow))
+        XCTAssertTrue(annual2026Tooltip.contains("Nov"))
+        XCTAssertTrue(annual2026Tooltip.contains("Dez"))
+        XCTAssertFalse(annual2026Tooltip.contains("Out"))
+
+        // 5. Visão Anual - Exercício passado 2025 encerrado
+        let annual2025Subtitle = store.deductionSubtitleForProjectedBalance(periodMode: .annual, selectedMonth: year2025Date, referenceNow: referenceNow)
+        XCTAssertEqual(annual2025Subtitle, "Ano encerrado")
+    }
+
+    func testTemporalDebtAmortizationAndCutoffDynamics() throws {
+        let store = makeIsolatedStore(seedStatement: false)
+        let cal = Calendar.current
+        let referenceNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+
+        store.addAccount(
+            name: "Conta Corrente Teste",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "banknote",
+            colorHex: "#10B981",
+            initialBalance: 20000.0
+        )
+        let acc = store.accounts.first!
+
+        let startDate = cal.date(from: DateComponents(year: 2026, month: 8, day: 10))!
+        // Criar empréstimo com 24 parcelas de R$ 500 começando em Agosto de 2026
+        let contract = store.createCreditContract(
+            kind: .loan,
+            name: "Empréstimo Expansão",
+            loanSubtype: .pessoal,
+            amortizationSystem: .price,
+            totalContractedAmount: 12000.0,
+            installmentAmount: 500.0,
+            billingDay: 10,
+            totalInstallments: 24,
+            monthlyInterestRate: 1.5,
+            startDate: startDate,
+            accountId: acc.id,
+            referenceDate: startDate
+        )
+
+        // 1. Corte Mensal em Novembro/2026: 4 parcelas decorridas (Ago, Set, Out, Nov). Restam 20 parcelas = R$ 10.000
+        let novSummary = store.buildComprehensiveDebtSummary(referenceDate: referenceNow, isAnnual: false)
+        XCTAssertEqual(novSummary.loansRemainingNominalTotal, 10000.0, accuracy: 0.01)
+        XCTAssertEqual(novSummary.loansAmortizedInPeriodTotal, 500.0, accuracy: 0.01) // Apenas a parcela de Novembro no mês
+
+        // 2. Corte Anual para 31/12/2026: 5 parcelas em 2026 (Ago..Dez). Restam 19 parcelas = R$ 9.500
+        let annual2026Summary = store.buildComprehensiveDebtSummary(referenceDate: referenceNow, isAnnual: true)
+        XCTAssertEqual(annual2026Summary.loansRemainingNominalTotal, 9500.0, accuracy: 0.01)
+        XCTAssertEqual(annual2026Summary.loansAmortizedInPeriodTotal, 2500.0, accuracy: 0.01) // 5 x 500 em 2026
+
+        // 3. Corte Anual para 31/12/2027: mais 12 parcelas pagas em 2027. Restam 7 parcelas = R$ 3.500
+        let date2027 = cal.date(from: DateComponents(year: 2027, month: 6, day: 15))!
+        let annual2027Summary = store.buildComprehensiveDebtSummary(referenceDate: date2027, isAnnual: true)
+        XCTAssertEqual(annual2027Summary.loansRemainingNominalTotal, 3500.0, accuracy: 0.01)
+        XCTAssertEqual(annual2027Summary.loansAmortizedInPeriodTotal, 6000.0, accuracy: 0.01) // 12 x 500 em 2027
+
+        // O saldo residual do passivo reduziu rigorosamente no tempo de 2026 (R$ 9.500) para 2027 (R$ 3.500)
+        XCTAssertLessThan(annual2027Summary.loansRemainingNominalTotal, annual2026Summary.loansRemainingNominalTotal)
+
+        // 4. Testar sincronismo atômico ao aplicar amortização extraordinária
+        let prevRemaining = store.remainingNominalAmount(for: contract, asOf: store.endOfYear(for: referenceNow))
+        XCTAssertEqual(prevRemaining, 9500.0, accuracy: 0.01)
+
+        store.amortizeContract(
+            contractId: contract.id,
+            amountPaid: 1000.0,
+            accountId: acc.id,
+            date: referenceNow,
+            mode: .reduceTerm
+        )
+
+        let postSummary = store.buildComprehensiveDebtSummary(referenceDate: referenceNow, isAnnual: true)
+        XCTAssertEqual(postSummary.loansAmortizedInPeriodTotal, 3500.0, accuracy: 0.01) // 2500 parcelas normais + 1000 amortização
+    }
 }

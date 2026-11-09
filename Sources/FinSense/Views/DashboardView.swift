@@ -78,40 +78,18 @@ public struct DashboardView: View {
 
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                // MARK: - Top Header Bar with Local LLM Chat Button & Global Net Worth
+                // MARK: - Top Header Bar with Local LLM Chat Button
                 HStack(alignment: .center, spacing: 14) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Dashboard & Insights Financeiros")
                             .font(.system(size: 26, weight: .bold, design: .rounded))
-                        HStack(spacing: 8) {
-                            Text(
-                                isAnnual
-                                    ? "Projeção consolidada para o último dia do ano (31/12/\(yearStr))"
-                                    : "Visão consolidada de contas, categorias, investimentos, passivos e projeções"
-                            )
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
-                            Text("•")
-                                .foregroundStyle(.secondary.opacity(0.6))
-
-                            HStack(spacing: 4) {
-                                Image(systemName: "banknote.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(Color(hex: "#10B981"))
-                                Text("Patrimônio Total: ")
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                    .foregroundStyle(.secondary)
-                                + Text(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))
-                                    .font(.caption)
-                                    .fontWeight(.bold)
-                                    .foregroundStyle(store.totalConsolidatedPatrimonyNow >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
-                                + Text(" (Contas: \(BRLFormatters.currency(store.totalCheckingBalanceNow)) • Investimentos: \(BRLFormatters.currency(store.consolidatedInvestmentsBalance)))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                        Text(
+                            isAnnual
+                                ? "Projeção consolidada para o último dia do ano (31/12/\(yearStr))"
+                                : "Visão consolidada de contas, categorias, investimentos, passivos e projeções"
+                        )
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     }
 
                     Spacer()
@@ -251,15 +229,14 @@ public struct DashboardView: View {
                         }
                     }()
 
-                    let finalSubtitle: String = {
-                        if isPastPeriod {
-                            return isAnnual ? "Ano encerrado" : "Mês encerrado"
-                        } else if remainingProvisionsTotal > 0 {
-                            return "Deduzindo \(BRLFormatters.currency(remainingProvisionsTotal)) restantes em tetos/cotas"
-                        } else {
-                            return "Projeção de caixa final"
-                        }
-                    }()
+                    let finalSubtitle = store.deductionSubtitleForProjectedBalance(
+                        periodMode: store.dashboardPeriodMode,
+                        selectedMonth: store.selectedMonth
+                    )
+                    let finalTooltip = store.deductionBreakdownTooltipForProjectedBalance(
+                        periodMode: store.dashboardPeriodMode,
+                        selectedMonth: store.selectedMonth
+                    )
 
                     MetricCardView(
                         title: finalTitle,
@@ -268,7 +245,8 @@ public struct DashboardView: View {
                         icon: isPastPeriod ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis",
                         tint: accumulatedBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
                         footnote: (!isPastPeriod && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
-                        footnoteColor: Color(hex: "#EF4444")
+                        footnoteColor: Color(hex: "#EF4444"),
+                        subtitleHelp: finalTooltip
                     )
                 }
 
@@ -596,6 +574,7 @@ public struct DashboardView: View {
                             subtitle: "\(debtSummary.activeLoans.count) contrato(s) ativo(s)",
                             amount: debtSummary.loansRemainingNominalTotal,
                             projected: debtSummary.loansProjectedPayoffTotal,
+                            amortizedInPeriod: debtSummary.loansAmortizedInPeriodTotal,
                             colorHex: "#D97706",
                             icon: "banknote.fill"
                         )
@@ -604,6 +583,7 @@ public struct DashboardView: View {
                             subtitle: "\(debtSummary.activeFinancings.count) contrato(s) (Imóvel/Carro)",
                             amount: debtSummary.financingsRemainingNominalTotal,
                             projected: debtSummary.financingsProjectedPayoffTotal,
+                            amortizedInPeriod: debtSummary.financingsAmortizedInPeriodTotal,
                             colorHex: "#8B5CF6",
                             icon: "house.and.flag.fill"
                         )
@@ -1110,6 +1090,7 @@ public struct DashboardView: View {
         subtitle: String,
         amount: Double,
         projected: Double?,
+        amortizedInPeriod: Double? = nil,
         colorHex: String,
         icon: String
     ) -> some View {
@@ -1127,11 +1108,20 @@ public struct DashboardView: View {
                 .foregroundStyle(Color(hex: colorHex))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+                .monospacedDigit()
+            if let amortizedInPeriod, amortizedInPeriod > 0 {
+                Text("Amortizado no período: \(BRLFormatters.currency(amortizedInPeriod))")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(Color(hex: "#10B981"))
+                    .lineLimit(1)
+                    .monospacedDigit()
+            }
             if let projected, abs(amount - projected) > 0.01 {
                 Text("Quitar: \(BRLFormatters.currency(projected))")
                     .font(.caption2.bold())
                     .foregroundStyle(Color(hex: "#10B981"))
                     .lineLimit(1)
+                    .monospacedDigit()
             } else {
                 Text(subtitle)
                     .font(.caption2)
@@ -2004,8 +1994,9 @@ public struct MonthlyCashFlowChartView: View {
                         Text("Previsões & Tetos").font(.caption2)
                     }
                     HStack(spacing: 4) {
-                        Circle().fill(Color(hex: "#3B82F6")).frame(width: 8, height: 8)
-                        Text("Saldo").font(.caption2)
+                        Capsule().fill(Color(hex: "#3B82F6")).frame(width: 10, height: 3)
+                        Circle().fill(Color(hex: "#3B82F6")).frame(width: 6, height: 6)
+                        Text("Saldo Final").font(.caption2)
                     }
                 }
             }
@@ -2042,6 +2033,14 @@ public struct MonthlyCashFlowChartView: View {
                     + Text(BRLFormatters.currency(pt.totalBudgetedExpense))
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.primary)
+                    Text("•")
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text("Saldo Final: ")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    + Text(BRLFormatters.currency(pt.accumulatedBalance))
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color(hex: "#3B82F6"))
                     Spacer()
                 }
                 .padding(.horizontal, 10)
@@ -2083,6 +2082,22 @@ public struct MonthlyCashFlowChartView: View {
                         .position(by: .value("Tipo", "Despesas"))
                         .cornerRadius(4)
                     }
+
+                    // Linha sobreposta e pontos: Evolução do Saldo Final
+                    LineMark(
+                        x: .value("Mês", pt.label),
+                        y: .value("Saldo Final", pt.accumulatedBalance)
+                    )
+                    .foregroundStyle(Color(hex: "#3B82F6"))
+                    .interpolationMethod(.catmullRom)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+
+                    PointMark(
+                        x: .value("Mês", pt.label),
+                        y: .value("Saldo Final", pt.accumulatedBalance)
+                    )
+                    .foregroundStyle(Color(hex: "#3B82F6"))
+                    .symbolSize(32)
                 }
             }
             .frame(height: 205)

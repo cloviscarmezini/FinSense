@@ -352,6 +352,7 @@ public struct MetricCardView: View {
     public var action: (() -> Void)?
     public var actionLabel: String?
     public var actionIcon: String?
+    public var subtitleHelp: String?
 
     public init(
         title: String,
@@ -363,7 +364,8 @@ public struct MetricCardView: View {
         footnoteColor: Color = .secondary,
         action: (() -> Void)? = nil,
         actionLabel: String? = nil,
-        actionIcon: String? = nil
+        actionIcon: String? = nil,
+        subtitleHelp: String? = nil
     ) {
         self.title = title
         self.value = value
@@ -375,6 +377,7 @@ public struct MetricCardView: View {
         self.action = action
         self.actionLabel = actionLabel
         self.actionIcon = actionIcon
+        self.subtitleHelp = subtitleHelp
     }
 
     public var body: some View {
@@ -426,12 +429,21 @@ public struct MetricCardView: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+                .monospacedDigit()
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if let subtitleHelp {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(subtitleHelp)
+                } else {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
                 if let footnote, !footnote.isEmpty {
                     Text(footnote)

@@ -204,12 +204,52 @@ public struct ComprehensiveDebtSummary: Hashable {
     public let unpaidDebtsTotal: Double
     public let loansRemainingNominalTotal: Double
     public let loansProjectedPayoffTotal: Double
+    public let loansAmortizedInPeriodTotal: Double
     public let financingsRemainingNominalTotal: Double
     public let financingsProjectedPayoffTotal: Double
+    public let financingsAmortizedInPeriodTotal: Double
 
     public let grandTotalNominal: Double
     public let grandTotalWithPayoffProjection: Double
     public let itemizedLines: [DebtLineItem]
+
+    public init(
+        currentMonthUnpaidTransactions: [FinancialTransaction],
+        futureUnpaidRegularTransactions: [FinancialTransaction],
+        activeDebts: [DebtItem],
+        activeLoans: [CreditContract],
+        activeFinancings: [CreditContract],
+        currentMonthUnpaidTotal: Double,
+        futureRegularExpensesTotal: Double,
+        unpaidDebtsTotal: Double,
+        loansRemainingNominalTotal: Double,
+        loansProjectedPayoffTotal: Double,
+        loansAmortizedInPeriodTotal: Double = 0.0,
+        financingsRemainingNominalTotal: Double,
+        financingsProjectedPayoffTotal: Double,
+        financingsAmortizedInPeriodTotal: Double = 0.0,
+        grandTotalNominal: Double,
+        grandTotalWithPayoffProjection: Double,
+        itemizedLines: [DebtLineItem]
+    ) {
+        self.currentMonthUnpaidTransactions = currentMonthUnpaidTransactions
+        self.futureUnpaidRegularTransactions = futureUnpaidRegularTransactions
+        self.activeDebts = activeDebts
+        self.activeLoans = activeLoans
+        self.activeFinancings = activeFinancings
+        self.currentMonthUnpaidTotal = currentMonthUnpaidTotal
+        self.futureRegularExpensesTotal = futureRegularExpensesTotal
+        self.unpaidDebtsTotal = unpaidDebtsTotal
+        self.loansRemainingNominalTotal = loansRemainingNominalTotal
+        self.loansProjectedPayoffTotal = loansProjectedPayoffTotal
+        self.loansAmortizedInPeriodTotal = loansAmortizedInPeriodTotal
+        self.financingsRemainingNominalTotal = financingsRemainingNominalTotal
+        self.financingsProjectedPayoffTotal = financingsProjectedPayoffTotal
+        self.financingsAmortizedInPeriodTotal = financingsAmortizedInPeriodTotal
+        self.grandTotalNominal = grandTotalNominal
+        self.grandTotalWithPayoffProjection = grandTotalWithPayoffProjection
+        self.itemizedLines = itemizedLines
+    }
 }
 
 // MARK: - FinancialDataStore
@@ -2995,22 +3035,35 @@ public final class FinancialDataStore: ObservableObject {
         return contract
     }
 
-    /// Retorna o Saldo Devedor atual do contrato (informado/extraído do documento menos amortizações extras, ou calculado a valor presente)
-    public func currentOutstandingBalance(for contract: CreditContract) -> Double {
+    /// Retorna o Saldo Devedor do contrato (informado/extraído do documento menos amortizações, ou calculado a valor presente),
+    /// projetado para a data de corte informada (`asOfCutoff`, ex: fim do mês ou 31/12 do ano).
+    public func currentOutstandingBalance(for contract: CreditContract, asOf asOfCutoff: Date? = nil) -> Double {
         guard !contract.isSettled else { return 0.0 }
         if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
-            let paidInApp = transactions.filter { $0.linkedContractId == contract.id && $0.isPaid && $0.installmentIndex != nil }.count
-            let estimatedPrincipalPerInstallment = explicitBalance / Double(max(contract.totalInstallments - contract.pastInstallmentsElapsedAtCreation, 1))
-            let reducedByPaidInstallments = Double(paidInApp) * estimatedPrincipalPerInstallment
-            return max(explicitBalance - contract.extraAmortizedTotal - reducedByPaidInstallments, 0.0)
+            let totalToAmortize = max(contract.totalInstallments - contract.pastInstallmentsElapsedAtCreation, 1)
+            let estimatedPrincipalPerInstallment = explicitBalance / Double(totalToAmortize)
+            let elapsedInApp: Int
+            if let asOfCutoff {
+                elapsedInApp = transactions.filter { $0.linkedContractId == contract.id && ($0.isPaid || $0.date <= asOfCutoff) && $0.installmentIndex != nil }.count
+            } else {
+                elapsedInApp = transactions.filter { $0.linkedContractId == contract.id && $0.isPaid && $0.installmentIndex != nil }.count
+            }
+            let reducedByInstallments = Double(elapsedInApp) * estimatedPrincipalPerInstallment
+            return max(explicitBalance - contract.extraAmortizedTotal - reducedByInstallments, 0.0)
         }
-        return projectedPayoffAmount(for: contract)
+        return projectedPayoffAmount(for: contract, asOf: asOfCutoff)
     }
 
-    public func unpaidTransactions(forContract contractId: UUID) -> [FinancialTransaction] {
-        transactions
-            .filter { $0.linkedContractId == contractId && !$0.isPaid }
-            .sorted { $0.date < $1.date }
+    public func unpaidTransactions(forContract contractId: UUID, after asOfCutoff: Date? = nil) -> [FinancialTransaction] {
+        if let asOfCutoff {
+            return transactions
+                .filter { $0.linkedContractId == contractId && $0.date > asOfCutoff }
+                .sorted { $0.date < $1.date }
+        } else {
+            return transactions
+                .filter { $0.linkedContractId == contractId && !$0.isPaid }
+                .sorted { $0.date < $1.date }
+        }
     }
 
     public func paidTransactionsCount(forContract contract: CreditContract) -> Int {
@@ -3018,15 +3071,30 @@ public final class FinancialDataStore: ObservableObject {
         return min(contract.pastInstallmentsElapsedAtCreation + paidInApp, contract.totalInstallments)
     }
 
-    public func remainingInstallmentsCount(for contract: CreditContract) -> Int {
+    public func remainingInstallmentsCount(for contract: CreditContract, asOf asOfCutoff: Date? = nil) -> Int {
         guard !contract.isSettled else { return 0 }
+        if let asOfCutoff {
+            let remainingAfter = unpaidTransactions(forContract: contract.id, after: asOfCutoff)
+            if !remainingAfter.isEmpty {
+                return remainingAfter.count
+            }
+            let elapsed = transactions.filter { $0.linkedContractId == contract.id && $0.date <= asOfCutoff }.count
+            return max(contract.totalInstallments - contract.pastInstallmentsElapsedAtCreation - elapsed, 0)
+        }
         let unpaid = unpaidTransactions(forContract: contract.id).count
         if unpaid > 0 { return unpaid }
         return max(contract.totalInstallments - paidTransactionsCount(forContract: contract), 0)
     }
 
-    public func remainingNominalAmount(for contract: CreditContract) -> Double {
+    public func remainingNominalAmount(for contract: CreditContract, asOf asOfCutoff: Date? = nil) -> Double {
         guard !contract.isSettled else { return 0 }
+        if let asOfCutoff {
+            let remainingTxs = unpaidTransactions(forContract: contract.id, after: asOfCutoff)
+            if !remainingTxs.isEmpty {
+                return remainingTxs.reduce(0.0) { $0 + $1.amount }
+            }
+            return Double(remainingInstallmentsCount(for: contract, asOf: asOfCutoff)) * contract.installmentAmount
+        }
         let unpaidTxs = unpaidTransactions(forContract: contract.id)
         if !unpaidTxs.isEmpty {
             return unpaidTxs.reduce(0) { $0 + $1.amount }
@@ -3035,13 +3103,13 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Calcula a "Projeção de valor para quitar" trazendo as parcelas futuras a valor presente (desconto proporcional de juros futuros)
-    /// considerando o Saldo Devedor atual (quando informado/importado), a taxa de juros do contrato, o sistema de amortização (PRICE ou SAC) e o tipo do contrato.
-    public func projectedPayoffAmount(for contract: CreditContract) -> Double {
+    /// considerando o Saldo Devedor na data de corte informada (`asOfCutoff`), a taxa de juros do contrato, o sistema de amortização (PRICE ou SAC) e o tipo do contrato.
+    public func projectedPayoffAmount(for contract: CreditContract, asOf asOfCutoff: Date? = nil) -> Double {
         guard !contract.isSettled else { return 0.0 }
-        let n = remainingInstallmentsCount(for: contract)
+        let n = remainingInstallmentsCount(for: contract, asOf: asOfCutoff)
         guard n > 0 else { return 0.0 }
 
-        let nominalRemaining = remainingNominalAmount(for: contract)
+        let nominalRemaining = remainingNominalAmount(for: contract, asOf: asOfCutoff)
         let pmt = nominalRemaining / Double(max(n, 1))
         let i = contract.monthlyInterestRate / 100.0
 
@@ -3049,7 +3117,7 @@ public final class FinancialDataStore: ObservableObject {
         // que já representa o principal a valor presente (D0, livre de juros futuros e seguros mensais),
         // a projeção para quitação imediata é o próprio Saldo Devedor atualizado, nunca superior a ele.
         if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
-            let currentBal = currentOutstandingBalance(for: contract)
+            let currentBal = currentOutstandingBalance(for: contract, asOf: asOfCutoff)
             if currentBal < nominalRemaining - 0.01 {
                 return max(currentBal, 0.0)
             }
@@ -3057,7 +3125,7 @@ public final class FinancialDataStore: ObservableObject {
 
         guard i > 0.0001 else {
             if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
-                return max(min(currentOutstandingBalance(for: contract), nominalRemaining), 0.0)
+                return max(min(currentOutstandingBalance(for: contract, asOf: asOfCutoff), nominalRemaining), 0.0)
             }
             return max(nominalRemaining, 0)
         }
@@ -3082,9 +3150,19 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
-            return max(min(calculatedPayoff, currentOutstandingBalance(for: contract)), 0.0)
+            return max(min(calculatedPayoff, currentOutstandingBalance(for: contract, asOf: asOfCutoff)), 0.0)
         }
         return calculatedPayoff
+    }
+
+    /// Total amortizado/pago no período selecionado (mês ou ano) para um determinado contrato
+    public func amortizedAmountInPeriod(for contract: CreditContract, referenceDate: Date, isAnnual: Bool) -> Double {
+        transactions
+            .filter { tx in
+                tx.linkedContractId == contract.id &&
+                (isAnnual ? isInYear(tx.date, yearReference: referenceDate) : isInMonth(tx.date, monthReference: referenceDate))
+            }
+            .reduce(0.0) { $0 + $1.amount }
     }
 
     /// Amortizar empréstimo/financiamento: registra pagamento na conta escolhida e recalcula parcelas futuras
@@ -4004,8 +4082,8 @@ public final class FinancialDataStore: ObservableObject {
     /// Provisão Total Futura Consolidada no Dashboard:
     /// $\text{Provisão Total Futura} = \sum \text{Cotas Restantes} + \sum \text{Tetos de Categoria Restantes}$
     /// Para meses anteriores ao atual (mês já fechado), retorna 0.0 pois o mês já encerrou e prevalecem apenas despesas reais realizadas.
-    public func totalRemainingProvision(for monthReference: Date) -> Double {
-        if isMonthPriorToCurrent(monthReference) {
+    public func totalRemainingProvision(for monthReference: Date, referenceNow: Date? = nil) -> Double {
+        if isMonthPriorToCurrent(monthReference, referenceNow: referenceNow) {
             return 0.0
         }
         return totalQuotasRemaining(for: monthReference) + totalCategoryProvisionsRemaining(for: monthReference)
@@ -4033,7 +4111,7 @@ public final class FinancialDataStore: ObservableObject {
 
         // Itera mês a mês desde o mês atual até o mês de referência
         while cursor <= targetMonthStart {
-            total += totalRemainingProvision(for: cursor)
+            total += totalRemainingProvision(for: cursor, referenceNow: now)
             guard let nextMonth = calendar.date(byAdding: .month, value: 1, to: cursor) else {
                 break
             }
@@ -4041,6 +4119,142 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         return total
+    }
+
+    /// Retorna a soma de previsões ativas (tetos e cotas restantes) estritamente do exercício do ano selecionado:
+    /// - Ano passado (< ano atual): 0.0
+    /// - Ano corrente (== ano atual): soma do mês atual até dezembro
+    /// - Ano futuro (> ano atual): soma de todos os 12 meses (janeiro a dezembro) daquele ano
+    public func activeRemainingProvisionsForYear(_ yearReference: Date, referenceNow: Date? = nil) -> Double {
+        let now = referenceNow ?? effectiveCurrentDate
+        let currentYear = calendar.component(.year, from: now)
+        let targetYear = calendar.component(.year, from: yearReference)
+
+        if targetYear < currentYear {
+            return 0.0
+        }
+
+        let currentMonth = calendar.component(.month, from: now)
+        let startMonth = (targetYear == currentYear) ? currentMonth : 1
+
+        var total = 0.0
+        for m in startMonth...12 {
+            var comps = DateComponents()
+            comps.year = targetYear
+            comps.month = m
+            comps.day = 15
+            if let mDate = calendar.date(from: comps) {
+                total += totalRemainingProvision(for: mDate, referenceNow: now)
+            }
+        }
+        return total
+    }
+
+    /// Discriminativo mês a mês das previsões ativas para o exercício (para popover / tooltip)
+    public func activeRemainingProvisionsMonthlyBreakdownForYear(
+        _ yearReference: Date,
+        referenceNow: Date? = nil
+    ) -> [(monthDate: Date, label: String, amount: Double)] {
+        let now = referenceNow ?? effectiveCurrentDate
+        let currentYear = calendar.component(.year, from: now)
+        let targetYear = calendar.component(.year, from: yearReference)
+
+        guard targetYear >= currentYear else { return [] }
+
+        let currentMonth = calendar.component(.month, from: now)
+        let startMonth = (targetYear == currentYear) ? currentMonth : 1
+
+        var breakdown: [(Date, String, Double)] = []
+        for m in startMonth...12 {
+            var comps = DateComponents()
+            comps.year = targetYear
+            comps.month = m
+            comps.day = 15
+            if let mDate = calendar.date(from: comps) {
+                let amount = totalRemainingProvision(for: mDate, referenceNow: now)
+                let label = BRLFormatters.shortMonthYearFormatter.string(from: mDate).capitalized
+                breakdown.append((mDate, label, amount))
+            }
+        }
+        return breakdown
+    }
+
+    /// Subtítulo dinâmico para o card de Saldo Previsto / Resultado Consolidado respeitando rigorosamente a linha do tempo:
+    /// 1. Mês Encerrado (Passado): "Mês encerrado"
+    /// 2. Mês Vigente (Atual): "Deduzindo R$ [X] restantes em tetos/cotas deste mês"
+    /// 3. Mês Futuro: "Deduzindo R$ [X] planejados em tetos/cotas para este mês"
+    /// 4. Visão Anual:
+    ///    - Ano Encerrado: "Ano encerrado"
+    ///    - Ano Corrente / Futuro: "Deduzindo R$ [SomaAcumuladaRestanteAtiva] acumulados em cotas"
+    public func deductionSubtitleForProjectedBalance(
+        periodMode: DashboardPeriodMode,
+        selectedMonth: Date,
+        referenceNow: Date? = nil
+    ) -> String {
+        let now = referenceNow ?? effectiveCurrentDate
+
+        if periodMode == .annual {
+            let currentYear = calendar.component(.year, from: now)
+            let selectedYear = calendar.component(.year, from: selectedMonth)
+
+            if selectedYear < currentYear {
+                return "Ano encerrado"
+            }
+
+            let activeYearProvisions = activeRemainingProvisionsForYear(selectedMonth, referenceNow: now)
+            if activeYearProvisions > 0 {
+                return "Deduzindo \(BRLFormatters.currency(activeYearProvisions)) acumulados em cotas"
+            } else {
+                return "Projeção anual de caixa final"
+            }
+        } else {
+            let startSelected = startOfMonth(for: selectedMonth)
+            let startCurrent = startOfMonth(for: now)
+
+            if startSelected < startCurrent {
+                return "Mês encerrado"
+            } else if startSelected == startCurrent {
+                let remaining = totalRemainingProvision(for: selectedMonth, referenceNow: now)
+                if remaining > 0 {
+                    return "Deduzindo \(BRLFormatters.currency(remaining)) restantes em tetos/cotas deste mês"
+                } else {
+                    return "Projeção de caixa final"
+                }
+            } else {
+                let planned = totalRemainingProvision(for: selectedMonth, referenceNow: now)
+                if planned > 0 {
+                    return "Deduzindo \(BRLFormatters.currency(planned)) planejados em tetos/cotas para este mês"
+                } else {
+                    return "Projeção de caixa final"
+                }
+            }
+        }
+    }
+
+    /// Tooltip explicativo com detalhamento mês a mês dos tetos/cotas abatidos (para Visão Anual)
+    public func deductionBreakdownTooltipForProjectedBalance(
+        periodMode: DashboardPeriodMode,
+        selectedMonth: Date,
+        referenceNow: Date? = nil
+    ) -> String? {
+        guard periodMode == .annual else { return nil }
+        let now = referenceNow ?? effectiveCurrentDate
+        let currentYear = calendar.component(.year, from: now)
+        let selectedYear = calendar.component(.year, from: selectedMonth)
+        guard selectedYear >= currentYear else { return nil }
+
+        let breakdown = activeRemainingProvisionsMonthlyBreakdownForYear(selectedMonth, referenceNow: now)
+        guard !breakdown.isEmpty else { return nil }
+
+        let total = breakdown.reduce(0.0) { $0 + $1.amount }
+        guard total > 0 else { return nil }
+
+        var lines = ["Detalhamento de tetos/cotas ativas no exercício (\(selectedYear)):"]
+        for item in breakdown where item.amount > 0 {
+            lines.append("• \(item.label): \(BRLFormatters.currency(item.amount))")
+        }
+        lines.append("Total deduzido: \(BRLFormatters.currency(total))")
+        return lines.joined(separator: "\n")
     }
 
     /// Despesa total projetada do mês considerando despesas reais + provisões variáveis remanescentes ($\sum P_{restante}$).
@@ -4331,11 +4545,13 @@ public final class FinancialDataStore: ObservableObject {
         let futureRegularSum = futureRegularUnpaid.reduce(0.0) { $0 + $1.amount }
         let debtsSum = openDebts.reduce(0.0) { $0 + $1.originalAmount }
 
-        let loansNominalSum = openLoans.reduce(0.0) { $0 + remainingNominalAmount(for: $1) }
-        let loansProjectedSum = openLoans.reduce(0.0) { $0 + projectedPayoffAmount(for: $1) }
+        let loansNominalSum = openLoans.reduce(0.0) { $0 + remainingNominalAmount(for: $1, asOf: endOfCurrentPeriod) }
+        let loansProjectedSum = openLoans.reduce(0.0) { $0 + projectedPayoffAmount(for: $1, asOf: endOfCurrentPeriod) }
+        let loansAmortizedInPeriodTotal = openLoans.reduce(0.0) { $0 + amortizedAmountInPeriod(for: $1, referenceDate: referenceDate, isAnnual: isAnnual) }
 
-        let financingsNominalSum = openFinancings.reduce(0.0) { $0 + remainingNominalAmount(for: $1) }
-        let financingsProjectedSum = openFinancings.reduce(0.0) { $0 + projectedPayoffAmount(for: $1) }
+        let financingsNominalSum = openFinancings.reduce(0.0) { $0 + remainingNominalAmount(for: $1, asOf: endOfCurrentPeriod) }
+        let financingsProjectedSum = openFinancings.reduce(0.0) { $0 + projectedPayoffAmount(for: $1, asOf: endOfCurrentPeriod) }
+        let financingsAmortizedInPeriodTotal = openFinancings.reduce(0.0) { $0 + amortizedAmountInPeriod(for: $1, referenceDate: referenceDate, isAnnual: isAnnual) }
 
         var items: [DebtLineItem] = []
 
@@ -4386,14 +4602,16 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         for loan in openLoans {
-            let remCount = remainingInstallmentsCount(for: loan)
-            let nom = remainingNominalAmount(for: loan)
-            let proj = projectedPayoffAmount(for: loan)
+            let remCount = remainingInstallmentsCount(for: loan, asOf: endOfCurrentPeriod)
+            let nom = remainingNominalAmount(for: loan, asOf: endOfCurrentPeriod)
+            let proj = projectedPayoffAmount(for: loan, asOf: endOfCurrentPeriod)
+            let amortized = amortizedAmountInPeriod(for: loan, referenceDate: referenceDate, isAnnual: isAnnual)
+            let amortizedStr = amortized > 0 ? " • Amortizado no período: \(BRLFormatters.currency(amortized))" : ""
             items.append(
                 DebtLineItem(
                     id: loan.id,
                     title: "\(loan.name) (\(loan.subtypeDisplayName))",
-                    subtitle: "\(remCount)x restantes de \(BRLFormatters.currency(loan.installmentAmount)) • Juros \(String(format: "%.2f", loan.monthlyInterestRate))% a.m.",
+                    subtitle: "\(remCount)x restantes de \(BRLFormatters.currency(loan.installmentAmount))\(amortizedStr) • Juros \(String(format: "%.2f", loan.monthlyInterestRate))% a.m.",
                     section: "Empréstimos",
                     nominalAmount: nom,
                     projectedPayoffAmount: proj,
@@ -4404,14 +4622,16 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         for fin in openFinancings {
-            let remCount = remainingInstallmentsCount(for: fin)
-            let nom = remainingNominalAmount(for: fin)
-            let proj = projectedPayoffAmount(for: fin)
+            let remCount = remainingInstallmentsCount(for: fin, asOf: endOfCurrentPeriod)
+            let nom = remainingNominalAmount(for: fin, asOf: endOfCurrentPeriod)
+            let proj = projectedPayoffAmount(for: fin, asOf: endOfCurrentPeriod)
+            let amortized = amortizedAmountInPeriod(for: fin, referenceDate: referenceDate, isAnnual: isAnnual)
+            let amortizedStr = amortized > 0 ? " • Amortizado no período: \(BRLFormatters.currency(amortized))" : ""
             items.append(
                 DebtLineItem(
                     id: fin.id,
                     title: "\(fin.name) (\(fin.subtypeDisplayName))",
-                    subtitle: "\(remCount)x restantes de \(BRLFormatters.currency(fin.installmentAmount)) • Juros \(String(format: "%.2f", fin.monthlyInterestRate))% a.m.",
+                    subtitle: "\(remCount)x restantes de \(BRLFormatters.currency(fin.installmentAmount))\(amortizedStr) • Juros \(String(format: "%.2f", fin.monthlyInterestRate))% a.m.",
                     section: "Financiamentos",
                     nominalAmount: nom,
                     projectedPayoffAmount: proj,
@@ -4435,8 +4655,10 @@ public final class FinancialDataStore: ObservableObject {
             unpaidDebtsTotal: debtsSum,
             loansRemainingNominalTotal: loansNominalSum,
             loansProjectedPayoffTotal: loansProjectedSum,
+            loansAmortizedInPeriodTotal: loansAmortizedInPeriodTotal,
             financingsRemainingNominalTotal: financingsNominalSum,
             financingsProjectedPayoffTotal: financingsProjectedSum,
+            financingsAmortizedInPeriodTotal: financingsAmortizedInPeriodTotal,
             grandTotalNominal: grandNominal,
             grandTotalWithPayoffProjection: grandProjected,
             itemizedLines: items
