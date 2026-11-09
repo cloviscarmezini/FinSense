@@ -188,8 +188,14 @@ public struct DashboardView: View {
                         tint: Color(hex: "#EF4444")
                     )
 
+                    let currentYear = store.calendar.component(.year, from: store.effectiveCurrentDate)
+                    let selectedYear = store.calendar.component(.year, from: store.selectedMonth)
+                    let monthEndTitle = isAnnual
+                        ? (selectedYear < currentYear ? "Saldo ao final de \(yearStr)" : "Saldo previsto para 31/12/\(yearStr)")
+                        : store.monthEndBalanceCardTitle(for: store.selectedMonth)
+
                     MetricCardView(
-                        title: isAnnual ? "Acumulado em 31/12/\(yearStr)" : "Saldo ao final do mês",
+                        title: monthEndTitle,
                         value: BRLFormatters.currency(accumulatedBalance),
                         subtitle: isAnnual ? "Balanço anual projetado: \(BRLFormatters.currency(periodNet))" : "Balanço mensal: \(BRLFormatters.currency(periodNet))",
                         icon: "chart.line.uptrend.xyaxis",

@@ -622,6 +622,13 @@ public enum BRLFormatters {
         return df
     }()
 
+    public static let dayMonthFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "pt_BR")
+        df.dateFormat = "dd/MM"
+        return df
+    }()
+
     public static let weekdayFormatter: DateFormatter = {
         let df = DateFormatter()
         df.locale = Locale(identifier: "pt_BR")
@@ -632,6 +639,10 @@ public enum BRLFormatters {
     public static func currency(_ value: Double) -> String {
         let raw = currencyFormatter.string(from: NSNumber(value: value)) ?? String(format: "R$ %.2f", value)
         return raw.replacingOccurrences(of: "\u{00A0}", with: " ")
+    }
+
+    public static func dayMonth(_ date: Date) -> String {
+        dayMonthFormatter.string(from: date)
     }
 
     public static func shortDate(_ date: Date) -> String {

@@ -16,6 +16,7 @@ public struct TransactionsView: View {
     @State private var showCreateExpenseSheet: Bool = false
     @State private var showCreateIncomeSheet: Bool = false
     @State private var showImportSheet: Bool = false
+    @State private var showProvisionsSheet: Bool = false
     @State private var editingTransaction: FinancialTransaction? = nil
     @State private var transactionPendingDeletion: FinancialTransaction? = nil
     @State private var recurringTransactionPendingCancellation: FinancialTransaction? = nil
@@ -109,6 +110,9 @@ public struct TransactionsView: View {
 
         let monthBalance = monthIncome - monthExpense
         let accumulatedBalance = store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
+        let isPastMonth = store.isMonthPriorToCurrent(store.selectedMonth)
+        let monthRemainingProvisions = store.totalRemainingProvision(for: store.selectedMonth)
+        let monthEstimatedProvisions = store.totalEstimatedProvision(for: store.selectedMonth)
 
         VStack(alignment: .leading, spacing: 18) {
             // MARK: - Header & Month Navigation
@@ -129,7 +133,7 @@ public struct TransactionsView: View {
             // MARK: - Monthly Summary Cards (Adaptados por Submenu: Todas, Despesas ou Receitas)
             switch store.selectedTransactionsSubmenu {
             case .all:
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
                     MetricCardView(
                         title: "Receitas no Mês",
                         value: BRLFormatters.currency(monthIncome),
@@ -155,7 +159,26 @@ public struct TransactionsView: View {
                     )
 
                     MetricCardView(
-                        title: "Saldo ao final do mês",
+                        title: "Previsões & Tetos",
+                        value: BRLFormatters.currency(isPastMonth ? 0.0 : monthRemainingProvisions),
+                        subtitle: isPastMonth
+                            ? "Mês já encerrado"
+                            : (monthRemainingProvisions > 0 ? "Reservado p/ gastos variáveis" : "Nenhuma provisão ativa"),
+                        icon: "tray.full.fill",
+                        tint: Color(hex: "#6366F1"),
+                        footnote: (!isPastMonth && monthEstimatedProvisions > 0)
+                            ? "Total orçado: \(BRLFormatters.currency(monthEstimatedProvisions))"
+                            : nil,
+                        footnoteColor: .secondary,
+                        action: {
+                            showProvisionsSheet = true
+                        },
+                        actionLabel: "Editar",
+                        actionIcon: "pencil"
+                    )
+
+                    MetricCardView(
+                        title: store.monthEndBalanceCardTitle(for: store.selectedMonth),
                         value: BRLFormatters.currency(accumulatedBalance),
                         subtitle: "Saldo + Invest. Consolidados",
                         icon: "chart.line.uptrend.xyaxis.circle.fill",
@@ -383,6 +406,9 @@ public struct TransactionsView: View {
                 initialType: txToEdit.type,
                 existingTransaction: txToEdit
             )
+        }
+        .sheet(isPresented: $showProvisionsSheet) {
+            MonthlyProvisionsSheet(store: store)
         }
         .alert(
             transactionPendingDeletion?.isPartOfSeries == true

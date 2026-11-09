@@ -2880,4 +2880,25 @@ final class FinSenseTests: XCTestCase {
         // Em Março (mês futuro): 600 - (100 Fev + 100 Mar) = 400
         XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: mar2026, includeProjectedUnpaid: true), 400.0, accuracy: 0.01)
     }
+
+    func testMonthEndBalanceCardTitlesForClosedAndFutureMonths() {
+        let store = makeIsolatedStore(seedStatement: false)
+        let cal = Calendar(identifier: .gregorian)
+
+        let oct2026 = cal.date(from: DateComponents(year: 2026, month: 10, day: 15))!
+        let nov2026 = cal.date(from: DateComponents(year: 2026, month: 11, day: 9))!
+        let dec2026 = cal.date(from: DateComponents(year: 2026, month: 12, day: 20))!
+
+        // Fixa a data atual como 09/11/2026
+        store.simulatedCurrentDate = nov2026
+
+        // Outubro/2026 é mês anterior (fechado)
+        XCTAssertEqual(store.monthEndBalanceCardTitle(for: oct2026), "Saldo ao final do mês")
+
+        // Novembro/2026 é o mês atual em andamento (termina em 30/11)
+        XCTAssertEqual(store.monthEndBalanceCardTitle(for: nov2026), "Saldo previsto para 30/11")
+
+        // Dezembro/2026 é mês futuro (termina em 31/12)
+        XCTAssertEqual(store.monthEndBalanceCardTitle(for: dec2026), "Saldo previsto para 31/12")
+    }
 }

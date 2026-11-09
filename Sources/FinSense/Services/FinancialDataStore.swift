@@ -234,7 +234,7 @@ public final class FinancialDataStore: ObservableObject {
     private let legacyReleaseDatabaseFileURL: URL?
 
     private var hasSeededInitialStatement: Bool = false
-    private let calendar: Calendar = {
+    public let calendar: Calendar = {
         var cal = Calendar(identifier: .gregorian)
         cal.locale = Locale(identifier: "pt_BR")
         return cal
@@ -1737,6 +1737,18 @@ public final class FinancialDataStore: ObservableObject {
     public func isMonthPriorToCurrent(_ monthReference: Date, referenceNow: Date? = nil) -> Bool {
         let now = referenceNow ?? effectiveCurrentDate
         return startOfMonth(for: monthReference) < startOfMonth(for: now)
+    }
+
+    /// Título contextualizado para o card de saldo ao final do período:
+    /// - Meses já fechados: "Saldo ao final do mês"
+    /// - Mês atual ou futuro: "Saldo previsto para DD/MM" (ex: "Saldo previsto para 31/12")
+    public func monthEndBalanceCardTitle(for monthReference: Date) -> String {
+        if isMonthPriorToCurrent(monthReference) {
+            return "Saldo ao final do mês"
+        } else {
+            let lastDay = endOfMonth(for: monthReference)
+            return "Saldo previsto para \(BRLFormatters.dayMonth(lastDay))"
+        }
     }
 
     public func endOfMonth(for monthReference: Date) -> Date {

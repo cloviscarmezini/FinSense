@@ -349,6 +349,9 @@ public struct MetricCardView: View {
     public let tint: Color
     public var footnote: String?
     public var footnoteColor: Color
+    public var action: (() -> Void)?
+    public var actionLabel: String?
+    public var actionIcon: String?
 
     public init(
         title: String,
@@ -357,7 +360,10 @@ public struct MetricCardView: View {
         icon: String,
         tint: Color,
         footnote: String? = nil,
-        footnoteColor: Color = .secondary
+        footnoteColor: Color = .secondary,
+        action: (() -> Void)? = nil,
+        actionLabel: String? = nil,
+        actionIcon: String? = nil
     ) {
         self.title = title
         self.value = value
@@ -366,16 +372,45 @@ public struct MetricCardView: View {
         self.tint = tint
         self.footnote = footnote
         self.footnoteColor = footnoteColor
+        self.action = action
+        self.actionLabel = actionLabel
+        self.actionIcon = actionIcon
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(alignment: .center, spacing: 6) {
                 Text(title)
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
-                Spacer()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Spacer(minLength: 4)
+
+                if let action {
+                    Button(action: action) {
+                        HStack(spacing: 4) {
+                            if let actionIcon {
+                                Image(systemName: actionIcon)
+                                    .font(.system(size: 10, weight: .semibold))
+                            }
+                            if let actionLabel {
+                                Text(actionLabel)
+                                    .font(.system(size: 10.5, weight: .semibold))
+                            }
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(tint.opacity(0.12))
+                        .foregroundStyle(tint)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Editar previsões e tetos deste mês")
+                }
+
                 ZStack {
                     Circle()
                         .fill(tint.opacity(0.15))
