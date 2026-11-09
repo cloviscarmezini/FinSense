@@ -601,6 +601,13 @@ public enum BRLFormatters {
         return df
     }()
 
+    public static let dateTimeFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.locale = Locale(identifier: "pt_BR")
+        df.dateFormat = "dd/MM/yyyy 'às' HH:mm"
+        return df
+    }()
+
     public static let monthYearFormatter: DateFormatter = {
         let df = DateFormatter()
         df.locale = Locale(identifier: "pt_BR")
@@ -629,6 +636,10 @@ public enum BRLFormatters {
 
     public static func shortDate(_ date: Date) -> String {
         shortDateFormatter.string(from: date)
+    }
+
+    public static func dateTime(_ date: Date) -> String {
+        dateTimeFormatter.string(from: date)
     }
 
     public static func dayGroupHeader(_ date: Date) -> String {

@@ -42,7 +42,7 @@ public struct MainContentView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 6) {
                             Text("FinSense")
                                 .font(.system(size: 15, weight: .bold, design: .rounded))
                             if store.persistenceEnvironment.isDebug {
@@ -54,12 +54,11 @@ public struct MainContentView: View {
                                     .foregroundStyle(Color(hex: "#F59E0B"))
                                     .help("Ambiente de Desenvolvimento isolado: \(store.databaseFileURL.path)")
                             }
+                            SyncStatusIndicatorView(syncService: syncService)
                         }
                     }
 
                     Spacer()
-
-                    SyncStatusIndicatorView(syncService: syncService)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 14)
@@ -243,7 +242,7 @@ public struct MainContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .toolbar {
-                ToolbarItem(placement: .automatic) {
+                ToolbarItem(placement: .primaryAction) {
                     SyncStatusIndicatorView(syncService: syncService)
                 }
             }

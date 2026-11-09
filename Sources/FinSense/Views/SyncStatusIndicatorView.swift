@@ -16,26 +16,31 @@ public struct SyncStatusIndicatorView: View {
             Button {
                 isPopoverPresented.toggle()
             } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: syncService.syncStatus.iconSymbol)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(iconColor)
-
-                    if syncService.pendingMutationsCount > 0 && !syncService.isSyncing {
-                        Text("\(syncService.pendingMutationsCount)")
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Capsule().fill(Color(hex: "#F59E0B").opacity(0.2)))
-                            .foregroundStyle(Color(hex: "#F59E0B"))
+                Group {
+                    if syncService.isSyncing {
+                        ZStack {
+                            Image(systemName: "icloud.fill")
+                                .font(.system(size: 14))
+                                .foregroundStyle(Color(hex: "#F59E0B").opacity(0.18))
+                            Image(systemName: "icloud")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color(hex: "#F59E0B"))
+                            ProgressView()
+                                .controlSize(.mini)
+                                .scaleEffect(0.62)
+                                .tint(Color(hex: "#F59E0B"))
+                        }
+                    } else {
+                        Image(systemName: syncService.syncStatus.iconSymbol)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(iconColor)
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .frame(width: 20, height: 20)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(syncService.syncStatus.statusDescription)
+            .help(syncService.isSyncing ? "Sincronizando com o servidor (\(Int(round(syncService.syncProgress * 100)))%)..." : syncService.syncStatus.statusDescription)
             .popover(isPresented: $isPopoverPresented, arrowEdge: .bottom) {
                 SyncDetailPopoverContent(syncService: syncService)
             }
@@ -46,7 +51,7 @@ public struct SyncStatusIndicatorView: View {
         switch syncService.syncStatus {
         case .disabled: return .secondary.opacity(0.6)
         case .synced: return Color(hex: "#10B981")
-        case .syncing: return Color(hex: "#3B82F6")
+        case .syncing: return Color(hex: "#F59E0B")
         case .outOfSync: return Color(hex: "#F59E0B")
         case .authError: return Color(hex: "#EF4444")
         }
@@ -59,15 +64,47 @@ public struct SyncDetailPopoverContent: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
-                Image(systemName: syncService.syncStatus.iconSymbol)
-                    .font(.title2)
+                if syncService.isSyncing {
+                    ZStack {
+                        Image(systemName: "icloud.fill")
+                            .font(.title2)
+                            .foregroundStyle(Color(hex: "#F59E0B").opacity(0.18))
+                        Image(systemName: "icloud")
+                            .font(.title2)
+                            .foregroundStyle(Color(hex: "#F59E0B"))
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.7)
+                            .tint(Color(hex: "#F59E0B"))
+                    }
+                } else {
+                    Image(systemName: syncService.syncStatus.iconSymbol)
+                        .font(.title2)
+                        .foregroundStyle(iconColor)
+                }
+
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sincronização em Nuvem")
                         .font(.headline)
-                    Text(syncService.syncStatus.statusDescription)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if syncService.isSyncing {
+                        Text("Sincronizando \(Int(round(syncService.syncProgress * 100)))%")
+                            .font(.caption)
+                            .foregroundStyle(Color(hex: "#F59E0B"))
+                    } else if let last = syncService.lastSyncDate, case .synced = syncService.syncStatus {
+                        Text("Sincronizado em \(BRLFormatters.dateTime(last))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(syncService.syncStatus.statusDescription)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+            }
+
+            if syncService.isSyncing {
+                ProgressView(value: max(0.05, syncService.syncProgress), total: 1.0)
+                    .progressViewStyle(.linear)
             }
 
             Divider()
@@ -89,7 +126,7 @@ public struct SyncDetailPopoverContent: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Spacer()
-                        Text(BRLFormatters.shortDate(lastSync))
+                        Text(BRLFormatters.dateTime(lastSync))
                             .font(.caption)
                     }
                 }
@@ -102,17 +139,7 @@ public struct SyncDetailPopoverContent: View {
                 Button {
                     syncService.performSync()
                 } label: {
-                    if syncService.isSyncing {
-                        HStack(spacing: 4) {
-                            ProgressView().controlSize(.small)
-                            Text("Sincronizando...")
-                        }
-                    } else {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.clockwise")
-                            Text("Sincronizar Agora")
-                        }
-                    }
+                    Label("Sincronizar Agora", systemImage: "arrow.clockwise")
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(syncService.isSyncing || syncService.isSeeding || !syncService.canSync)
@@ -121,5 +148,15 @@ public struct SyncDetailPopoverContent: View {
         }
         .padding(14)
         .frame(width: 320)
+    }
+
+    private var iconColor: Color {
+        switch syncService.syncStatus {
+        case .disabled: return .secondary.opacity(0.6)
+        case .synced: return Color(hex: "#10B981")
+        case .syncing: return Color(hex: "#F59E0B")
+        case .outOfSync: return Color(hex: "#F59E0B")
+        case .authError: return Color(hex: "#EF4444")
+        }
     }
 }

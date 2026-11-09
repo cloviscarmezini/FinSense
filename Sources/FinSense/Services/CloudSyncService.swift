@@ -8,6 +8,7 @@ import SwiftUI
 public final class CloudSyncService: ObservableObject {
     @Published public var syncStatus: SyncStatus = .disabled
     @Published public var isSyncing: Bool = false
+    @Published public var syncProgress: Double = 0.0
     @Published public var pendingMutationsCount: Int = 0
     @Published public var lastSyncDate: Date? = nil
 
@@ -46,6 +47,7 @@ public final class CloudSyncService: ObservableObject {
     public func resetSyncState() {
         lastServerRevision = 0
         lastSyncDate = nil
+        syncProgress = 0.0
         outboxQueue.removeAll()
         saveOutboxQueue()
         pendingMutationsCount = 0
@@ -178,6 +180,7 @@ public final class CloudSyncService: ObservableObject {
         guard !isSyncing, !isSeeding else { return }
 
         isSyncing = true
+        syncProgress = 0.10
         syncStatus = .syncing
 
         Task {
@@ -188,9 +191,11 @@ public final class CloudSyncService: ObservableObject {
     private func executeSyncPushPull() async {
         guard let store else {
             isSyncing = false
+            syncProgress = 0.0
             return
         }
 
+        syncProgress = 0.20
         let localStoreIsEmpty = store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty && store.contracts.isEmpty && store.investments.isEmpty && store.debts.isEmpty
         let effectiveSinceRevision: Int64
         if localStoreIsEmpty {
@@ -229,17 +234,21 @@ public final class CloudSyncService: ObservableObject {
             }
         )
 
+        syncProgress = 0.40
         do {
             let response = try await BackendAPIClient.shared.pushPull(
                 baseURL: baseURLString,
                 requestPayload: payload
             )
 
+            syncProgress = 0.65
+
             let ackSet = Set(response.allAcknowledgedIds)
             outboxQueue.removeAll { ackSet.contains($0.id) }
             saveOutboxQueue()
             pendingMutationsCount = outboxQueue.count
 
+            syncProgress = 0.75
             applyServerChanges(response, into: store)
 
             let serverIsEmpty = response.latestRevision == 0 && (response.serverChanges?.isEmpty ?? true) && (response.deltas?.isEmpty ?? true)
@@ -253,6 +262,7 @@ public final class CloudSyncService: ObservableObject {
             lastServerRevision = Int(response.latestRevision)
             let now = Date()
             lastSyncDate = now
+            syncProgress = 1.0
 
             if outboxQueue.isEmpty {
                 syncStatus = .synced(lastSync: now)
@@ -263,6 +273,7 @@ public final class CloudSyncService: ObservableObject {
         } catch {
             let msg = error.localizedDescription
             syncStatus = .outOfSync(pendingCount: outboxQueue.count, reason: msg.isEmpty ? "Servidor indisponível" : msg)
+            syncProgress = 0.0
         }
 
         isSyncing = false
@@ -328,7 +339,13 @@ public final class CloudSyncService: ObservableObject {
         var appliedChangesCount = 0
 
         if let changes = response.serverChanges, !changes.isEmpty {
-            for change in changes {
+            let total = changes.count
+            for (idx, change) in changes.enumerated() {
+                if idx % 10 == 0 || idx == total - 1 {
+                    let sub = 0.75 + (Double(idx + 1) / Double(total)) * 0.20
+                    self.syncProgress = min(sub, 0.98)
+                }
+
                 let changeDate: Date = {
                     let f = ISO8601DateFormatter()
                     if let d = f.date(from: change.timestamp) { return d }

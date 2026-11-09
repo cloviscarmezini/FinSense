@@ -24,7 +24,7 @@ public enum SyncStatus: Equatable {
         case .disabled:
             return "Sincronização em nuvem desativada"
         case .synced(let date):
-            return "Sincronizado em \(BRLFormatters.shortDate(date))"
+            return "Sincronizado em \(BRLFormatters.dateTime(date))"
         case .syncing:
             return "Sincronizando com o servidor..."
         case .outOfSync(let count, let reason):

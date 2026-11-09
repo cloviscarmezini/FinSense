@@ -114,17 +114,37 @@ public struct CloudSyncSettingsCardView: View {
                         Text("Status:")
                             .font(.caption.bold())
                             .frame(width: 80, alignment: .leading)
-                        HStack(spacing: 6) {
-                            Image(systemName: sync.syncStatus.iconSymbol)
-                            Text(sync.syncStatus.statusDescription)
-                                .font(.caption)
+
+                        if sync.isSyncing {
+                            HStack(spacing: 8) {
+                                Image(systemName: "arrow.triangle.2.circlepath.icloud.fill")
+                                    .foregroundStyle(Color(hex: "#F59E0B"))
+
+                                Text("Sincronizando \(Int(round(sync.syncProgress * 100)))%")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+
+                                ProgressView(value: max(0.05, sync.syncProgress), total: 1.0)
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 140)
+                            }
+                        } else if let last = sync.lastSyncDate, case .synced = sync.syncStatus {
+                            HStack(spacing: 6) {
+                                Image(systemName: sync.syncStatus.iconSymbol)
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                                Text("Sincronizado em \(BRLFormatters.dateTime(last))")
+                                    .font(.caption)
+                            }
+                        } else {
+                            HStack(spacing: 6) {
+                                Image(systemName: sync.syncStatus.iconSymbol)
+                                    .foregroundStyle(iconColor(for: sync.syncStatus))
+                                Text(sync.syncStatus.statusDescription)
+                                    .font(.caption)
+                            }
                         }
+
                         Spacer()
-                        if let last = sync.lastSyncDate {
-                            Text("Último sync: \(BRLFormatters.shortDate(last))")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
                     }
 
                     Divider()
@@ -133,30 +153,13 @@ public struct CloudSyncSettingsCardView: View {
                         Button {
                             sync.performSync()
                         } label: {
-                            if sync.isSyncing {
-                                HStack(spacing: 6) {
-                                    ProgressView().controlSize(.small)
-                                    Text("Sincronizando...")
-                                }
-                            } else {
-                                Label("Sincronizar Agora", systemImage: "arrow.clockwise")
-                                    .fontWeight(.semibold)
-                            }
+                            Label("Sincronizar Agora", systemImage: "arrow.clockwise")
+                                .fontWeight(.semibold)
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(sync.isSyncing || sync.isSeeding || !sync.canSync)
 
                         Spacer()
-                    }
-
-                    if sync.isSyncing {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("Sincronizando dados com o servidor...")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.top, 4)
                     }
 
                     if sync.isSeeding {
@@ -171,6 +174,16 @@ public struct CloudSyncSettingsCardView: View {
                     }
                 }
             }
+        }
+    }
+
+    private func iconColor(for status: SyncStatus) -> Color {
+        switch status {
+        case .disabled: return .secondary.opacity(0.6)
+        case .synced: return Color(hex: "#10B981")
+        case .syncing: return Color(hex: "#F59E0B")
+        case .outOfSync: return Color(hex: "#F59E0B")
+        case .authError: return Color(hex: "#EF4444")
         }
     }
 }
