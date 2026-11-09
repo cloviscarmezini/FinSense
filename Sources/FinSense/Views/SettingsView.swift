@@ -1198,10 +1198,15 @@ public struct ExpenseJSONImportReviewSheet: View {
 
 public struct ResetFromScratchConfirmationSheet: View {
     @ObservedObject public var store: FinancialDataStore
+    @ObservedObject private var authService = AuthService.shared
     @Environment(\.dismiss) private var dismiss
 
     // Por padrão todos vêm selecionados!
     @State private var selectedTargets: Set<ResetDataTarget> = Set(ResetDataTarget.allCases)
+    // Opção desmarcada por padrão para zerar os dados na nuvem também!
+    @State private var resetCloudData: Bool = false
+    @State private var isResetting: Bool = false
+    @State private var errorMessage: String? = nil
     public var onConfirmed: ((Int) -> Void)? = nil
 
     public var body: some View {
@@ -1290,30 +1295,112 @@ public struct ResetFromScratchConfirmationSheet: View {
                 }
             }
 
+            // Opção para zerar dados na nuvem também (desmarcada por padrão)
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: $resetCloudData) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "icloud.slash.fill")
+                            .font(.title3)
+                            .foregroundStyle(resetCloudData ? Color(hex: "#EF4444") : .secondary)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Zerar também os dados na nuvem (FinSense Cloud)")
+                                .font(.subheadline.bold())
+                                .foregroundStyle(resetCloudData ? Color(hex: "#EF4444") : .primary)
+                            Text(authService.isAuthenticated
+                                ? "Se marcado, remove os dados persistidos no servidor da sua conta conectada."
+                                : "Disponível ao fazer login com uma conta FinSense.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .disabled(!authService.isAuthenticated || isResetting)
+
+                if let err = errorMessage {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(err)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                    .padding(.top, 2)
+                }
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(resetCloudData ? Color(hex: "#EF4444").opacity(0.08) : Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(resetCloudData ? Color(hex: "#EF4444").opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
+            )
+
             HStack {
                 Button("Cancelar") {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isResetting)
 
                 Spacer()
 
                 Button(role: .destructive) {
-                    let count = selectedTargets.count
-                    store.resetSelectedData(selectedTargets)
-                    onConfirmed?(count)
-                    dismiss()
+                    if resetCloudData && authService.isAuthenticated {
+                        isResetting = true
+                        errorMessage = nil
+                        Task {
+                            do {
+                                let targetStrings = selectedTargets.count == ResetDataTarget.allCases.count
+                                    ? nil
+                                    : selectedTargets.map(\.rawValue)
+                                try await store.cloudSyncService?.resetCloudData(targets: targetStrings)
+                                await MainActor.run {
+                                    let count = selectedTargets.count
+                                    store.resetSelectedData(selectedTargets)
+                                    isResetting = false
+                                    onConfirmed?(count)
+                                    dismiss()
+                                }
+                            } catch {
+                                await MainActor.run {
+                                    isResetting = false
+                                    errorMessage = "Falha ao zerar dados na nuvem: \(error.localizedDescription)"
+                                }
+                            }
+                        }
+                    } else {
+                        let count = selectedTargets.count
+                        store.resetSelectedData(selectedTargets)
+                        onConfirmed?(count)
+                        dismiss()
+                    }
                 } label: {
-                    Label("Confirmar e Deletar Itens Selecionados (\(selectedTargets.count))", systemImage: "trash.fill")
+                    if isResetting {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Zerando base...")
+                        }
                         .fontWeight(.semibold)
+                    } else {
+                        Label(
+                            resetCloudData ? "Confirmar e Zerar Base Local e Nuvem" : "Confirmar e Deletar Itens Selecionados (\(selectedTargets.count))",
+                            systemImage: "trash.fill"
+                        )
+                        .fontWeight(.semibold)
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Color(hex: "#EF4444"))
-                .disabled(selectedTargets.isEmpty)
+                .disabled(selectedTargets.isEmpty || isResetting)
             }
         }
         .padding(22)
-        .frame(width: 600, height: 560)
+        .frame(width: 600, height: 620)
     }
 
     private func countLabel(for target: ResetDataTarget) -> String {

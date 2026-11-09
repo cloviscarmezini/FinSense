@@ -336,4 +336,38 @@ final class CloudSyncAndAuthTests: XCTestCase {
 
         try? FileManager.default.removeItem(at: tempDir)
     }
+
+    func testResetFromScratchOptionCloudResetDefaultStateAndSyncReset() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let syncService = CloudSyncService(store: store)
+        store.cloudSyncService = syncService
+
+        // Popula base com transações e itens
+        let acc = BankAccount(id: UUID(), name: "Conta 1", initialBalance: 500)
+        let cat = CategoryItem(id: UUID(), name: "Lazer", type: .expense, iconSymbol: "star", colorHex: "#00FF00")
+        let tx = FinancialTransaction(id: UUID(), name: "Cinema", amount: 40, date: Date(), type: .expense, categoryId: cat.id, accountId: acc.id)
+        store.accounts = [acc]
+        store.categories = [cat]
+        store.transactions = [tx]
+
+        syncService.lastServerRevision = 42
+        syncService.lastSyncDate = Date()
+        syncService.enqueueMutationForTesting(LocalSyncMutation(entityName: "financial_transactions", entityId: tx.id, operation: .insert, updatedAt: Date(), payloadJSON: nil))
+        XCTAssertEqual(syncService.pendingMutationsCount, 1)
+
+        // Ao recomeçar do zero localmente (opção de zerar nuvem desmarcada)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        // Verifica que localmente foi zerado e o estado de sincronização foi limpo sem enfileirar deletes indesejados
+        XCTAssertTrue(store.transactions.isEmpty)
+        XCTAssertTrue(store.accounts.isEmpty)
+        XCTAssertTrue(store.categories.isEmpty)
+        XCTAssertEqual(syncService.pendingMutationsCount, 0, "Outbox deve ser limpa para não deletar a nuvem por engano")
+        XCTAssertEqual(syncService.lastServerRevision, 0, "Revisão deve ser resetada para 0 para permitir re-sync limpo")
+
+        try? FileManager.default.removeItem(at: tempDir)
+    }
 }

@@ -52,6 +52,13 @@ public final class CloudSyncService: ObservableObject {
         evaluateInitialStatus()
     }
 
+    public func resetCloudData(targets: [String]? = nil) async throws {
+        try await BackendAPIClient.shared.resetCloudData(baseURL: baseURLString, targets: targets)
+        await MainActor.run {
+            self.resetSyncState()
+        }
+    }
+
     private func startAuthMonitoring() {
         authCancellable = AuthService.shared.$isAuthenticated
             .receive(on: DispatchQueue.main)
@@ -611,6 +618,7 @@ public final class CloudSyncService: ObservableObject {
 
     public func enqueueMutationForTesting(_ mutation: LocalSyncMutation) {
         enqueueMutation(mutation)
+        pendingMutationsCount = outboxQueue.count
     }
 
     public func applyServerChangesForTesting(_ response: SyncPushPullResponse, into store: FinancialDataStore) {

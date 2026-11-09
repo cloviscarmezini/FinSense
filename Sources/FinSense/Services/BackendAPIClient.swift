@@ -78,6 +78,39 @@ public final class BackendAPIClient {
         }
     }
 
+    // MARK: - Reset Cloud Data
+    public func resetCloudData(baseURL: String, targets: [String]? = nil) async throws {
+        guard let url = URL(string: "\(baseURL)/sync/reset") else { throw URLError(.badURL) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        if let token = await AuthService.shared.accessToken {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        if let targets = targets, !targets.isEmpty {
+            req.httpBody = try JSONSerialization.data(withJSONObject: ["targets": targets])
+        }
+
+        struct ResetResponse: Decodable {
+            let message: String?
+        }
+
+        do {
+            let _: ResetResponse = try await sendRequest(req)
+        } catch let error as URLError where error.code == .userAuthenticationRequired {
+            let renewed = await AuthService.shared.renewTokens(baseURL: baseURL)
+            if renewed, let newToken = await AuthService.shared.accessToken {
+                req.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
+                let _: ResetResponse = try await sendRequest(req)
+            } else {
+                throw error
+            }
+        }
+    }
+
     public static func makeFlexibleDateDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in
