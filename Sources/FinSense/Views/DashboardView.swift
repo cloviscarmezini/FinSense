@@ -189,12 +189,12 @@ public struct DashboardView: View {
                     )
 
                     MetricCardView(
-                        title: isAnnual ? "Acumulado em 31/12/\(yearStr)" : "Saldo Projetado no Mês",
+                        title: isAnnual ? "Acumulado em 31/12/\(yearStr)" : "Saldo ao final do mês",
                         value: BRLFormatters.currency(accumulatedBalance),
                         subtitle: isAnnual ? "Balanço anual projetado: \(BRLFormatters.currency(periodNet))" : "Balanço mensal: \(BRLFormatters.currency(periodNet))",
                         icon: "chart.line.uptrend.xyaxis",
                         tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#F59E0B"),
-                        footnote: (!isAnnual && hasAnyProvisionOrQuota)
+                        footnote: (!isAnnual && hasAnyProvisionOrQuota && remainingProvisionsTotal > 0)
                             ? "Provisão de Gastos Variáveis: \(BRLFormatters.currency(remainingProvisionsTotal)) restantes"
                             : nil,
                         footnoteColor: remainingProvisionsTotal > 0 ? Color(hex: "#6366F1") : .secondary

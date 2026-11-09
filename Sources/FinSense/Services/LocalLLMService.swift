@@ -841,7 +841,7 @@ public final class LocalLLMService: ObservableObject {
             - **Quitação já ao Fim do Mês Atual (\(currentMonthLabel) — menos de 1 mês):** Considerando o seu fluxo de caixa e o cronograma de datas deste mês, **você consegue quitar integralmente a dívida \(debt.name) (\(BRLFormatters.currency(debtValue))) ainda em \(currentMonthLabel)**, mas **deve aguardar a data segura recomendada** (e não pagar agora).
             - **📅 Data Segura Recomendada para Pagamento:** **A partir de \(safeDateText)** (*\(currentMonthDailyPlan.safeTriggerReason)*).
             - **Por que aguardar até \(safeDateText):** \(whyWaitExplanation)
-            - **Sobra após quitar em \(safeDateText):** Com o **Saldo Projetado de Fim de Mês em \(BRLFormatters.currency(projectedEndOfCurrentMonth))**, ao pagar **\(BRLFormatters.currency(debtValue))** na janela segura, todas as contas do mês estarão cobertas e ainda sobrarão **\(BRLFormatters.currency(remainingAfterPayoff))** de saldo projetado.
+            - **Sobra após quitar em \(safeDateText):** Com o **Saldo ao final do mês em \(BRLFormatters.currency(projectedEndOfCurrentMonth))**, ao pagar **\(BRLFormatters.currency(debtValue))** na janela segura, todas as contas do mês estarão cobertas e ainda sobrarão **\(BRLFormatters.currency(remainingAfterPayoff))** de saldo projetado.
             - **Pela geração média mensal isolada (\(BRLFormatters.currency(max(avgMonthlySurplus, 0)))/mês):** Essa dívida equivale a apenas `\(String(format: "%.1f", exactMonthsByAverage))` mês de sobra operacional média.
             \(currentMonthDailyPlan.scheduleMarkdownBlock)
             """
@@ -894,7 +894,7 @@ public final class LocalLLMService: ObservableObject {
         - **Valor para Quitação:** **\(BRLFormatters.currency(debtValue))**
         - **Data de Contratação:** \(debt.contractedDate.map { BRLFormatters.shortDate($0) } ?? "Não informada")
         - **Saldo Disponível Hoje (Conta + Investimentos):** **\(BRLFormatters.currency(immediateLiquidityNow))**
-        - **Saldo Projetado no Fim do Mês Atual (\(currentMonthLabel)):** **\(BRLFormatters.currency(projectedEndOfCurrentMonth))**
+        - **Saldo ao final do mês atual (\(currentMonthLabel)):** **\(BRLFormatters.currency(projectedEndOfCurrentMonth))**
 
         ### 2. Seu Padrão Mensal de Receitas vs. Modo de Gastar
         - **Mês Atual (\(currentMonthLabel)):** Receitas de **\(BRLFormatters.currency(currentMonthIncome))** vs. Despesas de **\(BRLFormatters.currency(currentMonthExpense))** → Saldo líquido do mês: **\(currentMonthNet >= 0 ? "+" : "")\(BRLFormatters.currency(currentMonthNet))**
@@ -1528,7 +1528,7 @@ public final class LocalLLMService: ObservableObject {
         - Despesa Operacional Média: \(BRLFormatters.currency(avgMonthlyExpense))/mês
         - Sobra Líquida Mensal: \(BRLFormatters.currency(avgMonthlySurplus))/mês
         - Saldo Disponível Hoje: \(BRLFormatters.currency(immediateLiquidityNow))
-        - Saldo Projetado Fim de \(currentMonthLabel): \(BRLFormatters.currency(projectedEndOfCurrentMonth))
+        - Saldo ao final de \(currentMonthLabel): \(BRLFormatters.currency(projectedEndOfCurrentMonth))
         - Cenário 1 (Ritmo Original): Prazo \(formatYearsAndMonths(remCount)), Total Desembolsado: \(BRLFormatters.currency(nominalRemaining))
         - Cenário 2 (Amortização Moderada +\(BRLFormatters.currency(moderateExtra))/mês): Prazo \(formatYearsAndMonths(simModerate.months)) (\(simModerate.payoffDateLabel)), Economia de Juros: \(BRLFormatters.currency(simModerate.interestSaved)), \(formatYearsAndMonths(monthsCutModerate)) a menos
         - Cenário 3 (Amortização Agressiva +\(BRLFormatters.currency(aggressiveExtra))/mês): Prazo \(formatYearsAndMonths(simAggressive.months)) (\(simAggressive.payoffDateLabel)), Economia de Juros: \(BRLFormatters.currency(simAggressive.interestSaved)), \(formatYearsAndMonths(monthsCutAggressive)) a menos
@@ -1557,7 +1557,7 @@ public final class LocalLLMService: ObservableObject {
         - Saldo Disponível em Contas: \(BRLFormatters.currency(store.totalCheckingBalanceNow))
         - Total em Investimentos Consolidados: \(BRLFormatters.currency(store.consolidatedInvestmentsBalance)) (Total geral investido: \(BRLFormatters.currency(store.totalInvestmentsBalance)))
         - Patrimônio Consolidado Atual: \(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))
-        - Saldo Projetado de Fim de Mês (\(BRLFormatters.monthYear(store.selectedMonth))): \(BRLFormatters.currency(projectedEndOfMonth)) (Provisão de Gastos Variáveis: \(BRLFormatters.currency(remainingTotal)) restantes)
+        - Saldo ao final do mês (\(BRLFormatters.monthYear(store.selectedMonth))): \(BRLFormatters.currency(projectedEndOfMonth)) (Provisão de Gastos Variáveis: \(BRLFormatters.currency(remainingTotal)) restantes)
         - Despesas pendentes no mês atual: \(BRLFormatters.currency(debtSummary.currentMonthUnpaidTotal))
         - Despesas futuras agendadas: \(BRLFormatters.currency(debtSummary.futureRegularExpensesTotal))
         - Dívidas em aberto: \(BRLFormatters.currency(debtSummary.unpaidDebtsTotal)) (\(debtSummary.activeDebts.count) item(ns))
@@ -1632,7 +1632,7 @@ public final class LocalLLMService: ObservableObject {
             - **Saldo Estimado Remanescente:** **\(BRLFormatters.currency(remaining))**
             - **Progresso do Envelope:** `\(String(format: "%.1f%%", progress))` (*Status: \(statusLabel)*)
             - **Recorrência Automática:** \(shouldRepeat ? "Ativada (repetirá para os próximos meses)" : "Apenas para \(monthTitle)")
-            - **Novo Saldo Projetado de Fim de Mês:** **\(BRLFormatters.currency(projectedBalance))**
+            - **Novo Saldo ao final do mês:** **\(BRLFormatters.currency(projectedBalance))**
             """
         }
 
@@ -1677,7 +1677,7 @@ public final class LocalLLMService: ObservableObject {
                     - **Saldo Estimado Remanescente:** **\(BRLFormatters.currency(env.remainingProvision))**
                     - **Progresso Utilizado:** `\(String(format: "%.1f%%", env.clampedProgressPercentage))`
                     - **Status do Envelope:** \(statusDetail)
-                    - **Saldo Projetado de Fim de Mês:** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
+                    - **Saldo ao final do mês:** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
                     """
                 } else {
                     let realized = store.realizedMonthlyExpense(forCategory: category.id, in: targetMonth)
@@ -1714,7 +1714,7 @@ public final class LocalLLMService: ObservableObject {
                 ## Resumo de Previsões & Tetos (\(monthTitle))
                 - **Total Orçado nos Envelopes:** \(BRLFormatters.currency(totalEstimated))
                 - **Provisão de Gastos Variáveis Restante:** **\(BRLFormatters.currency(totalRemaining))**
-                - **Saldo Projetado de Fim de Mês:** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
+                - **Saldo ao final do mês:** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
 
                 ### Envelopes por Categoria
                 \(lines)

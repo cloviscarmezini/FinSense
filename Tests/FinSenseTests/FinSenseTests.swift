@@ -1226,6 +1226,7 @@ final class FinSenseTests: XCTestCase {
         let nov2026 = BRLFormatters.shortDateFormatter.date(from: "10/11/2026")!
         let dec2026 = BRLFormatters.shortDateFormatter.date(from: "10/12/2026")!
         debugStore.selectedMonth = oct2026
+        debugStore.simulatedCurrentDate = oct2026
 
         // Cadastra cota específica ("Galão de Água", 4 un. × R$ 30,00 = R$ 120,00) SEM teto de categoria inicialmente
         let waterQuota = debugStore.saveCategoryQuota(
@@ -2787,5 +2788,96 @@ final class FinSenseTests: XCTestCase {
         XCTAssertFalse(out3.responseMarkdown.contains("Plano de Ação"))
         XCTAssertFalse(out3.responseMarkdown.contains("Cenário 3"))
         XCTAssertTrue(out3.executedSteps.contains { $0.contains("Reset de Contexto") })
+    }
+
+    func testRecurringQuotasAndProvisionsMonthByMonthAccumulationAndPastClosedMonthsIgnored() {
+        let store = makeIsolatedStore(seedStatement: false)
+        let cal = Calendar(identifier: .gregorian)
+
+        store.addAccount(
+            name: "Conta Principal",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 0.0
+        )
+        let acc = store.accounts.first!
+        let salaryCat = store.incomeCategories.first!
+        let foodCat = store.expenseCategories.first(where: { $0.name.localizedCaseInsensitiveContains("Aliment") })!
+        let otherExpenseCat = store.expenseCategories.first(where: { $0.id != foodCat.id }) ?? store.expenseCategories.first!
+
+        let janComps = DateComponents(year: 2026, month: 1, day: 10)
+        let febComps = DateComponents(year: 2026, month: 2, day: 10)
+        let marComps = DateComponents(year: 2026, month: 3, day: 10)
+        let decPrevComps = DateComponents(year: 2025, month: 12, day: 10)
+
+        let jan2026 = cal.date(from: janComps)!
+        let feb2026 = cal.date(from: febComps)!
+        let mar2026 = cal.date(from: marComps)!
+        let dec2025 = cal.date(from: decPrevComps)!
+
+        // Cria ganhos fixos de 1000 e despesas fixas de 800 em Jan, Fev e Mar
+        for mDate in [jan2026, feb2026, mar2026] {
+            _ = store.createTransaction(
+                name: "Salário Fixo",
+                amount: 1000.0,
+                date: mDate,
+                type: .income,
+                isPaid: false,
+                categoryId: salaryCat.id,
+                accountId: acc.id
+            )
+            _ = store.createTransaction(
+                name: "Despesa Fixa",
+                amount: 800.0,
+                date: mDate,
+                type: .expense,
+                isPaid: false,
+                categoryId: otherExpenseCat.id,
+                accountId: acc.id
+            )
+        }
+
+        // Simula que o mês corrente é Janeiro de 2026
+        store.simulatedCurrentDate = jan2026
+
+        // Sem cotas: Janeiro = 200, Fevereiro = 400 (200 + 200), Março = 600
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: jan2026, includeProjectedUnpaid: true), 200.0, accuracy: 0.01)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: feb2026, includeProjectedUnpaid: true), 400.0, accuracy: 0.01)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: mar2026, includeProjectedUnpaid: true), 600.0, accuracy: 0.01)
+
+        // Adiciona orçamento/previsão de 100 para alimentos em Janeiro e marca para repetir para os próximos meses
+        store.setCategoryProvision(
+            categoryId: foodCat.id,
+            estimatedAmount: 100.0,
+            for: jan2026,
+            repeatForFutureMonths: true
+        )
+
+        // Com a provisão de 100 repetida:
+        // Janeiro: 200 - 100 = 100
+        // Fevereiro: 400 - (100 Jan + 100 Fev) = 200
+        // Março: 600 - (100 Jan + 100 Fev + 100 Mar) = 300
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: jan2026, includeProjectedUnpaid: true), 100.0, accuracy: 0.01)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: feb2026, includeProjectedUnpaid: true), 200.0, accuracy: 0.01)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: mar2026, includeProjectedUnpaid: true), 300.0, accuracy: 0.01)
+
+        // Para um mês anterior ao atual (ex: Dezembro de 2025), o mês já fechou: cotas/previsões são desconsideradas
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: dec2025, includeProjectedUnpaid: true), 0.0, accuracy: 0.01)
+        XCTAssertEqual(store.totalRemainingProvision(for: dec2025), 0.0, accuracy: 0.01)
+
+        // Agora simula o avanço do tempo: o mês atual passa a ser Fevereiro de 2026
+        store.simulatedCurrentDate = feb2026
+
+        // Janeiro agora é mês anterior (já fechou): a provisão de Janeiro não afeta mais o futuro
+        XCTAssertEqual(store.totalRemainingProvision(for: jan2026), 0.0, accuracy: 0.01)
+        // Saldo ao final do mês de Janeiro reflete o fechamento real (200)
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: jan2026, includeProjectedUnpaid: true), 200.0, accuracy: 0.01)
+
+        // Em Fevereiro (mês atual): 400 - 100 (Fev) = 300
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: feb2026, includeProjectedUnpaid: true), 300.0, accuracy: 0.01)
+        // Em Março (mês futuro): 600 - (100 Fev + 100 Mar) = 400
+        XCTAssertEqual(store.accumulatedConsolidatedBalance(throughMonth: mar2026, includeProjectedUnpaid: true), 400.0, accuracy: 0.01)
     }
 }

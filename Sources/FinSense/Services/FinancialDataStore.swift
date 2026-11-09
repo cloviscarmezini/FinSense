@@ -201,6 +201,13 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var llmConfig: LLMConfiguration = LLMConfiguration()
     @Published public var chatHistory: [ChatMessage] = []
     @Published public var selectedMonth: Date = Date()
+    /// Data simulada para testes e cenários hipotéticos de tempo. Quando `nil`, usa `Date()`.
+    @Published public var simulatedCurrentDate: Date? = nil
+
+    /// Retorna a data corrente efetiva (real ou simulada via `simulatedCurrentDate`).
+    public var effectiveCurrentDate: Date {
+        simulatedCurrentDate ?? Date()
+    }
     @Published public var selectedDestination: SidebarDestination = .dashboard
     @Published public var selectedTransactionsSubmenu: TransactionsSubmenu = .all
     @Published public var dashboardPeriodMode: DashboardPeriodMode = .monthly
@@ -1718,6 +1725,18 @@ public final class FinancialDataStore: ObservableObject {
         let y1 = calendar.component(.year, from: date)
         let y2 = calendar.component(.year, from: yearReference)
         return y1 == y2
+    }
+
+    /// Retorna o primeiro instante do mês informado (dia 1º às 00:00:00).
+    public func startOfMonth(for date: Date) -> Date {
+        let components = calendar.dateComponents([.year, .month], from: date)
+        return calendar.date(from: components) ?? date
+    }
+
+    /// Retorna se o mês informado é estritamente anterior ao mês atual (mês já fechado).
+    public func isMonthPriorToCurrent(_ monthReference: Date, referenceNow: Date? = nil) -> Bool {
+        let now = referenceNow ?? effectiveCurrentDate
+        return startOfMonth(for: monthReference) < startOfMonth(for: now)
     }
 
     public func endOfMonth(for monthReference: Date) -> Date {
@@ -3903,14 +3922,22 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Soma dos Tetos de Categoria Restantes ($\sum \text{Tetos de Categoria Restantes}$).
+    /// Para meses anteriores ao atual (mês já fechado), retorna 0.0 pois as cotas/previsões passadas não afetam o saldo projetado futuro.
     public func totalCategoryProvisionsRemaining(for monthReference: Date) -> Double {
-        provisionEnvelopes(for: monthReference)
+        if isMonthPriorToCurrent(monthReference) {
+            return 0.0
+        }
+        return provisionEnvelopes(for: monthReference)
             .reduce(0.0) { $0 + $1.remainingProvision }
     }
 
     /// Soma das Cotas Específicas Restantes ($\sum \text{Cotas Restantes}$).
+    /// Para meses anteriores ao atual (mês já fechado), retorna 0.0 pois as cotas/previsões passadas não afetam o saldo projetado futuro.
     public func totalQuotasRemaining(for monthReference: Date) -> Double {
-        allQuotaEnvelopes(for: monthReference)
+        if isMonthPriorToCurrent(monthReference) {
+            return 0.0
+        }
+        return allQuotaEnvelopes(for: monthReference)
             .reduce(0.0) { $0 + $1.remainingProvision }
     }
 
@@ -3925,11 +3952,48 @@ public final class FinancialDataStore: ObservableObject {
 
     /// Provisão Total Futura Consolidada no Dashboard:
     /// $\text{Provisão Total Futura} = \sum \text{Cotas Restantes} + \sum \text{Tetos de Categoria Restantes}$
+    /// Para meses anteriores ao atual (mês já fechado), retorna 0.0 pois o mês já encerrou e prevalecem apenas despesas reais realizadas.
     public func totalRemainingProvision(for monthReference: Date) -> Double {
-        totalQuotasRemaining(for: monthReference) + totalCategoryProvisionsRemaining(for: monthReference)
+        if isMonthPriorToCurrent(monthReference) {
+            return 0.0
+        }
+        return totalQuotasRemaining(for: monthReference) + totalCategoryProvisionsRemaining(for: monthReference)
+    }
+
+    /// Soma das provisões de gastos variáveis e cotas restantes acumuladas a partir do mês corrente até o mês de referência (`throughMonth`).
+    /// Para meses anteriores ao atual (mês já fechado), retorna 0.0 pois cotas/previsões passadas não afetam o saldo projetado futuro.
+    /// Para o mês atual e meses futuros, acumula a provisão não consumida de cada mês:
+    /// $\sum_{m = \text{current}}^{\text{throughMonth}} \text{totalRemainingProvision}(for: m)$
+    public func accumulatedRemainingProvisions(
+        throughMonth monthReference: Date,
+        referenceNow: Date? = nil
+    ) -> Double {
+        let now = referenceNow ?? effectiveCurrentDate
+        let currentMonthStart = startOfMonth(for: now)
+        let targetMonthStart = startOfMonth(for: monthReference)
+
+        // Se o mês de referência é anterior ao mês atual, o mês já fechou: desconsidera cotas e previsões
+        if targetMonthStart < currentMonthStart {
+            return 0.0
+        }
+
+        var total = 0.0
+        var cursor = currentMonthStart
+
+        // Itera mês a mês desde o mês atual até o mês de referência
+        while cursor <= targetMonthStart {
+            total += totalRemainingProvision(for: cursor)
+            guard let nextMonth = calendar.date(byAdding: .month, value: 1, to: cursor) else {
+                break
+            }
+            cursor = nextMonth
+        }
+
+        return total
     }
 
     /// Despesa total projetada do mês considerando despesas reais + provisões variáveis remanescentes ($\sum P_{restante}$).
+    /// Para meses anteriores ao atual (mês já fechado), reflete unicamente as despesas reais registradas.
     public func projectedMonthlyExpense(for monthReference: Date) -> Double {
         monthlyExpense(for: monthReference, onlyPaid: false) + totalRemainingProvision(for: monthReference)
     }
@@ -3969,20 +4033,7 @@ public final class FinancialDataStore: ObservableObject {
     /// Saldo acumulado consolidado projetado até o último dia do ano (31/12 do ano de `yearReference`)
     public func accumulatedConsolidatedBalanceThroughYear(_ yearReference: Date, includeProjectedUnpaid: Bool = true) -> Double {
         let cutoff = endOfYear(for: yearReference)
-        let initialAccountsSum = accounts.reduce(0.0) { $0 + $1.initialBalance }
-        let transactionsDelta = transactions
-            .filter { tx in
-                guard !tx.ignoreInConsolidated else { return false }
-                guard tx.date <= cutoff else { return false }
-                return includeProjectedUnpaid ? true : tx.isPaid
-            }
-            .reduce(0.0) { $0 + $1.signedAmount }
-
-        let consolidatedInvestmentsSum = investments
-            .filter(\.showInConsolidated)
-            .reduce(0.0) { $0 + $1.balance }
-
-        return initialAccountsSum + transactionsDelta + consolidatedInvestmentsSum
+        return accumulatedConsolidatedBalance(throughMonth: cutoff, includeProjectedUnpaid: includeProjectedUnpaid)
     }
 
     public func annualCategoryBreakdown(for yearReference: Date, type: TransactionType) -> [CategorySpendSummary] {
@@ -4067,7 +4118,8 @@ public final class FinancialDataStore: ObservableObject {
 
     /// Saldo acumulado consolidado até o fim do mês informado (`monthReference`),
     /// incluindo saldo inicial das contas + movimentações até aquele mês + investimentos marcados com "Exibir no consolidado"
-    /// menos a provisão de gastos variáveis remanescentes ($\sum P_{restante}$) quando `includeProjectedUnpaid == true`.
+    /// menos as provisões de gastos variáveis e cotas restantes acumuladas a partir do mês atual quando `includeProjectedUnpaid == true`.
+    /// Para meses anteriores ao atual (mês já fechado), as cotas/previsões são desconsideradas.
     public func accumulatedConsolidatedBalance(throughMonth monthReference: Date, includeProjectedUnpaid: Bool = true) -> Double {
         let cutoff = endOfMonth(for: monthReference)
         let initialAccountsSum = accounts.reduce(0.0) { $0 + $1.initialBalance }
@@ -4083,7 +4135,7 @@ public final class FinancialDataStore: ObservableObject {
             .filter(\.showInConsolidated)
             .reduce(0.0) { $0 + $1.balance }
 
-        let remainingProvisions = includeProjectedUnpaid ? totalRemainingProvision(for: monthReference) : 0.0
+        let remainingProvisions = includeProjectedUnpaid ? accumulatedRemainingProvisions(throughMonth: monthReference) : 0.0
 
         return initialAccountsSum + transactionsDelta + consolidatedInvestmentsSum - remainingProvisions
     }

@@ -155,7 +155,7 @@ public struct TransactionsView: View {
                     )
 
                     MetricCardView(
-                        title: "Acumulado até o Mês",
+                        title: "Saldo ao final do mês",
                         value: BRLFormatters.currency(accumulatedBalance),
                         subtitle: "Saldo + Invest. Consolidados",
                         icon: "chart.line.uptrend.xyaxis.circle.fill",

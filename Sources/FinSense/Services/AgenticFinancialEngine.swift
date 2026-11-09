@@ -96,7 +96,7 @@ public final class FinancialRAGIndex {
             Conta Bancária: \(acc.name) (Banco: \(acc.bankPresetId ?? "Personalizado"), Agência: \(acc.agency), Conta: \(acc.accountNumber)). \
             Saldo Inicial: \(BRLFormatters.currency(acc.initialBalance)). \
             Saldo Atual Realizado: \(BRLFormatters.currency(curBal)). \
-            Saldo Projetado no Mês: \(BRLFormatters.currency(projBal)). \
+            Saldo ao final do mês: \(BRLFormatters.currency(projBal)). \
             Total Receitas Pagas: \(BRLFormatters.currency(paidInc)). Total Despesas Pagas: \(BRLFormatters.currency(paidExp)). \
             Quantidade de transações: \(accTxs.count).
             """
@@ -2979,7 +2979,7 @@ public final class AgenticFinancialEngine {
         let expense = facts["Despesa Operacional Média"] ?? BRLFormatters.currency(store.monthlyExpense(for: store.selectedMonth))
         let surplus = facts["Sobra Líquida Mensal"] ?? "R$ 0,00"
         let immediateLiquidity = facts["Saldo Disponível Hoje"] ?? BRLFormatters.currency(store.totalCheckingBalanceNow)
-        let projectedEndMonth = facts["Saldo Projetado Fim de \(BRLFormatters.monthYear(store.selectedMonth))"] ?? "R$ 0,00"
+        let projectedEndMonth = facts["Saldo ao final do mês"] ?? facts["Saldo ao final de \(BRLFormatters.monthYear(store.selectedMonth))"] ?? facts["Saldo Projetado Fim de \(BRLFormatters.monthYear(store.selectedMonth))"] ?? "R$ 0,00"
 
         let cenario1 = facts["Cenário 1 (Ritmo Original)"] ?? "Prazo original do contrato"
         let cenario2 = facts["Cenário 2 (Amortização Moderada)"] ?? facts.first(where: { $0.key.contains("Cenário 2") })?.value ?? ""
@@ -3086,7 +3086,7 @@ public final class AgenticFinancialEngine {
         ### 2. Análise de Viabilidade de Caixa e Capacidade de Aporte
         - **Receita Operacional Média:** \(income) | **Despesa Operacional Média:** \(expense)
         - **Sobra Líquida Mensal Real:** **\(surplus)**
-        - **Saldo Disponível Hoje:** \(immediateLiquidity) | **Saldo Projetado Fim do Mês:** \(projectedEndMonth)
+        - **Saldo Disponível Hoje:** \(immediateLiquidity) | **Saldo ao final do mês:** \(projectedEndMonth)
         \(viabilityAlert)
 
         ### 3. Simulação de Prazo e Economia de Juros
@@ -3129,7 +3129,7 @@ public final class AgenticFinancialEngine {
         - **Saldo Disponível em Contas:** **\(checking)**
         - **Total em Investimentos Consolidados:** **\(investConsol)** *(Total geral investido: \(investTotal))*
         - **Patrimônio Consolidado Atual:** **\(patrimony)**
-        - **Saldo Projetado de Fim de Mês (\(BRLFormatters.monthYear(store.selectedMonth))):** **\(projectedMonthEnd)** *(Provisão de Gastos Variáveis: **\(remainingProvisions) restantes**)*
+        - **Saldo ao final do mês (\(BRLFormatters.monthYear(store.selectedMonth))):** **\(projectedMonthEnd)** *(Provisão de Gastos Variáveis: **\(remainingProvisions) restantes**)*
 
         ### Previsões & Tetos do Mês (Envelopes Dinâmicos)
         \(envelopesList)
@@ -3161,7 +3161,7 @@ public final class AgenticFinancialEngine {
 
         ### Resumo Rápido Antes de Fechar
         - **Saldo Disponível Hoje:** **\(BRLFormatters.currency(store.totalCheckingBalanceNow))** *(Patrimônio Consolidado: **\(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))**)*
-        - **Saldo Projetado p/ Fim de \(BRLFormatters.monthYear(store.selectedMonth)):** **\(BRLFormatters.currency(projectedMonthEnd))**
+        - **Saldo ao final de \(BRLFormatters.monthYear(store.selectedMonth)):** **\(BRLFormatters.currency(projectedMonthEnd))**
 
         Sempre que precisar simular novos cenários, revisar seu ritmo de gastos ou planejar quitações, estou à sua disposição!
         """
@@ -3758,7 +3758,7 @@ public final class AgenticFinancialEngine {
            Você terminará **\(monthLabel)** com **\(BRLFormatters.currency(balanceAtVariablePace))** de patrimônio consolidado (**\(BRLFormatters.currency(checkingBalanceAtVariablePace))** em conta corrente).
            *(Cálculo: Saldo Atual de \(BRLFormatters.currency(totalPatrimonyNow)) + Receitas Pendentes de \(BRLFormatters.currency(pendingIncome)) − Despesas Agendadas de \(BRLFormatters.currency(pendingExpenseTotal)) − Projeção de \(daysRemaining) dias × \(BRLFormatters.currency(dailyVariablePace))/dia = **\(BRLFormatters.currency(balanceAtVariablePace))**)*
         2. **🛡️ Cenário Pelos Seus Envelopes/Tetos (Com Estouro Projetado por Categoria):**
-           - **Saldo Projetado Oficial (respeitando 100% dos tetos):** **\(BRLFormatters.currency(officialProjectedBalance))** *(considerando \(BRLFormatters.currency(remainingProvisions)) de provisão restante)*
+           - **Saldo ao final do mês (respeitando 100% dos tetos):** **\(BRLFormatters.currency(officialProjectedBalance))** *(considerando \(BRLFormatters.currency(remainingProvisions)) de provisão restante)*
            - **Saldo Ajustado pelo Ritmo de Cada Envelope:** **\(BRLFormatters.currency(balanceWithEnvelopeOverruns))** \(totalProjectedEnvelopeOverrun > 0 ? "*(descontando `-\(BRLFormatters.currency(totalProjectedEnvelopeOverrun))` de estouro projetado nos envelopes que estão acelerados)*" : "*(nenhum envelope com tendência de estouro)*")
         3. **⚠️ Cenário de Estresse (Extrapolação Linear Bruta de Todos os Gastos = `\(BRLFormatters.currency(dailyTotalOperationalPace))/dia`):**
            Se até os gastos fixos/faturas já pagos (**\(BRLFormatters.currency(operationalPaidExpense))** em \(daysElapsed) dias) se repetissem todos os dias, a projeção seria de **\(BRLFormatters.currency(balanceAtLinearTotalPace))**. *(Como faturas, moradia e cursos ocorrem apenas 1x ao mês, o **Cenário 1 (\(BRLFormatters.currency(balanceAtVariablePace)))** e o **Cenário 2 (\(BRLFormatters.currency(balanceWithEnvelopeOverruns)))** refletem seu caixa real).*
@@ -3882,8 +3882,8 @@ public final class AgenticFinancialEngine {
             - **Base Analisada:** \(BRLFormatters.currency(baseToCut)) \(envelopesTotal > 0 ? "(Total dos Envelopes/Gastos Variáveis)" : "(Despesas Totais do Mês)")
             - **Economia Mensal Gerada (\(String(format: "%.0f%%", pct))):** **+\(BRLFormatters.currency(monthlySavings)) / mês**
             - **Economia Acumulada em 12 Meses:** **+\(BRLFormatters.currency(annualSavings)) / ano**
-            - **Saldo Projetado Atual no Fim de \(monthLabel):** \(BRLFormatters.currency(projectedEndOfMonth))
-            - **🚀 Novo Saldo Projetado com a Economia:** **\(BRLFormatters.currency(newProjectedMonthEnd))**
+            - **Saldo ao final do mês atual em \(monthLabel):** \(BRLFormatters.currency(projectedEndOfMonth))
+            - **🚀 Novo Saldo ao final do mês com a Economia:** **\(BRLFormatters.currency(newProjectedMonthEnd))**
 
             💬 Deseja simular outro percentual, aplicar esse novo limite nos seus envelopes ou encerrar a conversa?
             """
@@ -3919,14 +3919,14 @@ public final class AgenticFinancialEngine {
         ### 2. Comparativo de Cenários
         - **Antes da Simulação:**
           - Saldo em Conta Hoje: **\(BRLFormatters.currency(checkingNow))** *(Patrimônio Consolidado: \(BRLFormatters.currency(patrimonyNow)))*
-          - Saldo Projetado Fim de \(monthLabel): **\(BRLFormatters.currency(projectedEndOfMonth))**
+          - Saldo ao final de \(monthLabel): **\(BRLFormatters.currency(projectedEndOfMonth))**
         - **Opção A — À Vista (`\(BRLFormatters.currency(extractedAmount))`):**
           - Saldo em Conta Imediato: **\(BRLFormatters.currency(balanceAfterPurchaseNow))**
-          - Saldo Projetado Fim de \(monthLabel): **\(BRLFormatters.currency(projectedAfterPurchase))**
+          - Saldo ao final de \(monthLabel): **\(BRLFormatters.currency(projectedAfterPurchase))**
         - **Opção B — Parcelado em 6x (`\(BRLFormatters.currency(installment6x))/mês`):**
-          - Saldo Projetado Fim de \(monthLabel): **\(BRLFormatters.currency(projectedEndOfMonth - installment6x))**
+          - Saldo ao final de \(monthLabel): **\(BRLFormatters.currency(projectedEndOfMonth - installment6x))**
         - **Opção C — Parcelado em 12x (`\(BRLFormatters.currency(installment12x))/mês`):**
-          - Saldo Projetado Fim de \(monthLabel): **\(BRLFormatters.currency(projectedEndOfMonth - installment12x))**
+          - Saldo ao final de \(monthLabel): **\(BRLFormatters.currency(projectedEndOfMonth - installment12x))**
 
         ---
         💬 Deseja simular outro valor, verificar o impacto nas suas dívidas ou encerrar?
@@ -3978,7 +3978,7 @@ public final class AgenticFinancialEngine {
         - **Investimentos Exibidos no Consolidado:** **\(BRLFormatters.currency(store.consolidatedInvestmentsBalance))**
         - **Total Geral em Todos os Investimentos:** **\(BRLFormatters.currency(store.totalInvestmentsBalance))**
         - **Patrimônio Consolidado Atual:** **\(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))**
-        - **Saldo Projetado p/ Fim de \(monthLabel):** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)))**
+        - **Saldo ao final de \(monthLabel):** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)))**
 
         ### 2. Saldos por Conta Bancária (\(store.accounts.count))
         \(accLines)
@@ -4042,7 +4042,7 @@ public final class AgenticFinancialEngine {
             - **Total de Despesas a Pagar no Mês:** **\(BRLFormatters.currency(totalPendExp))** (\(pendingExpenses.count) lançamento(s))
             - **Total de Receitas a Receber no Mês:** **\(BRLFormatters.currency(totalPendInc))** (\(pendingIncomes.count) lançamento(s))
             - **Saldo Disponível Hoje:** **\(BRLFormatters.currency(store.totalCheckingBalanceNow))**
-            - **Saldo Projetado no Fechamento de \(monthLabel):** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
+            - **Saldo ao final de \(monthLabel):** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
 
             ### Despesas Pendentes por Ordem de Vencimento
             \(expList)
@@ -4178,7 +4178,7 @@ public final class AgenticFinancialEngine {
         - **Receitas Totais do Mês:** **\(BRLFormatters.currency(store.monthlyIncome(for: targetMonth)))** *(Recebidas: \(BRLFormatters.currency(store.monthlyReceivedIncome(for: targetMonth))) | Pendentes: \(BRLFormatters.currency(store.monthlyPendingIncome(for: targetMonth))))*
         - **Despesas Totais do Mês:** **\(BRLFormatters.currency(store.monthlyExpense(for: targetMonth)))** *(Pagas: \(BRLFormatters.currency(store.monthlyPaidExpense(for: targetMonth))) | Pendentes: \(BRLFormatters.currency(store.monthlyPendingExpense(for: targetMonth))))*
         - **Provisões Variáveis Restantes:** **\(BRLFormatters.currency(store.totalRemainingProvision(for: targetMonth)))**
-        - **Saldo Projetado Fim de \(monthLabel):** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
+        - **Saldo ao final de \(monthLabel):** **\(BRLFormatters.currency(store.accumulatedConsolidatedBalance(throughMonth: targetMonth)))**
 
         ### 1. Despesas por Categoria em \(monthLabel)
         \(catLines)
