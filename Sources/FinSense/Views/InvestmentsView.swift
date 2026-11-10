@@ -47,31 +47,36 @@ public struct InvestmentsView: View {
                     .disabled(store.investments.isEmpty)
                 }
 
-                // KPI Cards
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
-                    MetricCardView(
-                        title: "Total Geral Investido",
-                        value: BRLFormatters.currency(totalInvested),
-                        subtitle: "\(store.investments.count) ativo(s) em \(store.investmentGroups.count) grupo(s)",
-                        icon: "chart.line.uptrend.xyaxis",
-                        tint: Color(hex: "#10B981")
-                    )
+                // KPI Cards (Equal-Height Grid)
+                Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                    GridRow {
+                        MetricCardView(
+                            title: "Total Geral Investido",
+                            value: BRLFormatters.currency(totalInvested),
+                            subtitle: "\(store.investments.count) ativo(s) em \(store.investmentGroups.count) grupo(s)",
+                            icon: "chart.line.uptrend.xyaxis",
+                            tint: Color(hex: "#10B981")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: "Exibido no Consolidado",
-                        value: BRLFormatters.currency(consolidatedTotal),
-                        subtitle: "Somado ao saldo consolidado geral",
-                        icon: "checkmark.seal.fill",
-                        tint: Color(hex: "#3B82F6")
-                    )
+                        MetricCardView(
+                            title: "Exibido no Consolidado",
+                            value: BRLFormatters.currency(consolidatedTotal),
+                            subtitle: "Somado ao saldo consolidado geral",
+                            icon: "checkmark.seal.fill",
+                            tint: Color(hex: "#3B82F6")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: "Fora do Consolidado",
-                        value: BRLFormatters.currency(nonConsolidatedTotal),
-                        subtitle: "Apenas registro isolado de reserva",
-                        icon: "eye.slash.fill",
-                        tint: Color(hex: "#64748B")
-                    )
+                        MetricCardView(
+                            title: "Fora do Consolidado",
+                            value: BRLFormatters.currency(nonConsolidatedTotal),
+                            subtitle: "Apenas registro isolado de reserva",
+                            icon: "eye.slash.fill",
+                            tint: Color(hex: "#64748B")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
 
                 // Groups List
@@ -107,9 +112,19 @@ public struct InvestmentsView: View {
                                     .foregroundStyle(.secondary)
                             }
 
-                            LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
-                                ForEach(groupItems) { item in
-                                    investmentCard(item)
+                            Grid(horizontalSpacing: 16, verticalSpacing: 16) {
+                                ForEach(Array(stride(from: 0, to: groupItems.count, by: 2)), id: \.self) { rowStart in
+                                    GridRow {
+                                        investmentCard(groupItems[rowStart])
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        if rowStart + 1 < groupItems.count {
+                                            investmentCard(groupItems[rowStart + 1])
+                                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        } else {
+                                            Color.clear
+                                                .gridCellUnsizedAxes([.horizontal, .vertical])
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -179,7 +194,7 @@ public struct InvestmentsView: View {
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Button(role: .destructive) {
                     investmentPendingDeletion = item
@@ -191,6 +206,7 @@ public struct InvestmentsView: View {
                 .buttonStyle(.borderless)
                 .help("Excluir investimento")
             }
+            .frame(minHeight: 44, alignment: .topLeading)
 
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -247,18 +263,19 @@ public struct InvestmentsView: View {
                 }
             }
 
-            HStack {
-                Spacer()
-                Button {
-                    selectedInvestmentForAction = item
-                } label: {
-                    Label("Adicionar Valor / Movimentar", systemImage: "plus.circle.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(hex: item.colorHex))
+            Spacer(minLength: 4)
+
+            Button {
+                selectedInvestmentForAction = item
+            } label: {
+                Label("Adicionar Valor / Movimentar", systemImage: "plus.circle.fill")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(hex: item.colorHex))
+            .frame(minHeight: 32)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)

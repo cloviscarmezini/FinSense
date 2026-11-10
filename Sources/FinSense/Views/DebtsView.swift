@@ -59,31 +59,36 @@ public struct DebtsView: View {
                     .tint(Color(hex: "#EF4444"))
                 }
 
-                // Summary Strip
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 3), spacing: 14) {
-                    MetricCardView(
-                        title: "Total em Dívidas Pendentes",
-                        value: BRLFormatters.currency(totalOpenAmount),
-                        subtitle: "\(openDebts.count) dívida(s) aguardando pagamento/acordo",
-                        icon: "exclamationmark.shield.fill",
-                        tint: Color(hex: "#EF4444")
-                    )
+                // Summary Strip (Equal-Height Grid)
+                Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                    GridRow {
+                        MetricCardView(
+                            title: "Total em Dívidas Pendentes",
+                            value: BRLFormatters.currency(totalOpenAmount),
+                            subtitle: "\(openDebts.count) dívida(s) aguardando pagamento/acordo",
+                            icon: "exclamationmark.shield.fill",
+                            tint: Color(hex: "#EF4444")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: "Saldo Disponível em Contas",
-                        value: BRLFormatters.currency(store.totalCheckingBalanceNow),
-                        subtitle: "Para pagamento ou negociação à vista",
-                        icon: "building.columns.fill",
-                        tint: Color(hex: "#3B82F6")
-                    )
+                        MetricCardView(
+                            title: "Saldo Disponível em Contas",
+                            value: BRLFormatters.currency(store.totalCheckingBalanceNow),
+                            subtitle: "Para pagamento ou negociação à vista",
+                            icon: "building.columns.fill",
+                            tint: Color(hex: "#3B82F6")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: "Dívidas Já Quitadas",
-                        value: "\(store.paidDebts.count)",
-                        subtitle: "Negociações concluídas e lançadas",
-                        icon: "checkmark.seal.fill",
-                        tint: Color(hex: "#10B981")
-                    )
+                        MetricCardView(
+                            title: "Dívidas Já Quitadas",
+                            value: "\(store.paidDebts.count)",
+                            subtitle: "Negociações concluídas e lançadas",
+                            icon: "checkmark.seal.fill",
+                            tint: Color(hex: "#10B981")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
 
                 // Active Debts Cards Grid
@@ -116,9 +121,19 @@ public struct DebtsView: View {
                     .frame(maxWidth: .infinity, minHeight: 280)
                     .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
                 } else {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)], spacing: 18) {
-                        ForEach(openDebts) { debt in
-                            debtCard(debt)
+                    Grid(horizontalSpacing: 18, verticalSpacing: 18) {
+                        ForEach(Array(stride(from: 0, to: openDebts.count, by: 2)), id: \.self) { rowStart in
+                            GridRow {
+                                debtCard(openDebts[rowStart])
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                if rowStart + 1 < openDebts.count {
+                                    debtCard(openDebts[rowStart + 1])
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                } else {
+                                    Color.clear
+                                        .gridCellUnsizedAxes([.horizontal, .vertical])
+                                }
+                            }
                         }
                     }
                 }
@@ -185,7 +200,7 @@ public struct DebtsView: View {
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Text("EM ABERTO")
                     .font(.caption2.bold())
@@ -194,6 +209,7 @@ public struct DebtsView: View {
                     .background(Capsule().fill(Color(hex: "#EF4444").opacity(0.15)))
                     .foregroundStyle(Color(hex: "#EF4444"))
             }
+            .frame(minHeight: 48, alignment: .topLeading)
 
             // Original Amount Box
             HStack {
@@ -233,6 +249,8 @@ public struct DebtsView: View {
                     .lineLimit(2)
             }
 
+            Spacer(minLength: 6)
+
             Divider()
 
             // Action Buttons: Editar, Excluir, Pagar
@@ -251,7 +269,7 @@ public struct DebtsView: View {
                 }
                 .buttonStyle(.bordered)
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Button {
                     payingDebt = debt
@@ -263,7 +281,9 @@ public struct DebtsView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(Color(hex: "#10B981"))
             }
+            .frame(minHeight: 32)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(18)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)

@@ -381,14 +381,16 @@ public struct MetricCardView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
+            // Zona 1: Cabeçalho (Topo)
             HStack(alignment: .center, spacing: 6) {
                 Text(title)
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 4)
 
@@ -423,7 +425,9 @@ public struct MetricCardView: View {
                         .foregroundStyle(tint)
                 }
             }
+            .frame(minHeight: 32)
 
+            // Zona 2: Valor Principal (Centro)
             Text(value)
                 .font(.system(size: 22, weight: .bold, design: .rounded))
                 .foregroundStyle(.primary)
@@ -431,31 +435,38 @@ public struct MetricCardView: View {
                 .minimumScaleFactor(0.75)
                 .monospacedDigit()
 
+            // Espaçador flexível (mola) para empurrar o rodapé para a base
+            Spacer(minLength: 6)
+
+            // Zona 3: Metadados e Rodapé (Base ancorada)
             VStack(alignment: .leading, spacing: 3) {
                 if let subtitleHelp {
                     Text(subtitle)
-                        .font(.caption)
+                        .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
                         .help(subtitleHelp)
                 } else {
                     Text(subtitle)
-                        .font(.caption)
+                        .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
                 }
 
                 if let footnote, !footnote.isEmpty {
                     Text(footnote)
-                        .font(.system(size: 10.5, weight: .medium))
+                        .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(footnoteColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .bottomLeading)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 126, maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))

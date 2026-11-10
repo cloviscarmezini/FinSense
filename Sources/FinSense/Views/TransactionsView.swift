@@ -132,141 +132,157 @@ public struct TransactionsView: View {
                 MonthNavigatorBar(store: store)
             }
 
-            // MARK: - Monthly Summary Cards (Adaptados por Submenu: Todas, Despesas ou Receitas)
+            // MARK: - Monthly Summary Cards (Equal-Height Grid Adaptado por Submenu)
             switch store.selectedTransactionsSubmenu {
             case .all:
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
-                    // 1: Receitas (Total) com subtotal de pendentes
-                    MetricCardView(
-                        title: "Receitas (Total)",
-                        value: BRLFormatters.currency(monthIncome),
-                        subtitle: "\(BRLFormatters.currency(monthReceivedIncome)) recebidos • \(BRLFormatters.currency(monthPendingIncome)) a receber",
-                        icon: "arrow.down.left.circle.fill",
-                        tint: Color(hex: "#10B981")
-                    )
+                Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                    GridRow {
+                        // 1: Receitas (Total) com subtotal de pendentes
+                        MetricCardView(
+                            title: "Receitas (Total)",
+                            value: BRLFormatters.currency(monthIncome),
+                            subtitle: "\(BRLFormatters.currency(monthReceivedIncome)) recebidos • \(BRLFormatters.currency(monthPendingIncome)) a receber",
+                            icon: "arrow.down.left.circle.fill",
+                            tint: Color(hex: "#10B981")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // 2: Despesas (Total) estritamente transacionadas (sem previsões)
-                    MetricCardView(
-                        title: "Despesas (Total)",
-                        value: BRLFormatters.currency(monthExpense),
-                        subtitle: "\(BRLFormatters.currency(monthPaidExpense)) pagas • \(BRLFormatters.currency(monthPendingExpense)) pendentes",
-                        icon: "arrow.up.right.circle.fill",
-                        tint: Color(hex: "#EF4444")
-                    )
+                        // 2: Despesas (Total) estritamente transacionadas (sem previsões)
+                        MetricCardView(
+                            title: "Despesas (Total)",
+                            value: BRLFormatters.currency(monthExpense),
+                            subtitle: "\(BRLFormatters.currency(monthPaidExpense)) pagas • \(BRLFormatters.currency(monthPendingExpense)) pendentes",
+                            icon: "arrow.up.right.circle.fill",
+                            tint: Color(hex: "#EF4444")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // 3: Balanço do Mês (Real)
-                    let operationalSubtitle: String = {
-                        if let rate = savingsRate {
-                            return rate >= 0
-                                ? String(format: "%.1f%% sobre a Receita", rate)
-                                : String(format: "Déficit: %.1f%% sobre a Receita", abs(rate))
-                        } else {
-                            return monthBalance >= 0 ? "Superávit operacional" : "Déficit operacional"
-                        }
-                    }()
+                        // 3: Balanço do Mês (Real)
+                        let operationalSubtitle: String = {
+                            if let rate = savingsRate {
+                                return rate >= 0
+                                    ? String(format: "%.1f%% sobre a Receita", rate)
+                                    : String(format: "Déficit: %.1f%% sobre a Receita", abs(rate))
+                            } else {
+                                return monthBalance >= 0 ? "Superávit operacional" : "Déficit operacional"
+                            }
+                        }()
 
-                    MetricCardView(
-                        title: "Balanço do Mês (Real)",
-                        value: BRLFormatters.currency(monthBalance),
-                        subtitle: operationalSubtitle,
-                        icon: "equal.circle.fill",
-                        tint: monthBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
-                    )
+                        MetricCardView(
+                            title: "Balanço do Mês (Real)",
+                            value: BRLFormatters.currency(monthBalance),
+                            subtitle: operationalSubtitle,
+                            icon: "equal.circle.fill",
+                            tint: monthBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // 4: Previsões & Tetos Restantes com botão integrado
-                    MetricCardView(
-                        title: "Previsões & Tetos Restantes",
-                        value: BRLFormatters.currency(isPastMonth ? 0.0 : monthRemainingProvisions),
-                        subtitle: isPastMonth
-                            ? "Mês já encerrado"
-                            : (monthRemainingProvisions > 0 ? "Orçamento não consumido" : "Nenhuma provisão ativa"),
-                        icon: "tray.full.fill",
-                        tint: Color(hex: "#6366F1"),
-                        footnote: (!isPastMonth && monthEstimatedProvisions > 0)
-                            ? "Total orçado: \(BRLFormatters.currency(monthEstimatedProvisions))"
-                            : nil,
-                        footnoteColor: .secondary,
-                        action: {
-                            showProvisionsSheet = true
-                        },
-                        actionLabel: "Editar",
-                        actionIcon: "pencil"
-                    )
+                        // 4: Previsões & Tetos Restantes com botão integrado
+                        MetricCardView(
+                            title: "Previsões & Tetos Restantes",
+                            value: BRLFormatters.currency(isPastMonth ? 0.0 : monthRemainingProvisions),
+                            subtitle: isPastMonth
+                                ? "Mês já encerrado"
+                                : (monthRemainingProvisions > 0 ? "Orçamento não consumido" : "Nenhuma provisão ativa"),
+                            icon: "tray.full.fill",
+                            tint: Color(hex: "#6366F1"),
+                            footnote: (!isPastMonth && monthEstimatedProvisions > 0)
+                                ? "Total orçado: \(BRLFormatters.currency(monthEstimatedProvisions))"
+                                : nil,
+                            footnoteColor: .secondary,
+                            action: {
+                                showProvisionsSheet = true
+                            },
+                            actionLabel: "Editar",
+                            actionIcon: "pencil"
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // 5: Saldo Previsto para [DD/MM] ou Resultado Consolidado
-                    let transFinalSubtitle = store.deductionSubtitleForProjectedBalance(
-                        periodMode: .monthly,
-                        selectedMonth: store.selectedMonth
-                    )
-                    let transFinalTooltip = store.deductionBreakdownTooltipForProjectedBalance(
-                        periodMode: .monthly,
-                        selectedMonth: store.selectedMonth
-                    )
+                        // 5: Saldo Previsto para [DD/MM] ou Resultado Consolidado
+                        let transFinalSubtitle = store.deductionSubtitleForProjectedBalance(
+                            periodMode: .monthly,
+                            selectedMonth: store.selectedMonth
+                        )
+                        let transFinalTooltip = store.deductionBreakdownTooltipForProjectedBalance(
+                            periodMode: .monthly,
+                            selectedMonth: store.selectedMonth
+                        )
 
-                    MetricCardView(
-                        title: store.monthEndBalanceCardTitle(for: store.selectedMonth),
-                        value: BRLFormatters.currency(accumulatedBalance),
-                        subtitle: transFinalSubtitle,
-                        icon: isPastMonth ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis.circle.fill",
-                        tint: accumulatedBalance >= 0 ? Color(hex: "#3B82F6") : Color(hex: "#EF4444"),
-                        footnote: (!isPastMonth && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
-                        footnoteColor: Color(hex: "#EF4444"),
-                        subtitleHelp: transFinalTooltip
-                    )
+                        MetricCardView(
+                            title: store.monthEndBalanceCardTitle(for: store.selectedMonth),
+                            value: BRLFormatters.currency(accumulatedBalance),
+                            subtitle: transFinalSubtitle,
+                            icon: isPastMonth ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis.circle.fill",
+                            tint: accumulatedBalance >= 0 ? Color(hex: "#3B82F6") : Color(hex: "#EF4444"),
+                            footnote: (!isPastMonth && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
+                            footnoteColor: Color(hex: "#EF4444"),
+                            subtitleHelp: transFinalTooltip
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
 
             case .expenses:
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
-                    MetricCardView(
-                        title: "Total de Despesas",
-                        value: BRLFormatters.currency(monthExpense),
-                        subtitle: "\(BRLFormatters.currency(monthPaidExpense)) pagas • \(BRLFormatters.currency(monthPendingExpense)) pendentes",
-                        icon: "arrow.up.right.circle.fill",
-                        tint: Color(hex: "#EF4444")
-                    )
+                Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCardView(
+                            title: "Total de Despesas",
+                            value: BRLFormatters.currency(monthExpense),
+                            subtitle: "\(BRLFormatters.currency(monthPaidExpense)) pagas • \(BRLFormatters.currency(monthPendingExpense)) pendentes",
+                            icon: "arrow.up.right.circle.fill",
+                            tint: Color(hex: "#EF4444")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: "Total Pendente",
-                        value: BRLFormatters.currency(monthPendingExpense),
-                        subtitle: "Despesas ainda não pagas em \(BRLFormatters.monthYear(store.selectedMonth))",
-                        icon: "clock.badge.exclamationmark",
-                        tint: Color(hex: "#F59E0B")
-                    )
+                        MetricCardView(
+                            title: "Total Pendente",
+                            value: BRLFormatters.currency(monthPendingExpense),
+                            subtitle: "Despesas ainda não pagas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                            icon: "clock.badge.exclamationmark",
+                            tint: Color(hex: "#F59E0B")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    let remainingForExpenses = isPastMonth ? 0.0 : monthRemainingProvisions
-                    let totalCommitted = monthExpense + remainingForExpenses
+                        let remainingForExpenses = isPastMonth ? 0.0 : monthRemainingProvisions
+                        let totalCommitted = monthExpense + remainingForExpenses
 
-                    MetricCardView(
-                        title: "Orçamento Restante (Tetos & Cotas)",
-                        value: BRLFormatters.currency(remainingForExpenses),
-                        subtitle: "Comprometimento Total Previsto: \(BRLFormatters.currency(totalCommitted))",
-                        icon: "tray.full.fill",
-                        tint: Color(hex: "#6366F1"),
-                        action: {
-                            showProvisionsSheet = true
-                        },
-                        actionLabel: "Editar",
-                        actionIcon: "pencil"
-                    )
+                        MetricCardView(
+                            title: "Orçamento Restante (Tetos & Cotas)",
+                            value: BRLFormatters.currency(remainingForExpenses),
+                            subtitle: "Comprometimento Total Previsto: \(BRLFormatters.currency(totalCommitted))",
+                            icon: "tray.full.fill",
+                            tint: Color(hex: "#6366F1"),
+                            action: {
+                                showProvisionsSheet = true
+                            },
+                            actionLabel: "Editar",
+                            actionIcon: "pencil"
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
 
             case .incomes:
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2), spacing: 12) {
-                    MetricCardView(
-                        title: "Total Recebido",
-                        value: BRLFormatters.currency(monthReceivedIncome),
-                        subtitle: "Receitas efetivadas em \(BRLFormatters.monthYear(store.selectedMonth))",
-                        icon: "checkmark.circle.fill",
-                        tint: Color(hex: "#10B981")
-                    )
+                Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCardView(
+                            title: "Total Recebido",
+                            value: BRLFormatters.currency(monthReceivedIncome),
+                            subtitle: "Receitas efetivadas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                            icon: "checkmark.circle.fill",
+                            tint: Color(hex: "#10B981")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: "À Receber",
-                        value: BRLFormatters.currency(monthPendingIncome),
-                        subtitle: "Receitas pendentes/previstas em \(BRLFormatters.monthYear(store.selectedMonth))",
-                        icon: "clock.arrow.circlepath",
-                        tint: Color(hex: "#3B82F6")
-                    )
+                        MetricCardView(
+                            title: "À Receber",
+                            value: BRLFormatters.currency(monthPendingIncome),
+                            subtitle: "Receitas pendentes/previstas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                            icon: "clock.arrow.circlepath",
+                            tint: Color(hex: "#3B82F6")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
             }
 

@@ -179,75 +179,81 @@ public struct DashboardView: View {
                     }
                 }
 
-                // MARK: - Top KPI Cards (4 Sequential Lifecycle Cards)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 4), spacing: 14) {
-                    // Card 1 — Receitas do Mês / Ano
-                    MetricCardView(
-                        title: isAnnual ? "Receitas do Ano" : "Receitas do Mês",
-                        value: BRLFormatters.currency(periodIncome),
-                        subtitle: "\(BRLFormatters.currency(periodReceivedIncome)) recebidos • \(BRLFormatters.currency(periodPendingIncome)) a receber",
-                        icon: "arrow.down.left.circle.fill",
-                        tint: Color(hex: "#10B981")
-                    )
+                // MARK: - Top KPI Cards (4 Sequential Lifecycle Cards - Equal Height Grid)
+                Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                    GridRow {
+                        // Card 1 — Receitas do Mês / Ano
+                        MetricCardView(
+                            title: isAnnual ? "Receitas do Ano" : "Receitas do Mês",
+                            value: BRLFormatters.currency(periodIncome),
+                            subtitle: "\(BRLFormatters.currency(periodReceivedIncome)) recebidos • \(BRLFormatters.currency(periodPendingIncome)) a receber",
+                            icon: "arrow.down.left.circle.fill",
+                            tint: Color(hex: "#10B981")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Card 2 — Despesas do Mês / Ano (Estritamente compromissos/transações lançadas, NUNCA somar tetos/cotas)
-                    MetricCardView(
-                        title: isAnnual ? "Despesas do Ano" : "Despesas do Mês",
-                        value: BRLFormatters.currency(periodExpense),
-                        subtitle: "\(BRLFormatters.currency(periodPaidExpense)) pagas • \(BRLFormatters.currency(periodPendingExpense)) pendentes",
-                        icon: "arrow.up.right.circle.fill",
-                        tint: Color(hex: "#EF4444")
-                    )
+                        // Card 2 — Despesas do Mês / Ano (Estritamente compromissos/transações lançadas, NUNCA somar tetos/cotas)
+                        MetricCardView(
+                            title: isAnnual ? "Despesas do Ano" : "Despesas do Mês",
+                            value: BRLFormatters.currency(periodExpense),
+                            subtitle: "\(BRLFormatters.currency(periodPaidExpense)) pagas • \(BRLFormatters.currency(periodPendingExpense)) pendentes",
+                            icon: "arrow.up.right.circle.fill",
+                            tint: Color(hex: "#EF4444")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Card 3 — Balanço Operacional (Receitas - Despesas com Taxa de Poupança / Margem Líquida)
-                    let operationalSubtitle: String = {
-                        if let rate = savingsRate {
-                            return rate >= 0
-                                ? String(format: "%.1f%% sobre a Receita", rate)
-                                : String(format: "Déficit operacional (%.1f%%)", abs(rate))
-                        } else {
-                            return periodNet >= 0 ? "Superávit operacional" : "Déficit operacional"
-                        }
-                    }()
+                        // Card 3 — Balanço Operacional (Receitas - Despesas com Taxa de Poupança / Margem Líquida)
+                        let operationalSubtitle: String = {
+                            if let rate = savingsRate {
+                                return rate >= 0
+                                    ? String(format: "%.1f%% sobre a Receita", rate)
+                                    : String(format: "Déficit operacional (%.1f%%)", abs(rate))
+                            } else {
+                                return periodNet >= 0 ? "Superávit operacional" : "Déficit operacional"
+                            }
+                        }()
 
-                    MetricCardView(
-                        title: "Balanço Operacional",
-                        value: BRLFormatters.currency(periodNet),
-                        subtitle: operationalSubtitle,
-                        icon: "equal.circle.fill",
-                        tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
-                    )
+                        MetricCardView(
+                            title: "Balanço Operacional",
+                            value: BRLFormatters.currency(periodNet),
+                            subtitle: operationalSubtitle,
+                            icon: "equal.circle.fill",
+                            tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    // Card 4 — Saldo Projetado / Resultado Final
-                    let finalTitle: String = {
-                        if isAnnual {
-                            return isPastPeriod
-                                ? "Resultado Consolidado"
-                                : "Saldo Previsto para 31/12/\(yearStr)"
-                        } else {
-                            return store.monthEndBalanceCardTitle(for: store.selectedMonth)
-                        }
-                    }()
+                        // Card 4 — Saldo Projetado / Resultado Final
+                        let finalTitle: String = {
+                            if isAnnual {
+                                return isPastPeriod
+                                    ? "Resultado Consolidado"
+                                    : "Saldo Previsto para 31/12/\(yearStr)"
+                            } else {
+                                return store.monthEndBalanceCardTitle(for: store.selectedMonth)
+                            }
+                        }()
 
-                    let finalSubtitle = store.deductionSubtitleForProjectedBalance(
-                        periodMode: store.dashboardPeriodMode,
-                        selectedMonth: store.selectedMonth
-                    )
-                    let finalTooltip = store.deductionBreakdownTooltipForProjectedBalance(
-                        periodMode: store.dashboardPeriodMode,
-                        selectedMonth: store.selectedMonth
-                    )
+                        let finalSubtitle = store.deductionSubtitleForProjectedBalance(
+                            periodMode: store.dashboardPeriodMode,
+                            selectedMonth: store.selectedMonth
+                        )
+                        let finalTooltip = store.deductionBreakdownTooltipForProjectedBalance(
+                            periodMode: store.dashboardPeriodMode,
+                            selectedMonth: store.selectedMonth
+                        )
 
-                    MetricCardView(
-                        title: finalTitle,
-                        value: BRLFormatters.currency(accumulatedBalance),
-                        subtitle: finalSubtitle,
-                        icon: isPastPeriod ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis",
-                        tint: accumulatedBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
-                        footnote: (!isPastPeriod && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
-                        footnoteColor: Color(hex: "#EF4444"),
-                        subtitleHelp: finalTooltip
-                    )
+                        MetricCardView(
+                            title: finalTitle,
+                            value: BRLFormatters.currency(accumulatedBalance),
+                            subtitle: finalSubtitle,
+                            icon: isPastPeriod ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis",
+                            tint: accumulatedBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
+                            footnote: (!isPastPeriod && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
+                            footnoteColor: Color(hex: "#EF4444"),
+                            subtitleHelp: finalTooltip
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
 
                 // MARK: - Previsões & Tetos do Mês (Divisão Visual em Dois Blocos Claros)
@@ -363,9 +369,19 @@ public struct DashboardView: View {
                                     .padding(10)
                                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.025)))
                                 } else {
-                                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 2), spacing: 14) {
-                                        ForEach(monthQuotas) { quota in
-                                            quotaItemCard(quota)
+                                    Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                                        ForEach(Array(stride(from: 0, to: monthQuotas.count, by: 2)), id: \.self) { rowStart in
+                                            GridRow {
+                                                quotaItemCard(monthQuotas[rowStart])
+                                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                                if rowStart + 1 < monthQuotas.count {
+                                                    quotaItemCard(monthQuotas[rowStart + 1])
+                                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                                } else {
+                                                    Color.clear
+                                                        .gridCellUnsizedAxes([.horizontal, .vertical])
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -404,9 +420,19 @@ public struct DashboardView: View {
                                     .padding(10)
                                     .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.025)))
                                 } else {
-                                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 2), spacing: 14) {
-                                        ForEach(monthEnvelopes) { env in
-                                            provisionEnvelopeCard(env)
+                                    Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                                        ForEach(Array(stride(from: 0, to: monthEnvelopes.count, by: 2)), id: \.self) { rowStart in
+                                            GridRow {
+                                                provisionEnvelopeCard(monthEnvelopes[rowStart])
+                                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                                if rowStart + 1 < monthEnvelopes.count {
+                                                    provisionEnvelopeCard(monthEnvelopes[rowStart + 1])
+                                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                                } else {
+                                                    Color.clear
+                                                        .gridCellUnsizedAxes([.horizontal, .vertical])
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -543,54 +569,65 @@ public struct DashboardView: View {
                         }
                     }
 
-                    // 5 Pillars Breakdown
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 5), spacing: 12) {
-                        debtPillarCard(
-                            title: isAnnual ? "Pendentes no Ano" : "Transações Atuais",
-                            subtitle: isAnnual ? "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) em \(yearStr)" : "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) no mês",
-                            amount: debtSummary.currentMonthUnpaidTotal,
-                            projected: nil,
-                            colorHex: "#F59E0B",
-                            icon: "calendar.badge.exclamationmark"
-                        )
-                        debtPillarCard(
-                            title: "Transações Futuras",
-                            subtitle: "\(debtSummary.futureUnpaidRegularTransactions.count) parcela(s)/agendada(s)",
-                            amount: debtSummary.futureRegularExpensesTotal,
-                            projected: nil,
-                            colorHex: "#3B82F6",
-                            icon: "clock.arrow.circlepath"
-                        )
-                        debtPillarCard(
-                            title: "Dívidas (Acordos/Serasa)",
-                            subtitle: "\(debtSummary.activeDebts.count) dívida(s) ativa(s)",
-                            amount: debtSummary.unpaidDebtsTotal,
-                            projected: nil,
-                            colorHex: "#EF4444",
-                            icon: "exclamationmark.triangle.fill"
-                        )
-                        debtPillarCard(
-                            title: "Empréstimos",
-                            subtitle: "\(debtSummary.activeLoans.count) contrato(s) ativo(s)",
-                            amount: debtSummary.loansProjectedPayoffTotal,
-                            projected: nil,
-                            nominalAmount: debtSummary.loansRemainingNominalTotal,
-                            paidInPeriod: debtSummary.loansPaidInPeriodTotal,
-                            realAmortizationInPeriod: debtSummary.loansRealAmortizationInPeriodTotal,
-                            colorHex: "#D97706",
-                            icon: "banknote.fill"
-                        )
-                        debtPillarCard(
-                            title: "Financiamentos",
-                            subtitle: "\(debtSummary.activeFinancings.count) contrato(s) (Imóvel/Carro)",
-                            amount: debtSummary.financingsProjectedPayoffTotal,
-                            projected: nil,
-                            nominalAmount: debtSummary.financingsRemainingNominalTotal,
-                            paidInPeriod: debtSummary.financingsPaidInPeriodTotal,
-                            realAmortizationInPeriod: debtSummary.financingsRealAmortizationInPeriodTotal,
-                            colorHex: "#8B5CF6",
-                            icon: "house.and.flag.fill"
-                        )
+                    // 5 Pillars Breakdown (Equal-Height Grid)
+                    Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                        GridRow {
+                            debtPillarCard(
+                                title: isAnnual ? "Pendentes no Ano" : "Transações Atuais",
+                                subtitle: isAnnual ? "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) em \(yearStr)" : "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) no mês",
+                                amount: debtSummary.currentMonthUnpaidTotal,
+                                projected: nil,
+                                colorHex: "#F59E0B",
+                                icon: "calendar.badge.exclamationmark"
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                            debtPillarCard(
+                                title: "Transações Futuras",
+                                subtitle: "\(debtSummary.futureUnpaidRegularTransactions.count) parcela(s)/agendada(s)",
+                                amount: debtSummary.futureRegularExpensesTotal,
+                                projected: nil,
+                                colorHex: "#3B82F6",
+                                icon: "clock.arrow.circlepath"
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                            debtPillarCard(
+                                title: "Dívidas (Acordos/Serasa)",
+                                subtitle: "\(debtSummary.activeDebts.count) dívida(s) ativa(s)",
+                                amount: debtSummary.unpaidDebtsTotal,
+                                projected: nil,
+                                colorHex: "#EF4444",
+                                icon: "exclamationmark.triangle.fill"
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                            debtPillarCard(
+                                title: "Empréstimos",
+                                subtitle: "\(debtSummary.activeLoans.count) contrato(s) ativo(s)",
+                                amount: debtSummary.loansProjectedPayoffTotal,
+                                projected: nil,
+                                nominalAmount: debtSummary.loansRemainingNominalTotal,
+                                paidInPeriod: debtSummary.loansPaidInPeriodTotal,
+                                realAmortizationInPeriod: debtSummary.loansRealAmortizationInPeriodTotal,
+                                colorHex: "#D97706",
+                                icon: "banknote.fill"
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                            debtPillarCard(
+                                title: "Financiamentos",
+                                subtitle: "\(debtSummary.activeFinancings.count) contrato(s) (Imóvel/Carro)",
+                                amount: debtSummary.financingsProjectedPayoffTotal,
+                                projected: nil,
+                                nominalAmount: debtSummary.financingsRemainingNominalTotal,
+                                paidInPeriod: debtSummary.financingsPaidInPeriodTotal,
+                                realAmortizationInPeriod: debtSummary.financingsRealAmortizationInPeriodTotal,
+                                colorHex: "#8B5CF6",
+                                icon: "house.and.flag.fill"
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
                     }
                 }
                 .padding(18)
@@ -894,7 +931,7 @@ public struct DashboardView: View {
                         .lineLimit(1)
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Text(quota.status.rawValue)
                     .font(.system(size: 10.5, weight: .bold))
@@ -903,6 +940,7 @@ public struct DashboardView: View {
                     .background(Capsule().fill(Color(hex: statusColorHex).opacity(0.15)))
                     .foregroundStyle(Color(hex: statusColorHex))
             }
+            .frame(minHeight: 34, alignment: .leading)
 
             // Progress Bar autônoma da cota específica (Unidades Baixadas / Quantidade Prevista)
             GeometryReader { geo in
@@ -919,6 +957,8 @@ public struct DashboardView: View {
                 }
             }
             .frame(height: 8)
+
+            Spacer(minLength: 4)
 
             HStack(spacing: 8) {
                 Button {
@@ -965,6 +1005,7 @@ public struct DashboardView: View {
                 .help("Excluir cota específica")
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -1013,7 +1054,7 @@ public struct DashboardView: View {
                         .lineLimit(1)
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Button {
                     editingFreeBudgetEnvelope = env
@@ -1042,6 +1083,7 @@ public struct DashboardView: View {
                     .background(Capsule().fill(Color(hex: statusColorHex).opacity(0.15)))
                     .foregroundStyle(Color(hex: statusColorHex))
             }
+            .frame(minHeight: 34, alignment: .leading)
 
             // Progress Bar do Teto Geral da Categoria (comparando exclusivamente com gastos avulsos)
             GeometryReader { geo in
@@ -1058,6 +1100,8 @@ public struct DashboardView: View {
                 }
             }
             .frame(height: 8)
+
+            Spacer(minLength: 4)
 
             HStack {
                 Text(String(format: "%.0f%% utilizado", env.clampedProgressPercentage))
@@ -1077,6 +1121,7 @@ public struct DashboardView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -1101,58 +1146,71 @@ public struct DashboardView: View {
         icon: String
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
+            // Zona 1: Cabeçalho (Topo)
+            HStack(spacing: 6) {
                 Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color(hex: colorHex))
-                Spacer()
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Spacer(minLength: 0)
             }
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .lineLimit(1)
+            .frame(height: 20)
+
+            // Zona 2: Valor Principal (Centro)
             Text(BRLFormatters.currency(amount))
                 .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(Color(hex: colorHex))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .monospacedDigit()
-            if let paidInPeriod, paidInPeriod > 0 {
-                Text("Pagamentos Realizados: \(BRLFormatters.currency(paidInPeriod))")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .frame(height: 22, alignment: .leading)
+
+            // Espaçador flexível (mola) para nivelamento e ancoragem do rodapé
+            Spacer(minLength: 6)
+
+            // Zona 3: Metadados e Rodapé (Base ancorada)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(subtitle)
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .monospacedDigit()
-            }
-            if let realAmortizationInPeriod, realAmortizationInPeriod > 0 {
-                Text("Amortização Real: \(BRLFormatters.currency(realAmortizationInPeriod))")
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color(hex: "#10B981"))
-                    .lineLimit(1)
-                    .monospacedDigit()
-            }
-            if let nominalAmount, nominalAmount > amount + 0.01 {
-                Text("Soma nominal: \(BRLFormatters.currency(nominalAmount))")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .monospacedDigit()
-            }
-            if (paidInPeriod == nil || paidInPeriod == 0) && (realAmortizationInPeriod == nil || realAmortizationInPeriod == 0) {
-                if let projected, abs(amount - projected) > 0.01 {
+
+                if let paidInPeriod, paidInPeriod > 0 {
+                    Text("Pagamentos: \(BRLFormatters.currency(paidInPeriod))")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .monospacedDigit()
+                }
+                if let realAmortizationInPeriod, realAmortizationInPeriod > 0 {
+                    Text("Amortização: \(BRLFormatters.currency(realAmortizationInPeriod))")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color(hex: "#10B981"))
+                        .lineLimit(1)
+                        .monospacedDigit()
+                }
+                if let nominalAmount, nominalAmount > amount + 0.01 {
+                    Text("Soma nominal: \(BRLFormatters.currency(nominalAmount))")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .monospacedDigit()
+                }
+                if let projected, abs(amount - projected) > 0.01 && (paidInPeriod == nil || paidInPeriod == 0) {
                     Text("Quitar: \(BRLFormatters.currency(projected))")
                         .font(.caption2.bold())
                         .foregroundStyle(Color(hex: "#10B981"))
                         .lineLimit(1)
                         .monospacedDigit()
-                } else {
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .bottomLeading)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 136, maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(hex: colorHex).opacity(0.08))

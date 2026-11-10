@@ -67,42 +67,48 @@ public struct LoansAndFinancingsView: View {
                     .tint(kind == .loan ? Color(hex: "#D97706") : Color(hex: "#8B5CF6"))
                 }
 
-                // KPI Cards
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
-                    MetricCardView(
-                        title: kind == .loan ? "Saldo Devedor (Para quitar hoje)" : "Saldo Devedor Atual",
-                        value: BRLFormatters.currency(totalOutstandingBalance),
-                        subtitle: "\(activeList.count) \(kind.title.lowercased())(s) ativo(s)",
-                        icon: "exclamationmark.shield.fill",
-                        tint: Color(hex: "#EF4444")
-                    )
+                // KPI Cards (Equal-Height Grid)
+                Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+                    GridRow {
+                        MetricCardView(
+                            title: kind == .loan ? "Saldo Devedor (Para quitar hoje)" : "Saldo Devedor Atual",
+                            value: BRLFormatters.currency(totalOutstandingBalance),
+                            subtitle: "\(activeList.count) \(kind.title.lowercased())(s) ativo(s)",
+                            icon: "exclamationmark.shield.fill",
+                            tint: Color(hex: "#EF4444")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: kind == .loan ? "Economia se Quitar Hoje" : "Soma Nominal das Parcelas",
-                        value: kind == .loan ? BRLFormatters.currency(max(0.0, totalNominal - totalOutstandingBalance)) : BRLFormatters.currency(totalNominal),
-                        subtitle: kind == .loan ? "Juros futuros economizados na quitação" : "Total das parcelas futuras a vencer",
-                        icon: kind == .loan ? "sparkles.rectangle.stack.fill" : (kind == .loan ? "banknote.fill" : "house.and.flag.fill"),
-                        tint: kind == .loan ? Color(hex: "#10B981") : Color(hex: "#8B5CF6")
-                    )
+                        MetricCardView(
+                            title: kind == .loan ? "Economia se Quitar Hoje" : "Soma Nominal das Parcelas",
+                            value: kind == .loan ? BRLFormatters.currency(max(0.0, totalNominal - totalOutstandingBalance)) : BRLFormatters.currency(totalNominal),
+                            subtitle: kind == .loan ? "Juros futuros economizados na quitação" : "Total das parcelas futuras a vencer",
+                            icon: kind == .loan ? "sparkles.rectangle.stack.fill" : (kind == .loan ? "banknote.fill" : "house.and.flag.fill"),
+                            tint: kind == .loan ? Color(hex: "#10B981") : Color(hex: "#8B5CF6")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: kind == .loan ? "Soma Nominal (c/ Juros Futuros)" : "Projeção para Quitar Hoje",
-                        value: kind == .loan ? BRLFormatters.currency(totalNominal) : BRLFormatters.currency(totalProjectedPayoff),
-                        subtitle: kind == .loan ? "Fluxo contratado se pagar mês a mês" : "Valor presente c/ desconto de juros",
-                        icon: kind == .loan ? "banknote.fill" : "sparkles.rectangle.stack.fill",
-                        tint: kind == .loan ? Color(hex: "#64748B") : Color(hex: "#10B981")
-                    )
+                        MetricCardView(
+                            title: kind == .loan ? "Soma Nominal (c/ Juros Futuros)" : "Projeção para Quitar Hoje",
+                            value: kind == .loan ? BRLFormatters.currency(totalNominal) : BRLFormatters.currency(totalProjectedPayoff),
+                            subtitle: kind == .loan ? "Fluxo contratado se pagar mês a mês" : "Valor presente c/ desconto de juros",
+                            icon: kind == .loan ? "banknote.fill" : "sparkles.rectangle.stack.fill",
+                            tint: kind == .loan ? Color(hex: "#64748B") : Color(hex: "#10B981")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    MetricCardView(
-                        title: kind == .loan ? "Contratos Liquidados" : "Economia Estimada na Quitação",
-                        value: kind == .loan ? "\(settledList.count) quitado(s)" : BRLFormatters.currency(totalSavingsOnPayoff),
-                        subtitle: kind == .loan ? "Encerrados com desconto integral" : "\(settledList.count) contrato(s) já quitado(s)",
-                        icon: kind == .loan ? "checkmark.seal.fill" : "arrow.down.right.circle.fill",
-                        tint: Color(hex: "#3B82F6")
-                    )
+                        MetricCardView(
+                            title: kind == .loan ? "Contratos Liquidados" : "Economia Estimada na Quitação",
+                            value: kind == .loan ? "\(settledList.count) quitado(s)" : BRLFormatters.currency(totalSavingsOnPayoff),
+                            subtitle: kind == .loan ? "Encerrados com desconto integral" : "\(settledList.count) contrato(s) já quitado(s)",
+                            icon: kind == .loan ? "checkmark.seal.fill" : "arrow.down.right.circle.fill",
+                            tint: Color(hex: "#3B82F6")
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
 
-                // Active Contracts Grid
+                // Active Contracts Grid (Equal-Height Rows)
                 if activeList.isEmpty {
                     VStack(spacing: 14) {
                         Image(systemName: kind == .loan ? "banknote" : "car.2.fill")
@@ -134,9 +140,19 @@ public struct LoansAndFinancingsView: View {
                     .frame(maxWidth: .infinity, minHeight: 280)
                     .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
                 } else {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)], spacing: 18) {
-                        ForEach(activeList) { contract in
-                            contractCard(contract)
+                    Grid(horizontalSpacing: 18, verticalSpacing: 18) {
+                        ForEach(Array(stride(from: 0, to: activeList.count, by: 2)), id: \.self) { rowStart in
+                            GridRow {
+                                contractCard(activeList[rowStart])
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                if rowStart + 1 < activeList.count {
+                                    contractCard(activeList[rowStart + 1])
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                } else {
+                                    Color.clear
+                                        .gridCellUnsizedAxes([.horizontal, .vertical])
+                                }
+                            }
                         }
                     }
                 }
@@ -151,9 +167,19 @@ public struct LoansAndFinancingsView: View {
                         }
                         .padding(.top, 12)
 
-                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)], spacing: 18) {
-                            ForEach(settledList) { contract in
-                                contractCard(contract)
+                        Grid(horizontalSpacing: 18, verticalSpacing: 18) {
+                            ForEach(Array(stride(from: 0, to: settledList.count, by: 2)), id: \.self) { rowStart in
+                                GridRow {
+                                    contractCard(settledList[rowStart])
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    if rowStart + 1 < settledList.count {
+                                        contractCard(settledList[rowStart + 1])
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    } else {
+                                        Color.clear
+                                            .gridCellUnsizedAxes([.horizontal, .vertical])
+                                    }
+                                }
                             }
                         }
                     }
@@ -254,7 +280,7 @@ public struct LoansAndFinancingsView: View {
                     }
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
 
                 Button(role: .destructive) {
                     contractPendingDeletion = contract
@@ -265,6 +291,7 @@ public struct LoansAndFinancingsView: View {
                 .buttonStyle(.borderless)
                 .help("Excluir contrato e todas as suas transações vinculadas")
             }
+            .frame(minHeight: 46, alignment: .topLeading)
 
             // Contract Details Grid
             if contract.kind == .financing {
@@ -342,6 +369,7 @@ public struct LoansAndFinancingsView: View {
                     }
                 }
                 .padding(12)
+                .frame(maxWidth: .infinity, minHeight: 215, alignment: .topLeading)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
             } else {
                 let loanModel = contract.effectiveLoanModel
@@ -418,35 +446,44 @@ public struct LoansAndFinancingsView: View {
                     }
                 }
                 .padding(12)
+                .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
             }
 
             // Segmented Progress Bar & Legend
             VStack(alignment: .leading, spacing: 8) {
                 // Bar Header: Dualidade de Prazos vs. Unificado
-                if hasExtraAmortization {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text("Avanço Frente ao Original: \(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments) meses superados (\(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100)))")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.primary)
-                            Spacer()
+                Group {
+                    if hasExtraAmortization {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text("Avanço Frente ao Original: \(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments) meses superados (\(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100)))")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                            }
+                            HStack {
+                                Text("Plano Atual: \(metrics.paidInFlowCount) de \(metrics.newRecalculatedTotalInstallments) parcelas (\(String(format: "%.0f%%", metrics.currentPlanCompletionPercentage * 100)))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
                         }
-                        HStack {
-                            Text("Plano Atual: \(metrics.paidInFlowCount) de \(metrics.newRecalculatedTotalInstallments) parcelas (\(String(format: "%.0f%%", metrics.currentPlanCompletionPercentage * 100)))")
+                    } else {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text("Progresso: \(paidCount) de \(contract.totalInstallments) parcelas pagas (\(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100)))")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                            }
+                            Text("Cronograma regular sem amortizações extraordinárias")
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Spacer()
+                                .foregroundStyle(.secondary.opacity(0.75))
                         }
-                    }
-                } else {
-                    HStack {
-                        Text("Progresso: \(paidCount) de \(contract.totalInstallments) parcelas pagas (\(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100)))")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.primary)
-                        Spacer()
                     }
                 }
+                .frame(minHeight: 34, alignment: .topLeading)
 
                 // 3-Segment Visual Bar
                 SegmentedContractProgressBar(metrics: metrics, accentHex: accentHex)
@@ -495,6 +532,7 @@ public struct LoansAndFinancingsView: View {
 
                     Spacer()
                 }
+                .frame(minHeight: 18, alignment: .leading)
             }
 
             // Highlighted Line: "Projeção de valor para quitar" / "Contrato Quitado"
@@ -519,6 +557,7 @@ public struct LoansAndFinancingsView: View {
                         .foregroundStyle(Color(hex: "#10B981"))
                 }
                 .padding(12)
+                .frame(minHeight: 64)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color(hex: "#10B981").opacity(0.10))
@@ -567,6 +606,7 @@ public struct LoansAndFinancingsView: View {
                         .foregroundStyle(Color(hex: "#10B981"))
                 }
                 .padding(12)
+                .frame(minHeight: 64)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color(hex: "#10B981").opacity(0.10))
@@ -584,7 +624,10 @@ public struct LoansAndFinancingsView: View {
                     .lineLimit(2)
             }
 
-            // Action Buttons: Amortizar & Quitar
+            // Espaçador flexível (mola) para nivelamento e ancoragem dos botões na base
+            Spacer(minLength: 4)
+
+            // Action Buttons: Amortizar & Quitar (Ancorados no rodapé)
             if contract.isSettled {
                 HStack {
                     Image(systemName: "checkmark.seal.fill")
@@ -600,6 +643,7 @@ public struct LoansAndFinancingsView: View {
                     }
                 }
                 .padding(10)
+                .frame(minHeight: 38)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color(hex: "#10B981").opacity(0.12))
@@ -624,9 +668,11 @@ public struct LoansAndFinancingsView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Color(hex: "#10B981"))
                 }
+                .frame(minHeight: 38)
             }
         }
         .padding(18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
