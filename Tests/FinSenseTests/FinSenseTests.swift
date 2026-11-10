@@ -3699,4 +3699,256 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(store.activeContracts(for: .financing).count, 1)
         XCTAssertEqual(store.settledContracts(for: .financing).count, 0)
     }
+
+    // MARK: - Testes Rigorosos de Empréstimos Convencionais e Consignados (Tabela Price Pura)
+
+    func testLoanModelAndAmortizationEngineFormulas() {
+        // Exemplo: Saldo Devedor = R$ 50.000,00, Taxa = 2,00% a.m., 36 parcelas
+        // i = 0,02
+        // PMT = 50000 * 0,02 / (1 - (1 + 0,02)^(-36)) = 1000 / (1 - 0.490223) = 1000 / 0.509777 = 1961.64
+        let pv = 50_000.00
+        let rate = 2.0 // 2.0% a.m.
+        let n = 36
+        let calculatedPMT = LoanModel.calculateInstallment(balance: pv, monthlyRate: rate, totalInstallments: n)
+        XCTAssertEqual(calculatedPMT, 1961.64, accuracy: 0.05)
+
+        // PV recalculado a partir do PMT deve retornar exatamente R$ 50.000,00
+        let recalculatedPV = LoanModel.calculatePresentValue(installment: calculatedPMT, monthlyRate: rate, remaining: n)
+        XCTAssertEqual(recalculatedPV, pv, accuracy: 0.05)
+
+        // Instancia o LoanModel
+        let loan = LoanModel(
+            balance: pv,
+            monthlyInterestRate: rate,
+            installmentValue: calculatedPMT,
+            remainingInstallments: n,
+            totalInstallments: n,
+            loanType: .payrollDeductible,
+            notes: "Consignado em Folha"
+        )
+        XCTAssertTrue(loan.isPayrollDeductible)
+        XCTAssertEqual(loan.currentMonthlyInterest, 1000.0, accuracy: 0.01) // 50000 * 0.02
+        XCTAssertEqual(loan.currentMonthlyAmortization, calculatedPMT - 1000.0, accuracy: 0.05)
+
+        // Soma nominal = 36 * 1961.64 = R$ 70.619,04
+        XCTAssertEqual(loan.totalNominalRemaining, Double(n) * calculatedPMT, accuracy: 0.01)
+        // Economia se quitar hoje = 70.619,04 - 50.000 = R$ 20.619,04
+        XCTAssertEqual(loan.futureInterestSavedIfSettledNow, (Double(n) * calculatedPMT) - pv, accuracy: 0.01)
+
+        // 1. Testa evolução mensal de 1 parcela (Price pura)
+        let step1 = LoanAmortizationEngine.calculateNextInstallment(for: loan, installmentIndex: 1)
+        XCTAssertEqual(step1.previousBalance, 50_000.0, accuracy: 0.01)
+        XCTAssertEqual(step1.interestAmount, 1000.0, accuracy: 0.01)
+        let amort1 = calculatedPMT - 1000.0
+        XCTAssertEqual(step1.amortizationAmount, amort1, accuracy: 0.01)
+        XCTAssertEqual(step1.newBalance, 50_000.0 - amort1, accuracy: 0.01)
+
+        // 2. Testa Amortização Extraordinária com Redução de Prazo (.reduceTerm)
+        // Usuário amortiza R$ 15.000,00 no saldo
+        let amortSimTerm = LoanAmortizationEngine.simulateExtraAmortization(
+            for: loan,
+            extraPayment: 15_000.00,
+            proRataInterest: 0.0,
+            mode: .reduceTerm
+        )
+        XCTAssertEqual(amortSimTerm.effectiveAmortization, 15_000.00, accuracy: 0.01)
+        XCTAssertEqual(amortSimTerm.newBalance, 35_000.00, accuracy: 0.01)
+        XCTAssertEqual(amortSimTerm.newInstallmentAmount, calculatedPMT, accuracy: 0.01)
+        // Novo N: PV = 35.000, PMT = 1961.64, i = 0.02
+        // 1 - (35000 * 0.02)/1961.64 = 1 - 700/1961.64 = 0.643155
+        // N = -ln(0.643155) / ln(1.02) = 0.441388 / 0.0198026 = 22.28 -> ceil = 23 parcelas
+        XCTAssertEqual(amortSimTerm.newRemainingInstallments, 23)
+        XCTAssertEqual(amortSimTerm.eliminatedInstallmentsCount, 13) // 36 - 23 = 13 eliminadas
+
+        // 3. Testa Amortização Extraordinária com Redução de Parcela (.reduceInstallment)
+        let amortSimInst = LoanAmortizationEngine.simulateExtraAmortization(
+            for: loan,
+            extraPayment: 15_000.00,
+            proRataInterest: 0.0,
+            mode: .reduceInstallment
+        )
+        XCTAssertEqual(amortSimInst.effectiveAmortization, 15_000.00, accuracy: 0.01)
+        XCTAssertEqual(amortSimInst.newBalance, 35_000.00, accuracy: 0.01)
+        XCTAssertEqual(amortSimInst.newRemainingInstallments, 36)
+        // Novo PMT: 35000 * 0.02 / (1 - 1.02^-36) = 700 / 0.509777 = 1373.15
+        XCTAssertEqual(amortSimInst.newInstallmentAmount, 1373.15, accuracy: 0.05)
+    }
+
+    func testLoanCreationPayoffEngineAndExtraAmortizationInStore() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Corrente Santander",
+            bankPresetId: "santander",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#CC0000",
+            initialBalance: 100_000.0
+        )
+        let acc = store.accounts.first!
+
+        // Cria Empréstimo Consignado:
+        // Capital Emprestado (PV): R$ 30.000,00
+        // Parcela PMT: R$ 1.176,98 (36x a 2,00% a.m.)
+        let loanContract = store.createCreditContract(
+            kind: .loan,
+            name: "Consignado Santander",
+            contractNumber: "783694303",
+            loanSubtype: .consignado,
+            amortizationSystem: .price,
+            totalContractedAmount: 30_000.00,
+            outstandingBalance: 30_000.00,
+            installmentAmount: 1176.98,
+            billingDay: 10,
+            totalInstallments: 36,
+            monthlyInterestRate: 2.0,
+            startDate: Date(),
+            accountId: acc.id,
+            notes: "Desconto em folha"
+        )
+
+        // 1. Integridade de Criação focada no Valor Presente (PV)
+        XCTAssertEqual(loanContract.kind, .loan)
+        XCTAssertEqual(loanContract.loanSubtype, .consignado)
+        XCTAssertEqual(store.currentOutstandingBalance(for: loanContract), 30_000.00, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: loanContract), 36)
+        XCTAssertEqual(loanContract.loanDetails?.balance, 30_000.00)
+        XCTAssertEqual(loanContract.loanDetails?.loanType, .payrollDeductible)
+
+        // A Projeção de Quitação DEVE ser o Saldo Devedor Atual (PV = R$ 30.000,00),
+        // NUNCA a soma nominal das parcelas (36 * 1176.98 = R$ 42.371,28)
+        let payoff = store.projectedPayoffAmount(for: loanContract)
+        XCTAssertEqual(payoff, 30_000.00, accuracy: 0.01)
+        let nominal = store.remainingNominalAmount(for: loanContract)
+        XCTAssertEqual(nominal, 36.0 * 1176.98, accuracy: 0.05)
+        XCTAssertGreaterThan(nominal, payoff + 10_000.0) // Nominal tem juros futuros
+
+        // 2. Amortização Extraordinária com redução de prazo: Amortiza R$ 10.000,00
+        store.amortizeContract(
+            contractId: loanContract.id,
+            amountPaid: 10_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        let cAfterAmort = store.contracts.first(where: { $0.id == loanContract.id })!
+        XCTAssertEqual(cAfterAmort.outstandingBalance ?? 0.0, 20_000.00, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: cAfterAmort), 20_000.00, accuracy: 0.01)
+        XCTAssertEqual(cAfterAmort.loanDetails?.balance, 20_000.00)
+        // Novo prazo calculado: 20000 * 0.02 / 1176.98 = 400 / 1176.98 = 0.33985
+        // N = -ln(1 - 0.33985) / ln(1.02) = -ln(0.66015) / 0.0198026 = 0.41528 / 0.0198026 = 20.97 -> ceil = 21 parcelas
+        XCTAssertEqual(store.remainingInstallmentsCount(for: cAfterAmort), 21)
+        XCTAssertEqual(store.unpaidTransactions(forContract: cAfterAmort.id).count, 21)
+
+        // 3. Quitação Total (Settle) com o saldo restante (R$ 20.000,00)
+        store.settleContract(
+            contractId: cAfterAmort.id,
+            finalPayoffAmount: 20_000.00,
+            accountId: acc.id,
+            date: Date()
+        )
+
+        let cSettled = store.contracts.first(where: { $0.id == loanContract.id })!
+        XCTAssertTrue(cSettled.isSettled)
+        XCTAssertEqual(cSettled.outstandingBalance, 0.0)
+        XCTAssertEqual(cSettled.loanDetails?.balance, 0.0)
+        XCTAssertEqual(store.currentOutstandingBalance(for: cSettled), 0.0)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: cSettled), 0)
+        XCTAssertEqual(store.unpaidTransactions(forContract: cSettled.id).count, 0)
+        XCTAssertEqual(store.activeContracts(for: .loan).count, 0)
+        XCTAssertEqual(store.settledContracts(for: .loan).count, 1)
+    }
+
+    func testLoanLinkedTransactionRollbackOnDeletion() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Itaú",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 80_000.0
+        )
+        let acc = store.accounts.first!
+
+        // Cria Empréstimo Pessoal: R$ 25.000,00 em 24x de R$ 1.390,00 a 2,5% a.m.
+        let loan = store.createCreditContract(
+            kind: .loan,
+            name: "Empréstimo Pessoal Itaú",
+            loanSubtype: .pessoal,
+            totalContractedAmount: 25_000.00,
+            outstandingBalance: 25_000.00,
+            installmentAmount: 1390.00,
+            billingDay: 5,
+            totalInstallments: 24,
+            monthlyInterestRate: 2.5,
+            startDate: Date(),
+            accountId: acc.id
+        )
+
+        XCTAssertEqual(store.currentOutstandingBalance(for: loan), 25_000.00, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: loan), 24)
+
+        // 1. Amortiza R$ 5.000,00 no empréstimo
+        store.amortizeContract(
+            contractId: loan.id,
+            amountPaid: 5_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        let c1 = store.contracts.first(where: { $0.id == loan.id })!
+        XCTAssertEqual(c1.outstandingBalance ?? 0.0, 20_000.00, accuracy: 0.01)
+        let remAfterAmort = store.remainingInstallmentsCount(for: c1)
+        XCTAssertLessThan(remAfterAmort, 24)
+
+        guard let amortTx = store.transactions.first(where: { $0.linkedContractId == loan.id && $0.installmentIndex == nil }) else {
+            XCTFail("Transação de amortização do empréstimo não encontrada")
+            return
+        }
+        XCTAssertEqual(amortTx.effectiveOrigin, .loanAmortization)
+
+        // 2. DELETA a transação de amortização no extrato geral -> Rollback total
+        store.deleteTransaction(amortTx.id)
+
+        let cRestored = store.contracts.first(where: { $0.id == loan.id })!
+        XCTAssertEqual(cRestored.outstandingBalance ?? 0.0, 25_000.00, accuracy: 0.01)
+        XCTAssertEqual(cRestored.loanDetails?.balance ?? 0.0, 25_000.00, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: cRestored), 25_000.00, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: cRestored), 24)
+        XCTAssertEqual(store.unpaidTransactions(forContract: cRestored.id).count, 24)
+        XCTAssertEqual(cRestored.amortizationHistory.count, 0)
+
+        // 3. Quita o empréstimo integralmente (Payoff de R$ 25.000,00)
+        store.settleContract(
+            contractId: cRestored.id,
+            finalPayoffAmount: 25_000.00,
+            accountId: acc.id,
+            date: Date()
+        )
+
+        let cSettled = store.contracts.first(where: { $0.id == loan.id })!
+        XCTAssertTrue(cSettled.isSettled)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: cSettled), 0)
+        XCTAssertEqual(store.unpaidTransactions(forContract: cSettled.id).count, 0)
+
+        guard let settleTx = store.transactions.first(where: { $0.linkedContractId == loan.id && $0.installmentIndex == nil }) else {
+            XCTFail("Transação de quitação do empréstimo não encontrada")
+            return
+        }
+        XCTAssertEqual(settleTx.effectiveOrigin, .loanPayoff)
+
+        // 4. DELETA a transação de quitação do empréstimo -> Rollback da quitação
+        // Status deve voltar para Ativo (isSettled: false), saldo devolvido para R$ 25.000,00 e 24 parcelas futuras restauradas
+        store.deleteTransaction(settleTx.id)
+
+        let cActiveAgain = store.contracts.first(where: { $0.id == loan.id })!
+        XCTAssertFalse(cActiveAgain.isSettled)
+        XCTAssertEqual(cActiveAgain.outstandingBalance ?? 0.0, 25_000.00, accuracy: 0.01)
+        XCTAssertEqual(cActiveAgain.loanDetails?.balance ?? 0.0, 25_000.00, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: cActiveAgain), 25_000.00, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: cActiveAgain), 24)
+        XCTAssertEqual(store.unpaidTransactions(forContract: cActiveAgain.id).count, 24)
+        XCTAssertEqual(store.activeContracts(for: .loan).count, 1)
+        XCTAssertEqual(store.settledContracts(for: .loan).count, 0)
+    }
 }

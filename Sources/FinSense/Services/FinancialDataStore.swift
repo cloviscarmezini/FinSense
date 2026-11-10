@@ -2458,7 +2458,7 @@ public final class FinancialDataStore: ObservableObject {
                 cloudSyncService?.recordLocalMutation(entityName: "debt_items", entityId: dId, operation: .upsert, entity: debts[idx])
             }
 
-        case .financingAmortization, .contractSettlement:
+        case .financingAmortization, .contractSettlement, .loanAmortization, .loanPayoff:
             // Se deletou amortização ou quitação de contrato: reverte o saldo e recalcula o motor
             if let cId = entityId ?? tx.linkedContractId,
                let idx = contracts.firstIndex(where: { $0.id == cId }) {
@@ -2491,35 +2491,66 @@ public final class FinancialDataStore: ObservableObject {
         if let prevBal = record?.previousBalance, prevBal > 0.01 {
             restoredBalance = prevBal
         } else {
-            let currentBal = contract.outstandingBalance ?? (contract.financingDetails?.balance ?? 0.0)
+            let currentBal = contract.outstandingBalance ?? (contract.kind == .loan ? (contract.loanDetails?.balance ?? 0.0) : (contract.financingDetails?.balance ?? 0.0))
             restoredBalance = currentBal + effectiveAmort
         }
 
         contract.outstandingBalance = restoredBalance
-        if contract.financingDetails != nil {
+        if contract.kind == .financing && contract.financingDetails != nil {
             contract.financingDetails?.balance = restoredBalance
+        }
+        if contract.kind == .loan && contract.loanDetails != nil {
+            contract.loanDetails?.balance = restoredBalance
         }
         contract.extraAmortizedTotal = max(0.0, contract.extraAmortizedTotal - effectiveAmort)
 
-        // 4. Recálculo do Motor (AmortizationEngine.recalculate)
+        // 4. Recálculo Inverso do Motor
         let mode = record?.mode ?? .reduceTerm
         let currentRem = record?.previousRemainingInstallments ?? remainingInstallmentsCount(for: contract)
         let currentInst = record?.previousInstallmentAmount ?? contract.installmentAmount
 
-        let recalc = AmortizationEngine.recalculate(
-            balance: restoredBalance,
-            annualNominalRate: contract.effectiveAnnualNominalRate,
-            basePriceInstallment: contract.effectiveBaseInstallmentPrice,
-            totalInstallmentAmount: currentInst,
-            currentRemainingInstallments: currentRem,
-            mode: mode,
-            amortizationSystem: contract.amortizationSystem,
-            adminFee: contract.effectiveAdminFee,
-            insuranceFee: contract.effectiveInsuranceFee
-        )
+        let targetRemaining: Int
+        let targetInstallment: Double
 
-        let targetRemaining = record?.previousRemainingInstallments ?? recalc.remainingInstallments
-        let targetInstallment = record?.previousInstallmentAmount ?? recalc.installmentAmount
+        if contract.kind == .loan {
+            let recalc = LoanAmortizationEngine.recalculate(
+                balance: restoredBalance,
+                monthlyInterestRate: contract.monthlyInterestRate,
+                installmentValue: currentInst,
+                currentRemainingInstallments: currentRem,
+                mode: mode
+            )
+            targetRemaining = record?.previousRemainingInstallments ?? recalc.remainingInstallments
+            targetInstallment = record?.previousInstallmentAmount ?? recalc.installmentValue
+
+            if contract.loanDetails != nil {
+                contract.loanDetails?.balance = restoredBalance
+                contract.loanDetails?.remainingInstallments = targetRemaining
+                contract.loanDetails?.installmentValue = targetInstallment
+                contract.loanDetails?.totalInstallments = max(contract.totalInstallments, contract.pastInstallmentsElapsedAtCreation + targetRemaining)
+            }
+        } else {
+            let recalc = AmortizationEngine.recalculate(
+                balance: restoredBalance,
+                annualNominalRate: contract.effectiveAnnualNominalRate,
+                basePriceInstallment: contract.effectiveBaseInstallmentPrice,
+                totalInstallmentAmount: currentInst,
+                currentRemainingInstallments: currentRem,
+                mode: mode,
+                amortizationSystem: contract.amortizationSystem,
+                adminFee: contract.effectiveAdminFee,
+                insuranceFee: contract.effectiveInsuranceFee
+            )
+            targetRemaining = record?.previousRemainingInstallments ?? recalc.remainingInstallments
+            targetInstallment = record?.previousInstallmentAmount ?? recalc.installmentAmount
+
+            if contract.financingDetails != nil {
+                contract.financingDetails?.balance = restoredBalance
+                contract.financingDetails?.remainingInstallments = targetRemaining
+                contract.financingDetails?.totalInstallmentAmount = targetInstallment
+                contract.financingDetails?.totalInstallments = max(contract.totalInstallments, contract.pastInstallmentsElapsedAtCreation + targetRemaining)
+            }
+        }
 
         let paidInApp = transactions.filter { $0.linkedContractId == contract.id && $0.isPaid && $0.installmentIndex != nil }.count
         let minRequiredTotal = contract.pastInstallmentsElapsedAtCreation + paidInApp + targetRemaining
@@ -2528,11 +2559,6 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         contract.installmentAmount = targetInstallment
-        if contract.financingDetails != nil {
-            contract.financingDetails?.remainingInstallments = targetRemaining
-            contract.financingDetails?.totalInstallmentAmount = targetInstallment
-            contract.financingDetails?.totalInstallments = contract.totalInstallments
-        }
 
         // 5. Restauração das Parcelas Futuras Removidas
         restoreMissingFutureContractTransactions(
@@ -3219,6 +3245,16 @@ public final class FinancialDataStore: ObservableObject {
         let pastCount = min(max(overridePastInstallmentsCount ?? computedSchedule.pastInstallmentsCount, 0), totalInstallments)
         let firstFutureDate = overrideFirstFutureBillingDate ?? computedSchedule.firstFutureBillingDate
 
+        let initialLoanBalance: Double? = {
+            if let explicit = outstandingBalance { return explicit }
+            guard kind == .loan else { return nil }
+            if pastCount > 0 {
+                let remaining = max(totalInstallments - pastCount, 0)
+                return LoanModel.calculatePresentValue(installment: installmentAmount, monthlyRate: monthlyInterestRate, remaining: remaining)
+            }
+            return totalContractedAmount
+        }()
+
         let contract = CreditContract(
             kind: kind,
             name: name,
@@ -3227,7 +3263,7 @@ public final class FinancialDataStore: ObservableObject {
             financingSubtype: kind == .financing ? (financingSubtype ?? .imovel) : nil,
             amortizationSystem: amortizationSystem,
             totalContractedAmount: totalContractedAmount,
-            outstandingBalance: outstandingBalance,
+            outstandingBalance: initialLoanBalance,
             installmentAmount: installmentAmount,
             billingDay: billingDay,
             totalInstallments: totalInstallments,
@@ -3325,6 +3361,47 @@ public final class FinancialDataStore: ObservableObject {
             return max(0.0, runningBalance)
         }
 
+        // Para Empréstimos Convencionais e Consignados (Tabela Price pura):
+        if contract.kind == .loan {
+            let initialBalance = contract.loanDetails?.balance ?? contract.outstandingBalance ?? contract.totalContractedAmount
+            guard initialBalance > 0 else { return 0.0 }
+
+            let monthlyRate = contract.monthlyInterestRate
+            let pmt = contract.installmentAmount
+
+            let elapsedInApp: Int
+            if let asOfCutoff {
+                elapsedInApp = transactions.filter { tx in
+                    tx.linkedContractId == contract.id &&
+                    tx.installmentIndex != nil &&
+                    (lastAmortDate == nil || tx.date > lastAmortDate!) &&
+                    (tx.isPaid || tx.date <= asOfCutoff)
+                }.count
+            } else {
+                elapsedInApp = transactions.filter { tx in
+                    tx.linkedContractId == contract.id &&
+                    tx.installmentIndex != nil &&
+                    (lastAmortDate == nil || tx.date > lastAmortDate!) &&
+                    tx.isPaid
+                }.count
+            }
+
+            var runningBalance = initialBalance
+            if elapsedInApp > 0 {
+                for idx in 1...elapsedInApp {
+                    guard runningBalance > 0.01 else { break }
+                    let step = LoanAmortizationEngine.calculateNextInstallment(
+                        currentBalance: runningBalance,
+                        monthlyInterestRate: monthlyRate,
+                        installmentValue: pmt,
+                        installmentIndex: idx
+                    )
+                    runningBalance = step.newBalance
+                }
+            }
+            return max(0.0, runningBalance)
+        }
+
         if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
             let totalToAmortize = max(contract.totalInstallments - contract.pastInstallmentsElapsedAtCreation, 1)
             let estimatedPrincipalPerInstallment = explicitBalance / Double(totalToAmortize)
@@ -3404,6 +3481,20 @@ public final class FinancialDataStore: ObservableObject {
         guard !contract.isSettled else { return 0.0 }
         let n = remainingInstallmentsCount(for: contract, asOf: asOfCutoff)
         guard n > 0 else { return 0.0 }
+
+        // Para Empréstimos Convencionais e Consignados: a quitação é rigorosamente o Saldo Devedor Atual a Valor Presente (PV)
+        if contract.kind == .loan {
+            let currentBal = currentOutstandingBalance(for: contract, asOf: asOfCutoff)
+            if currentBal > 0.01 {
+                return currentBal
+            }
+            return LoanAmortizationEngine.calculatePayoffAmount(
+                currentBalance: currentBal,
+                monthlyInterestRate: contract.monthlyInterestRate,
+                installmentValue: contract.installmentAmount,
+                remainingInstallments: n
+            )
+        }
 
         let nominalRemaining = remainingNominalAmount(for: contract, asOf: asOfCutoff)
         let pmt = nominalRemaining / Double(max(n, 1))
@@ -3513,6 +3604,7 @@ public final class FinancialDataStore: ObservableObject {
     ) {
         guard let idx = contracts.firstIndex(where: { $0.id == contractId }) else { return }
         var contract = contracts[idx]
+        let isLoan = contract.kind == .loan
         let cleanPaid = abs(amountPaid)
         guard cleanPaid > 0 else { return }
 
@@ -3520,38 +3612,73 @@ public final class FinancialDataStore: ObservableObject {
         let prevInstallment = contract.installmentAmount
         let currentPV = currentOutstandingBalance(for: contract)
 
-        let sim = AmortizationEngine.simulateExtraAmortization(
-            currentBalance: currentPV,
-            annualNominalRate: contract.effectiveAnnualNominalRate,
-            basePriceInstallment: contract.effectiveBaseInstallmentPrice,
-            totalInstallmentAmount: contract.installmentAmount,
-            currentRemainingInstallments: prevRemaining,
-            extraPayment: cleanPaid,
-            proRataInterest: proRataInterest,
-            mode: mode,
-            adminFee: contract.effectiveAdminFee,
-            insuranceFee: contract.effectiveInsuranceFee
-        )
+        let isFullPayoff: Bool
+        let newInstallment: Double
+        let newRemaining: Int
+        let effectiveAmortization: Double
+        let proRataApplied: Double
+        let newBalanceSimulated: Double
 
-        let isFullPayoff = cleanPaid >= (currentPV - 0.01) || sim.newBalance <= 0.01
-        var newInstallment = isFullPayoff ? 0.0 : sim.newInstallmentAmount
-        var newRemaining = isFullPayoff ? 0 : sim.newRemainingInstallments
-
-        if !isFullPayoff {
-            if let customInst = customNewInstallmentAmount, customInst > 0 {
-                newInstallment = customInst
+        if isLoan {
+            let sim = LoanAmortizationEngine.simulateExtraAmortization(
+                currentBalance: currentPV,
+                monthlyInterestRate: contract.monthlyInterestRate,
+                installmentValue: contract.installmentAmount,
+                currentRemainingInstallments: prevRemaining,
+                extraPayment: cleanPaid,
+                proRataInterest: proRataInterest,
+                mode: mode
+            )
+            isFullPayoff = cleanPaid >= (currentPV - 0.01) || sim.newBalance <= 0.01
+            effectiveAmortization = sim.effectiveAmortization
+            proRataApplied = sim.proRataInterest
+            newBalanceSimulated = sim.newBalance
+            if isFullPayoff {
+                newInstallment = 0.0
+                newRemaining = 0
+            } else {
+                newInstallment = customNewInstallmentAmount ?? sim.newInstallmentAmount
+                newRemaining = customNewRemainingInstallments ?? sim.newRemainingInstallments
             }
-            if let customCount = customNewRemainingInstallments, customCount >= 0 {
-                newRemaining = customCount
+        } else {
+            let sim = AmortizationEngine.simulateExtraAmortization(
+                currentBalance: currentPV,
+                annualNominalRate: contract.effectiveAnnualNominalRate,
+                basePriceInstallment: contract.effectiveBaseInstallmentPrice,
+                totalInstallmentAmount: contract.installmentAmount,
+                currentRemainingInstallments: prevRemaining,
+                extraPayment: cleanPaid,
+                proRataInterest: proRataInterest,
+                mode: mode,
+                adminFee: contract.effectiveAdminFee,
+                insuranceFee: contract.effectiveInsuranceFee
+            )
+            isFullPayoff = cleanPaid >= (currentPV - 0.01) || sim.newBalance <= 0.01
+            effectiveAmortization = sim.effectiveAmortization
+            proRataApplied = sim.proRataInterest
+            newBalanceSimulated = sim.newBalance
+            if isFullPayoff {
+                newInstallment = 0.0
+                newRemaining = 0
+            } else {
+                newInstallment = customNewInstallmentAmount ?? sim.newInstallmentAmount
+                newRemaining = customNewRemainingInstallments ?? sim.newRemainingInstallments
             }
         }
 
         // Cria transação de saída na conta selecionada
-        let proRataNote = sim.proRataInterest > 0 ? " • Juros Pró-rata: \(BRLFormatters.currency(sim.proRataInterest))" : ""
+        let proRataNote = proRataApplied > 0 ? " • Juros Pró-rata: \(BRLFormatters.currency(proRataApplied))" : ""
         let payoffNote = isFullPayoff ? " • Quitação Total" : ""
+        let txOrigin: TransactionOrigin
+        if isLoan {
+            txOrigin = isFullPayoff ? .loanPayoff : .loanAmortization
+        } else {
+            txOrigin = isFullPayoff ? .contractSettlement : .financingAmortization
+        }
+
         let amortTx = FinancialTransaction(
             name: isFullPayoff ? "Quitação: \(contract.name)" : "Amortização: \(contract.name)",
-            details: "Amortização extraordinária (\(mode.rawValue)). Amortização Efetiva no Saldo: \(BRLFormatters.currency(sim.effectiveAmortization))\(proRataNote)\(payoffNote). \(notes)".trimmingCharacters(in: .whitespaces),
+            details: "Amortização extraordinária (\(mode.rawValue)). Amortização Efetiva no Saldo: \(BRLFormatters.currency(effectiveAmortization))\(proRataNote)\(payoffNote). \(notes)".trimmingCharacters(in: .whitespaces),
             amount: cleanPaid,
             date: date,
             type: .expense,
@@ -3561,7 +3688,7 @@ public final class FinancialDataStore: ObservableObject {
             ignoreInConsolidated: false,
             recurrenceMode: .single,
             linkedContractId: contract.id,
-            transactionOrigin: isFullPayoff ? .contractSettlement : .financingAmortization,
+            transactionOrigin: txOrigin,
             linkedEntityID: contract.id
         )
         transactions.append(amortTx)
@@ -3580,6 +3707,11 @@ public final class FinancialDataStore: ObservableObject {
                 contract.financingDetails?.balance = 0.0
                 contract.financingDetails?.remainingInstallments = 0
                 contract.financingDetails?.totalInstallmentAmount = 0.0
+            }
+            if contract.loanDetails != nil {
+                contract.loanDetails?.balance = 0.0
+                contract.loanDetails?.remainingInstallments = 0
+                contract.loanDetails?.installmentValue = 0.0
             }
         } else {
             // Se reduziu prazo, remove as últimas parcelas futuras excedentes
@@ -3604,17 +3736,20 @@ public final class FinancialDataStore: ObservableObject {
                 }
             }
 
-            if contract.outstandingBalance != nil {
-                contract.outstandingBalance = sim.newBalance
-            }
+            contract.outstandingBalance = newBalanceSimulated
             if contract.financingDetails != nil {
-                contract.financingDetails?.balance = sim.newBalance
+                contract.financingDetails?.balance = newBalanceSimulated
                 contract.financingDetails?.remainingInstallments = newRemaining
                 contract.financingDetails?.totalInstallmentAmount = newInstallment
             }
+            if contract.loanDetails != nil {
+                contract.loanDetails?.balance = newBalanceSimulated
+                contract.loanDetails?.remainingInstallments = newRemaining
+                contract.loanDetails?.installmentValue = newInstallment
+            }
         }
 
-        contract.extraAmortizedTotal += sim.effectiveAmortization
+        contract.extraAmortizedTotal += effectiveAmortization
         let record = AmortizationRecord(
             date: date,
             amountPaid: cleanPaid,
@@ -3626,7 +3761,7 @@ public final class FinancialDataStore: ObservableObject {
             accountId: accountId,
             transactionId: amortTx.id,
             notes: notes,
-            effectiveAmortization: sim.effectiveAmortization,
+            effectiveAmortization: effectiveAmortization,
             previousBalance: currentPV
         )
         contract.amortizationHistory.insert(record, at: 0)
@@ -3647,8 +3782,8 @@ public final class FinancialDataStore: ObservableObject {
     ) {
         guard let idx = contracts.firstIndex(where: { $0.id == contractId }) else { return }
         var contract = contracts[idx]
+        let isLoan = contract.kind == .loan
         let cleanFinal = abs(finalPayoffAmount)
-        let originalProjected = projectedPayoffAmount(for: contract)
         let nominalRemaining = remainingNominalAmount(for: contract)
         let prevRemaining = remainingInstallmentsCount(for: contract)
         let prevInstallment = contract.installmentAmount
@@ -3661,7 +3796,7 @@ public final class FinancialDataStore: ObservableObject {
         // Cria a transação de quitação na conta selecionada
         let settleTx = FinancialTransaction(
             name: "Quitação: \(contract.name)",
-            details: "Quitação integral de \(contract.kind.title.lowercased()) (Saldo nominal: \(BRLFormatters.currency(nominalRemaining)), Projetado: \(BRLFormatters.currency(originalProjected)))",
+            details: "Quitação integral de \(contract.kind.title.lowercased()) (Saldo nominal: \(BRLFormatters.currency(nominalRemaining)), Saldo Devedor PV: \(BRLFormatters.currency(currentPV)))",
             amount: cleanFinal,
             date: date,
             type: .expense,
@@ -3671,7 +3806,7 @@ public final class FinancialDataStore: ObservableObject {
             ignoreInConsolidated: false,
             recurrenceMode: .single,
             linkedContractId: contract.id,
-            transactionOrigin: .contractSettlement,
+            transactionOrigin: isLoan ? .loanPayoff : .contractSettlement,
             linkedEntityID: contract.id
         )
         transactions.append(settleTx)
@@ -3701,6 +3836,11 @@ public final class FinancialDataStore: ObservableObject {
             contract.financingDetails?.balance = 0.0
             contract.financingDetails?.remainingInstallments = 0
             contract.financingDetails?.totalInstallmentAmount = 0.0
+        }
+        if contract.loanDetails != nil {
+            contract.loanDetails?.balance = 0.0
+            contract.loanDetails?.remainingInstallments = 0
+            contract.loanDetails?.installmentValue = 0.0
         }
         contracts[idx] = contract
 

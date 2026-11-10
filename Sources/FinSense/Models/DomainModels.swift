@@ -474,6 +474,8 @@ public struct CategoryItem: Identifiable, Codable, Hashable {
 public enum TransactionOrigin: String, Codable, CaseIterable, Identifiable, Hashable {
     case standard
     case financingAmortization
+    case loanAmortization
+    case loanPayoff
     case contractSettlement
     case investmentDeposit
     case investmentRedemption
@@ -948,6 +950,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
     public var insuranceFee: Double? // Seguros MIP/DFI (ex: R$ 86,27)
     public var baseInstallmentAmount: Double? // Parcela Base Price (Amortização + Juros)
     public var financingDetails: FinancingModel?
+    public var loanDetails: LoanModel?
 
     public init(
         id: UUID = UUID(),
@@ -980,7 +983,8 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         adminFee: Double? = nil,
         insuranceFee: Double? = nil,
         baseInstallmentAmount: Double? = nil,
-        financingDetails: FinancingModel? = nil
+        financingDetails: FinancingModel? = nil,
+        loanDetails: LoanModel? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -1014,6 +1018,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.insuranceFee = insuranceFee
         self.baseInstallmentAmount = baseInstallmentAmount
         self.financingDetails = financingDetails
+        self.loanDetails = loanDetails
 
         if kind == .financing && self.financingDetails == nil {
             let effAnnual = annualNominalInterestRate ?? (monthlyInterestRate > 0 ? monthlyInterestRate * 12.0 : 8.51)
@@ -1032,6 +1037,31 @@ public struct CreditContract: Identifiable, Codable, Hashable {
                 remainingInstallments: remaining,
                 totalInstallmentAmount: installmentAmount,
                 lastBillingDate: startDate
+            )
+        }
+
+        if kind == .loan && self.loanDetails == nil {
+            let remaining = max(totalInstallments - pastInstallmentsElapsedAtCreation, 0)
+            let effBalance: Double
+            if let explicit = outstandingBalance {
+                effBalance = explicit
+            } else if pastInstallmentsElapsedAtCreation > 0 {
+                effBalance = LoanModel.calculatePresentValue(installment: installmentAmount, monthlyRate: monthlyInterestRate, remaining: remaining)
+            } else {
+                effBalance = totalContractedAmount
+            }
+            let type: LoanType = (loanSubtype == .consignado) ? .payrollDeductible : .personal
+            self.loanDetails = LoanModel(
+                id: id,
+                balance: effBalance,
+                monthlyInterestRate: monthlyInterestRate,
+                installmentValue: installmentAmount,
+                remainingInstallments: remaining,
+                totalInstallments: totalInstallments,
+                loanType: type,
+                startDate: startDate,
+                lastBillingDate: startDate,
+                notes: notes
             )
         }
     }
@@ -1097,6 +1127,34 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         )
     }
 
+    /// Retorna ou gera o modelo especializado de empréstimo (Tabela Price pura)
+    public var effectiveLoanModel: LoanModel? {
+        if let loan = loanDetails { return loan }
+        guard kind == .loan else { return nil }
+        let remaining = max(totalInstallments - pastInstallmentsElapsedAtCreation, 0)
+        let effBalance: Double
+        if let explicit = outstandingBalance {
+            effBalance = explicit
+        } else if pastInstallmentsElapsedAtCreation > 0 {
+            effBalance = LoanModel.calculatePresentValue(installment: installmentAmount, monthlyRate: monthlyInterestRate, remaining: remaining)
+        } else {
+            effBalance = totalContractedAmount
+        }
+        let type: LoanType = (loanSubtype == .consignado) ? .payrollDeductible : .personal
+        return LoanModel(
+            id: id,
+            balance: effBalance,
+            monthlyInterestRate: monthlyInterestRate,
+            installmentValue: installmentAmount,
+            remainingInstallments: remaining,
+            totalInstallments: totalInstallments,
+            loanType: type,
+            startDate: startDate,
+            lastBillingDate: startDate,
+            notes: notes
+        )
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, kind, name, contractNumber, loanSubtype, financingSubtype, amortizationSystem
         case totalContractedAmount, outstandingBalance, installmentAmount, billingDay
@@ -1104,7 +1162,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         case pastInstallmentsElapsedAtCreation, extraAmortizedTotal, amortizationHistory
         case isSettled, settledAmount, settledDate, settledAccountId, notes, createdAt
         case annualNominalInterestRate, indexationRate, adminFee, insuranceFee
-        case baseInstallmentAmount, financingDetails
+        case baseInstallmentAmount, financingDetails, loanDetails
     }
 
     public init(from decoder: Decoder) throws {
@@ -1168,6 +1226,8 @@ public struct CreditContract: Identifiable, Codable, Hashable {
             ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("base_installment_amount")))
         self.financingDetails = (try? c.decodeIfPresent(FinancingModel.self, forKey: AnyKey("financingDetails")))
             ?? (try? c.decodeIfPresent(FinancingModel.self, forKey: AnyKey("financing_details")))
+        self.loanDetails = (try? c.decodeIfPresent(LoanModel.self, forKey: AnyKey("loanDetails")))
+            ?? (try? c.decodeIfPresent(LoanModel.self, forKey: AnyKey("loan_details")))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1203,6 +1263,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(insuranceFee, forKey: .insuranceFee)
         try c.encodeIfPresent(baseInstallmentAmount, forKey: .baseInstallmentAmount)
         try c.encodeIfPresent(financingDetails, forKey: .financingDetails)
+        try c.encodeIfPresent(loanDetails, forKey: .loanDetails)
     }
 
     public var subtypeDisplayName: String {

@@ -70,7 +70,7 @@ public struct LoansAndFinancingsView: View {
                 // KPI Cards
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
                     MetricCardView(
-                        title: "Saldo Devedor Atual",
+                        title: kind == .loan ? "Saldo Devedor (Para quitar hoje)" : "Saldo Devedor Atual",
                         value: BRLFormatters.currency(totalOutstandingBalance),
                         subtitle: "\(activeList.count) \(kind.title.lowercased())(s) ativo(s)",
                         icon: "exclamationmark.shield.fill",
@@ -78,26 +78,26 @@ public struct LoansAndFinancingsView: View {
                     )
 
                     MetricCardView(
-                        title: "Soma Nominal das Parcelas",
-                        value: BRLFormatters.currency(totalNominal),
-                        subtitle: "Total das parcelas futuras a vencer",
-                        icon: kind == .loan ? "banknote.fill" : "house.and.flag.fill",
-                        tint: kind == .loan ? Color(hex: "#D97706") : Color(hex: "#8B5CF6")
+                        title: kind == .loan ? "Economia se Quitar Hoje" : "Soma Nominal das Parcelas",
+                        value: kind == .loan ? BRLFormatters.currency(max(0.0, totalNominal - totalOutstandingBalance)) : BRLFormatters.currency(totalNominal),
+                        subtitle: kind == .loan ? "Juros futuros economizados na quitação" : "Total das parcelas futuras a vencer",
+                        icon: kind == .loan ? "sparkles.rectangle.stack.fill" : (kind == .loan ? "banknote.fill" : "house.and.flag.fill"),
+                        tint: kind == .loan ? Color(hex: "#10B981") : Color(hex: "#8B5CF6")
                     )
 
                     MetricCardView(
-                        title: "Projeção para Quitar Hoje",
-                        value: BRLFormatters.currency(totalProjectedPayoff),
-                        subtitle: "Valor presente c/ desconto de juros",
-                        icon: "sparkles.rectangle.stack.fill",
-                        tint: Color(hex: "#10B981")
+                        title: kind == .loan ? "Soma Nominal (c/ Juros Futuros)" : "Projeção para Quitar Hoje",
+                        value: kind == .loan ? BRLFormatters.currency(totalNominal) : BRLFormatters.currency(totalProjectedPayoff),
+                        subtitle: kind == .loan ? "Fluxo contratado se pagar mês a mês" : "Valor presente c/ desconto de juros",
+                        icon: kind == .loan ? "banknote.fill" : "sparkles.rectangle.stack.fill",
+                        tint: kind == .loan ? Color(hex: "#64748B") : Color(hex: "#10B981")
                     )
 
                     MetricCardView(
-                        title: "Economia Estimada na Quitação",
-                        value: BRLFormatters.currency(totalSavingsOnPayoff),
-                        subtitle: "\(settledList.count) contrato(s) já quitado(s)",
-                        icon: "arrow.down.right.circle.fill",
+                        title: kind == .loan ? "Contratos Liquidados" : "Economia Estimada na Quitação",
+                        value: kind == .loan ? "\(settledList.count) quitado(s)" : BRLFormatters.currency(totalSavingsOnPayoff),
+                        subtitle: kind == .loan ? "Encerrados com desconto integral" : "\(settledList.count) contrato(s) já quitado(s)",
+                        icon: kind == .loan ? "checkmark.seal.fill" : "arrow.down.right.circle.fill",
                         tint: Color(hex: "#3B82F6")
                     )
                 }
@@ -201,6 +201,18 @@ public struct LoansAndFinancingsView: View {
                             .padding(.vertical, 3)
                             .background(Capsule().fill(Color(hex: accentHex).opacity(0.16)))
                             .foregroundStyle(Color(hex: accentHex))
+
+                        if contract.kind == .loan && (contract.loanSubtype == .consignado || contract.effectiveLoanModel?.isPayrollDeductible == true) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "person.text.rectangle.fill")
+                                Text("Débito Direto em Folha")
+                            }
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
+                            .foregroundStyle(Color(hex: "#10B981"))
+                        }
                     }
                     HStack(spacing: 6) {
                         Text("\(contract.amortizationSystem.rawValue) • Cobrança todo dia \(contract.billingDay)")
@@ -264,21 +276,45 @@ public struct LoansAndFinancingsView: View {
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
             } else {
+                let loanModel = contract.effectiveLoanModel
+                let estimatedInterestSavings = max(0.0, nominalRemaining - outstandingBalance)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
                     detailCell(
-                        label: "Saldo Devedor",
+                        label: "Saldo Devedor (Para quitar hoje)",
                         value: BRLFormatters.currency(outstandingBalance),
                         valueColor: Color(hex: "#EF4444")
                     )
-                    detailCell(label: "Valor Total Contratado", value: BRLFormatters.currency(contract.totalContractedAmount))
-                    detailCell(label: "Valor da Parcela", value: BRLFormatters.currency(contract.installmentAmount))
-                    detailCell(label: "Taxa de Juros", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
+                    detailCell(
+                        label: "Economia se Quitar Hoje",
+                        value: BRLFormatters.currency(estimatedInterestSavings),
+                        valueColor: Color(hex: "#10B981")
+                    )
+                    detailCell(label: "Valor Total Contratado (PV)", value: BRLFormatters.currency(contract.totalContractedAmount))
+
+                    detailCell(label: "Valor Fixo da Parcela (PMT)", value: BRLFormatters.currency(contract.installmentAmount))
+                    detailCell(
+                        label: "Amortização Real no Mês",
+                        value: BRLFormatters.currency(loanModel?.currentMonthlyAmortization ?? 0.0),
+                        valueColor: Color(hex: "#10B981")
+                    )
+                    detailCell(
+                        label: "Juros no Mês",
+                        value: BRLFormatters.currency(loanModel?.currentMonthlyInterest ?? 0.0),
+                        valueColor: Color(hex: "#EF4444")
+                    )
+
+                    detailCell(label: "Taxa de Juros Mensal", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
                     detailCell(label: "Parcelas Totais", value: "\(contract.totalInstallments)x (\(remainingCount)x futuras)")
                     detailCell(
-                        label: "Data em que foi feito",
+                        label: "Soma Nominal (Fluxo c/ Juros)",
+                        value: BRLFormatters.currency(nominalRemaining),
+                        valueColor: Color(hex: "#64748B")
+                    )
+
+                    detailCell(
+                        label: "Data de Contratação",
                         value: contract.startDate.map { BRLFormatters.shortDate($0) } ?? "A partir da criação"
                     )
-                    detailCell(label: "Saldo Nominal Futuro", value: BRLFormatters.currency(nominalRemaining))
                     detailCell(label: "Parcelas Pagas", value: "\(paidCount) de \(contract.totalInstallments)")
                     detailCell(label: "Vencimento Mensal", value: "Todo dia \(contract.billingDay)")
                 }
@@ -306,12 +342,15 @@ public struct LoansAndFinancingsView: View {
                     HStack(spacing: 6) {
                         Image(systemName: "sparkles")
                             .foregroundStyle(Color(hex: "#10B981"))
-                        Text("Projeção de valor para quitar:")
+                        Text(kind == .loan ? "Valor para Quitar Hoje (Saldo Devedor PV):" : "Projeção de valor para quitar:")
                             .font(.subheadline.weight(.semibold))
                     }
-                    Text("Saldo Devedor: \(BRLFormatters.currency(outstandingBalance)) • Desconto est. sobre nominal: \(BRLFormatters.currency(discountEstimate))")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Text(kind == .loan
+                        ? "Economia estimada de juros futuros: \(BRLFormatters.currency(discountEstimate)) (Soma Nominal: \(BRLFormatters.currency(nominalRemaining)))"
+                        : "Saldo Devedor: \(BRLFormatters.currency(outstandingBalance)) • Desconto est. sobre nominal: \(BRLFormatters.currency(discountEstimate))"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
 
                 Spacer()
@@ -332,7 +371,7 @@ public struct LoansAndFinancingsView: View {
                 .buttonStyle(.bordered)
                 .help("Gerar plano de ação na IA Local para quitar este \(contract.kind.title.lowercased()) no menor prazo possível")
 
-                Text(BRLFormatters.currency(projectedPayoff))
+                Text(BRLFormatters.currency(kind == .loan ? outstandingBalance : projectedPayoff))
                     .font(.system(size: 22, weight: .heavy, design: .rounded))
                     .foregroundStyle(Color(hex: "#10B981"))
             }
@@ -520,17 +559,17 @@ public struct CreateCreditContractSheet: View {
                 Section("Valores (R$), Saldo Devedor, Parcelas e Juros") {
                     HStack(spacing: 12) {
                         BRLCurrencyTextField(
-                            label: "Valor Total Contratado (R$)",
+                            label: kind == .loan ? "Valor Financiado / Liberado (PV)" : "Valor Total Contratado (R$)",
                             text: $totalContractedText
                         )
 
                         BRLCurrencyTextField(
-                            label: "Saldo Devedor Atual (R$)",
+                            label: kind == .loan ? "Saldo Devedor Atual (R$)" : "Saldo Devedor Atual (R$)",
                             text: $outstandingBalanceText
                         )
 
                         BRLCurrencyTextField(
-                            label: "Valor da Parcela (R$)",
+                            label: kind == .loan ? "Valor Fixo da Parcela (PMT)" : "Valor da Parcela (R$)",
                             text: $installmentAmountText
                         )
                     }
@@ -739,7 +778,7 @@ public struct CreateCreditContractSheet: View {
                         errorMsg = "Informe o valor da parcela."
                         return
                     }
-                    let outBal = BRLFormatters.parseAmount(outstandingBalanceText)
+                    let outBal = BRLFormatters.parseAmount(outstandingBalanceText) ?? (kind == .loan ? totalVal : nil)
                     let rateVal = BRLFormatters.parseAmount(interestRateText) ?? 0.0
                     let cleanContractNo = contractNumber.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -1540,25 +1579,60 @@ public struct AmortizeContractSheet: View {
         let prevRem = store.remainingInstallmentsCount(for: contract)
         let currentPV = store.currentOutstandingBalance(for: contract)
 
-        let sim = AmortizationEngine.simulateExtraAmortization(
-            currentBalance: currentPV,
-            annualNominalRate: contract.effectiveAnnualNominalRate,
-            basePriceInstallment: contract.effectiveBaseInstallmentPrice,
-            totalInstallmentAmount: contract.installmentAmount,
-            currentRemainingInstallments: prevRem,
-            extraPayment: paid,
-            proRataInterest: proRata,
-            mode: mode,
-            adminFee: contract.effectiveAdminFee,
-            insuranceFee: contract.effectiveInsuranceFee
-        )
-        simulationResult = sim
-        if paid >= (currentPV - 0.01) || sim.newBalance <= 0.01 {
-            newRemainingInstallments = 0
-            newInstallmentAmountText = BRLFormatters.currency(0.0)
+        if contract.kind == .loan {
+            let sim = LoanAmortizationEngine.simulateExtraAmortization(
+                currentBalance: currentPV,
+                monthlyInterestRate: contract.monthlyInterestRate,
+                installmentValue: contract.installmentAmount,
+                currentRemainingInstallments: prevRem,
+                extraPayment: paid,
+                proRataInterest: proRata,
+                mode: mode
+            )
+            let result = ExtraAmortizationSimulationResult(
+                grossPayment: sim.grossPayment,
+                proRataInterest: sim.proRataInterest,
+                effectiveAmortization: sim.effectiveAmortization,
+                previousBalance: sim.previousBalance,
+                newBalance: sim.newBalance,
+                previousRemainingInstallments: sim.previousRemainingInstallments,
+                newRemainingInstallments: sim.newRemainingInstallments,
+                eliminatedInstallmentsCount: sim.eliminatedInstallmentsCount,
+                previousInstallmentAmount: sim.previousInstallmentAmount,
+                newInstallmentAmount: sim.newInstallmentAmount,
+                basePriceInstallment: sim.newInstallmentAmount,
+                estimatedTotalInterestSaved: sim.estimatedTotalInterestSaved,
+                mode: sim.mode
+            )
+            simulationResult = result
+            if paid >= (currentPV - 0.01) || sim.newBalance <= 0.01 {
+                newRemainingInstallments = 0
+                newInstallmentAmountText = BRLFormatters.currency(0.0)
+            } else {
+                newRemainingInstallments = sim.newRemainingInstallments
+                newInstallmentAmountText = BRLFormatters.currency(sim.newInstallmentAmount)
+            }
         } else {
-            newRemainingInstallments = sim.newRemainingInstallments
-            newInstallmentAmountText = BRLFormatters.currency(sim.newInstallmentAmount)
+            let sim = AmortizationEngine.simulateExtraAmortization(
+                currentBalance: currentPV,
+                annualNominalRate: contract.effectiveAnnualNominalRate,
+                basePriceInstallment: contract.effectiveBaseInstallmentPrice,
+                totalInstallmentAmount: contract.installmentAmount,
+                currentRemainingInstallments: prevRem,
+                extraPayment: paid,
+                proRataInterest: proRata,
+                mode: mode,
+                adminFee: contract.effectiveAdminFee,
+                insuranceFee: contract.effectiveInsuranceFee
+            )
+            simulationResult = sim
+            if paid >= (currentPV - 0.01) || sim.newBalance <= 0.01 {
+                newRemainingInstallments = 0
+                newInstallmentAmountText = BRLFormatters.currency(0.0)
+            } else {
+                newRemainingInstallments = sim.newRemainingInstallments
+                newInstallmentAmountText = BRLFormatters.currency(sim.newInstallmentAmount)
+            }
         }
     }
 }
@@ -1692,9 +1766,9 @@ public struct SettleContractSheet: View {
         .frame(width: 580, height: 520)
         .onAppear {
             selectedAccountId = contract.accountId
-            // Vem preenchido inicialmente com o valor original!
-            let initialVal = nominalRemaining > 0 ? nominalRemaining : contract.totalContractedAmount
-            finalPayoffAmountText = BRLFormatters.currency(initialVal)
+            // Sugere automaticamente o Saldo Devedor Atual (Valor Presente)
+            let suggestedPayoff = (outstandingBalance > 0.01) ? outstandingBalance : (projectedPayoff > 0.01 ? projectedPayoff : nominalRemaining)
+            finalPayoffAmountText = BRLFormatters.currency(suggestedPayoff)
         }
     }
 }
