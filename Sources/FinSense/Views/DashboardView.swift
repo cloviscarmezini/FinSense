@@ -623,7 +623,7 @@ public struct DashboardView: View {
                                 nominalAmount: debtSummary.loansRemainingNominalTotal,
                                 paidInPeriod: debtSummary.loansPaidInPeriodTotal,
                                 realAmortizationInPeriod: debtSummary.loansRealAmortizationInPeriodTotal,
-                                colorHex: "#F97316",
+                                colorHex: "#D97706",
                                 icon: "banknote.fill"
                             )
                             .frame(maxWidth: .infinity)
@@ -638,8 +638,8 @@ public struct DashboardView: View {
                                 nominalAmount: debtSummary.financingsRemainingNominalTotal,
                                 paidInPeriod: debtSummary.financingsPaidInPeriodTotal,
                                 realAmortizationInPeriod: debtSummary.financingsRealAmortizationInPeriodTotal,
-                                colorHex: "#C2410C",
-                                icon: "house.fill"
+                                colorHex: "#8B5CF6",
+                                icon: "house.and.flag.fill"
                             )
                             .frame(maxWidth: .infinity)
                         }
@@ -2278,69 +2278,72 @@ public struct DebtCommitmentsDonutChartView: View {
         self.breakdown = breakdown
     }
 
-    /// Segmentos ordenados para o anel contínuo (Opção 1: Família de Cores Contíguas de Dívida)
+    /// Ordem estrita de renderização:
+    /// Receita (Livre) -> Parcelas de Empréstimo -> Parcelas de Financiamento -> Custo de Vida Operacional
     private var segments: [DonutSegment] {
         var list: [DonutSegment] = []
 
-        // 1. Financiamentos (Terracota / Coral Escuro - tom irmão do laranja)
-        if breakdown.financingInstallments > 0.001 {
+        // 1. Receita (Margem Livre / Poupança)
+        if breakdown.freeMargin > 0.001 {
             list.append(DonutSegment(
-                id: "financing",
-                name: "Parcelas Financiamentos",
-                amount: breakdown.financingInstallments,
-                color: Color(hex: "#C2410C"),
-                icon: "house.fill"
+                id: "revenue",
+                name: breakdown.isAnnual ? "Receita Livre do Ano" : "Receita Livre do Mês",
+                amount: breakdown.freeMargin,
+                color: Color(hex: "#10B981"),
+                icon: "shield.fill",
+                isFreeMargin: true
             ))
         }
 
-        // 2. Empréstimos (Laranja Vibrante - contíguo ao financiamento para formar o bloco contínuo DTI)
+        // 2. Parcelas de Empréstimo
         if breakdown.loanInstallments > 0.001 {
             list.append(DonutSegment(
                 id: "loans",
-                name: "Parcelas Empréstimos",
+                name: breakdown.isAnnual ? "Parcelas de Empréstimos (Ano)" : "Parcelas de Empréstimos",
                 amount: breakdown.loanInstallments,
                 color: Color(hex: "#F97316"),
                 icon: "banknote.fill"
             ))
         }
 
-        // 3. Acordos / Dívidas (se houver no período, Carmim contíguo)
+        // 3. Parcelas de Financiamento
+        if breakdown.financingInstallments > 0.001 {
+            list.append(DonutSegment(
+                id: "financing",
+                name: breakdown.isAnnual ? "Parcelas de Financiamentos (Ano)" : "Parcelas de Financiamentos",
+                amount: breakdown.financingInstallments,
+                color: Color(hex: "#C2410C"),
+                icon: "house.fill"
+            ))
+        }
+
+        // Parcelas de Acordos / Dívidas (se houver ativas no período)
         if breakdown.debtInstallments > 0.001 {
             list.append(DonutSegment(
                 id: "debts",
-                name: "Parcelas Acordos / Dívidas",
+                name: breakdown.isAnnual ? "Parcelas Acordos / Dívidas (Ano)" : "Parcelas Acordos / Dívidas",
                 amount: breakdown.debtInstallments,
                 color: Color(hex: "#E11D48"),
                 icon: "exclamationmark.triangle.fill"
             ))
         }
 
-        // 4. Custo de Vida Operacional (Azul Clássico / Ciano Suave)
+        // 4. Custo de Vida Operacional
         if breakdown.operationalExpenses > 0.001 {
             list.append(DonutSegment(
                 id: "operational",
-                name: "Custo de Vida Operacional",
+                name: breakdown.isAnnual ? "Custo de Vida Operacional (Ano)" : "Custo de Vida Operacional",
                 amount: breakdown.operationalExpenses,
                 color: Color(hex: "#0284C7"),
                 icon: "cart.fill"
             ))
         }
 
-        // 5. Margem Livre / Poupança (Verde Esmeralda)
-        if breakdown.freeMargin > 0.001 {
-            list.append(DonutSegment(
-                id: "freeMargin",
-                name: "Margem Livre / Poupança",
-                amount: breakdown.freeMargin,
-                color: Color(hex: "#10B981"),
-                icon: "shield.fill",
-                isFreeMargin: true
-            ))
-        } else if breakdown.deficit > 0.001 {
-            // Em caso de déficit, insere o segmento contrastante em vermelho representando o excesso sobre a receita
+        // Déficit Operacional (se as saídas ultrapassarem a receita)
+        if breakdown.deficit > 0.001 {
             list.append(DonutSegment(
                 id: "deficit",
-                name: "Déficit Operacional (Excesso)",
+                name: breakdown.isAnnual ? "Déficit Orçamentário (Ano)" : "Déficit Orçamentário",
                 amount: breakdown.deficit,
                 color: Color(hex: "#EF4444"),
                 icon: "exclamationmark.octagon.fill",
@@ -2365,8 +2368,8 @@ public struct DebtCommitmentsDonutChartView: View {
                     }
                     Text(
                         breakdown.isAnnual
-                            ? "Proporção do serviço das dívidas, custo de vida e margem livre frente à receita total anual de \(breakdown.yearStr)"
-                            : "Proporção do serviço das dívidas, custo de vida e margem livre frente à receita total mensal"
+                            ? "Fatiamento da receita anual de \(breakdown.yearStr) entre receita livre, empréstimos, financiamentos e custo de vida"
+                            : "Fatiamento da receita mensal entre receita livre, empréstimos, financiamentos e custo de vida"
                     )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -2401,7 +2404,7 @@ public struct DebtCommitmentsDonutChartView: View {
                 .frame(maxWidth: .infinity, minHeight: 160)
             } else {
                 HStack(alignment: .center, spacing: 22) {
-                    // Donut Chart (Anel Único Contínuo sem Sobreposições)
+                    // Donut Chart (Ordem: Receita -> Empréstimos -> Financiamentos -> Custo de Vida)
                     ZStack {
                         Chart(segments) { item in
                             SectorMark(
@@ -2468,34 +2471,38 @@ public struct DebtCommitmentsDonutChartView: View {
                     }
                     .frame(width: 196, height: 196)
 
-                    // Right Breakdown Panel (Legenda Analítica com Barras Horizontais)
+                    // Right Breakdown Panel (3 Mini Cards Equalizados em Altura + Lista Detalhada)
                     VStack(alignment: .leading, spacing: 9) {
-                        // 3 Mini Cards Comparativos de Fluxo
+                        // 3 Mini Cards Comparativos de Fluxo (Alturas Estritamente Equalizadas)
                         HStack(spacing: 8) {
                             miniMetricBox(
                                 title: breakdown.isAnnual ? "Receita do Ano" : "Receita do Mês",
                                 value: BRLFormatters.currency(breakdown.periodIncome),
                                 color: Color(hex: "#10B981"),
-                                icon: "arrow.down.left.circle.fill"
+                                icon: "arrow.down.left.circle.fill",
+                                subtitle: breakdown.periodIncome > 0 ? "100% da base" : "Sem receitas"
                             )
 
                             miniMetricBox(
-                                title: "Serviço da Dívida",
+                                title: "Serviço da Dívida (DTI)",
                                 value: BRLFormatters.currency(breakdown.totalDebtService),
                                 color: breakdown.debtToIncomeRatio > 50 ? Color(hex: "#EF4444") : (breakdown.debtToIncomeRatio > 30 ? Color(hex: "#F97316") : Color(hex: "#10B981")),
                                 icon: "creditcard.fill",
-                                badgeText: String(format: "DTI: %.1f%%", breakdown.debtToIncomeRatio)
+                                subtitle: String(format: "DTI: %.1f%% da renda", breakdown.debtToIncomeRatio)
                             )
 
                             miniMetricBox(
                                 title: breakdown.deficit > 0 ? "Déficit Orçamentário" : "Margem Livre",
                                 value: BRLFormatters.currency(breakdown.deficit > 0 ? breakdown.deficit : breakdown.freeMargin),
                                 color: breakdown.deficit > 0 ? Color(hex: "#EF4444") : Color(hex: "#10B981"),
-                                icon: breakdown.deficit > 0 ? "xmark.octagon.fill" : "checkmark.shield.fill"
+                                icon: breakdown.deficit > 0 ? "xmark.octagon.fill" : "checkmark.shield.fill",
+                                subtitle: breakdown.deficit > 0
+                                    ? String(format: "+%.1f%% s/ receita", (breakdown.deficit / max(breakdown.periodIncome, 1.0)) * 100.0)
+                                    : String(format: "%.1f%% da receita", breakdown.periodIncome > 0 ? (breakdown.freeMargin / breakdown.periodIncome) * 100.0 : 0.0)
                             )
                         }
 
-                        // Lista Detalhada com Barras Horizontais Proporcionais
+                        // Lista Detalhada com Barras Horizontais Proporcionais (Na mesma ordem do gráfico)
                         VStack(spacing: 5) {
                             ForEach(segments) { item in
                                 distributionRow(item: item)
@@ -2610,18 +2617,19 @@ public struct DebtCommitmentsDonutChartView: View {
         value: String,
         color: Color,
         icon: String,
-        badgeText: String? = nil
+        subtitle: String
     ) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 10))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(color)
                 Text(title)
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+
             Text(value)
                 .font(.system(size: 12, weight: .bold, design: .rounded))
                 .foregroundStyle(color)
@@ -2629,16 +2637,15 @@ public struct DebtCommitmentsDonutChartView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
 
-            if let badgeText {
-                Text(badgeText)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(color)
-                    .lineLimit(1)
-            }
+            Text(subtitle)
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(color.opacity(0.85))
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: 60, maxHeight: 60, alignment: .topLeading)
         .background(color.opacity(0.07))
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
