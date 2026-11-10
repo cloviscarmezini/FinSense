@@ -470,6 +470,19 @@ public struct CategoryItem: Identifiable, Codable, Hashable {
 
 // MARK: - Financial Transaction
 
+/// Identifica a origem relacional e de domínio de uma transação financeira para permitir rollback e reversão de estado.
+public enum TransactionOrigin: String, Codable, CaseIterable, Identifiable, Hashable {
+    case standard
+    case financingAmortization
+    case contractSettlement
+    case investmentDeposit
+    case investmentRedemption
+    case debtPayment
+    case quotaAllocation
+
+    public var id: String { rawValue }
+}
+
 public struct FinancialTransaction: Identifiable, Codable, Hashable {
     public var id: UUID
     public var name: String
@@ -497,6 +510,8 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
     public var linkedQuotaId: UUID?
     public var linkedQuotaUnits: Int?
     public var linkedQuotaYearMonthKey: Int?
+    public var transactionOrigin: TransactionOrigin?
+    public var linkedEntityID: UUID?
     public var createdAt: Date
 
     public init(
@@ -526,6 +541,8 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         linkedQuotaId: UUID? = nil,
         linkedQuotaUnits: Int? = nil,
         linkedQuotaYearMonthKey: Int? = nil,
+        transactionOrigin: TransactionOrigin? = nil,
+        linkedEntityID: UUID? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -554,7 +571,33 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         self.linkedQuotaId = linkedQuotaId
         self.linkedQuotaUnits = linkedQuotaUnits
         self.linkedQuotaYearMonthKey = linkedQuotaYearMonthKey
+        self.transactionOrigin = transactionOrigin
+        self.linkedEntityID = linkedEntityID ?? linkedContractId ?? linkedInvestmentId ?? linkedDebtId ?? linkedQuotaId
         self.createdAt = createdAt
+    }
+
+    /// Origem relacional efetiva da transação (explícita ou inferida dos vínculos de domínio)
+    public var effectiveOrigin: TransactionOrigin {
+        if let explicit = transactionOrigin { return explicit }
+        if linkedDebtId != nil { return .debtPayment }
+        if linkedInvestmentId != nil {
+            return type == .income ? .investmentRedemption : .investmentDeposit
+        }
+        if linkedContractId != nil {
+            if installmentIndex == nil {
+                if name.localizedCaseInsensitiveContains("quitação") || name.localizedCaseInsensitiveContains("quitacao") {
+                    return .contractSettlement
+                }
+                return .financingAmortization
+            }
+        }
+        if linkedQuotaId != nil { return .quotaAllocation }
+        return .standard
+    }
+
+    /// ID da entidade financeira vinculada (Contrato, Investimento ou Dívida)
+    public var effectiveLinkedEntityID: UUID? {
+        linkedEntityID ?? linkedContractId ?? linkedInvestmentId ?? linkedDebtId ?? linkedQuotaId
     }
 
     public var signedAmount: Double {
@@ -837,6 +880,8 @@ public struct AmortizationRecord: Identifiable, Codable, Hashable {
     public var accountId: UUID
     public var transactionId: UUID?
     public var notes: String
+    public var effectiveAmortization: Double?
+    public var previousBalance: Double?
 
     public init(
         id: UUID = UUID(),
@@ -849,7 +894,9 @@ public struct AmortizationRecord: Identifiable, Codable, Hashable {
         newRemainingInstallments: Int,
         accountId: UUID,
         transactionId: UUID? = nil,
-        notes: String = ""
+        notes: String = "",
+        effectiveAmortization: Double? = nil,
+        previousBalance: Double? = nil
     ) {
         self.id = id
         self.date = date
@@ -862,6 +909,8 @@ public struct AmortizationRecord: Identifiable, Codable, Hashable {
         self.accountId = accountId
         self.transactionId = transactionId
         self.notes = notes
+        self.effectiveAmortization = effectiveAmortization
+        self.previousBalance = previousBalance
     }
 }
 

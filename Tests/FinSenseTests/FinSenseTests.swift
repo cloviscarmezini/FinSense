@@ -3451,4 +3451,252 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(store.activeContracts(for: .financing).count, 0)
         XCTAssertEqual(store.settledContracts(for: .financing).count, 1)
     }
+
+    func testDeleteLinkedTransactionsRollbackInvestmentDepositAndRedemption() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Corrente",
+            bankPresetId: "nubank",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#820AD1",
+            initialBalance: 50_000.0
+        )
+        let acc = store.accounts.first!
+
+        store.addInvestment(
+            name: "Tesouro Selic 2029",
+            groupName: "Renda Fixa",
+            investmentAccountId: acc.id,
+            initialBalance: 10_000.0,
+            showInConsolidated: true,
+            iconSymbol: "chart.line.uptrend.xyaxis",
+            colorHex: "#10B981",
+            notes: ""
+        )
+        guard let inv = store.investments.first else {
+            XCTFail("Investimento não criado")
+            return
+        }
+
+        XCTAssertEqual(inv.balance, 10_000.0, accuracy: 0.01)
+
+        // 1. Realiza Aporte de R$ 5.000,00
+        store.contributeToInvestment(
+            investmentId: inv.id,
+            amount: 5_000.0,
+            sourceAccountId: acc.id,
+            investmentAccountId: acc.id,
+            date: Date(),
+            movementType: .deposit,
+            notes: "Aporte mensal"
+        )
+
+        let invAfterDeposit = store.investments.first!
+        XCTAssertEqual(invAfterDeposit.balance, 15_000.0, accuracy: 0.01)
+        XCTAssertEqual(invAfterDeposit.movements.count, 1)
+
+        guard let depositTx = store.transactions.first(where: { $0.linkedInvestmentId == inv.id && $0.type == .expense }) else {
+            XCTFail("Transação de aporte não encontrada")
+            return
+        }
+        XCTAssertEqual(depositTx.effectiveOrigin, .investmentDeposit)
+
+        // 2. Deleta a transação de aporte no extrato -> Rollback: saldo deve voltar para R$ 10.000,00 e movimento sumir
+        store.deleteTransaction(depositTx.id)
+
+        let invAfterDeleteDeposit = store.investments.first!
+        XCTAssertEqual(invAfterDeleteDeposit.balance, 10_000.0, accuracy: 0.01)
+        XCTAssertEqual(invAfterDeleteDeposit.movements.count, 0)
+
+        // 3. Realiza Resgate de R$ 3.000,00
+        store.contributeToInvestment(
+            investmentId: inv.id,
+            amount: 3_000.0,
+            sourceAccountId: acc.id,
+            investmentAccountId: acc.id,
+            date: Date(),
+            movementType: .withdrawal,
+            notes: "Resgate parcial"
+        )
+
+        let invAfterWithdrawal = store.investments.first!
+        XCTAssertEqual(invAfterWithdrawal.balance, 7_000.0, accuracy: 0.01)
+        XCTAssertEqual(invAfterWithdrawal.movements.count, 1)
+
+        guard let withdrawalTx = store.transactions.first(where: { $0.linkedInvestmentId == inv.id && $0.type == .income }) else {
+            XCTFail("Transação de resgate não encontrada")
+            return
+        }
+        XCTAssertEqual(withdrawalTx.effectiveOrigin, .investmentRedemption)
+
+        // 4. Deleta a transação de resgate no extrato -> Rollback: saldo deve voltar para R$ 10.000,00 e movimento sumir
+        store.deleteTransaction(withdrawalTx.id)
+
+        let invAfterDeleteWithdrawal = store.investments.first!
+        XCTAssertEqual(invAfterDeleteWithdrawal.balance, 10_000.0, accuracy: 0.01)
+        XCTAssertEqual(invAfterDeleteWithdrawal.movements.count, 0)
+    }
+
+    func testDeleteLinkedTransactionRollbackDebtPayment() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Corrente",
+            bankPresetId: "itau",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#EC7000",
+            initialBalance: 20_000.0
+        )
+        let acc = store.accounts.first!
+
+        store.addDebt(
+            name: "Cartão de Crédito Atrasado",
+            customImagePath: nil,
+            bankPresetId: nil,
+            iconSymbol: "creditcard.trianglebadge.exclamationmark",
+            colorHex: "#EF4444",
+            originalAmount: 4_500.0,
+            contractedDate: Date(),
+            notes: "Dívida em cobrança"
+        )
+        guard let debt = store.debts.first else {
+            XCTFail("Dívida não criada")
+            return
+        }
+
+        XCTAssertFalse(debt.isPaid)
+        XCTAssertEqual(store.activeDebts.count, 1)
+
+        // 1. Quita a dívida negociada por R$ 3.000,00
+        store.payDebt(
+            debtId: debt.id,
+            fromAccountId: acc.id,
+            negotiatedAmount: 3_000.0,
+            paymentDate: Date()
+        )
+
+        let paidDebt = store.debts.first!
+        XCTAssertTrue(paidDebt.isPaid)
+        XCTAssertEqual(paidDebt.negotiatedAmount, 3_000.0)
+        XCTAssertEqual(store.activeDebts.count, 0)
+        XCTAssertEqual(store.paidDebts.count, 1)
+
+        guard let paymentTx = store.transactions.first(where: { $0.linkedDebtId == debt.id }) else {
+            XCTFail("Transação de pagamento não encontrada")
+            return
+        }
+        XCTAssertEqual(paymentTx.effectiveOrigin, .debtPayment)
+
+        // 2. Deleta a transação de pagamento no extrato -> Rollback: dívida deve voltar a ficar ativa
+        store.deleteTransaction(paymentTx.id)
+
+        let restoredDebt = store.debts.first!
+        XCTAssertFalse(restoredDebt.isPaid)
+        XCTAssertNil(restoredDebt.negotiatedAmount)
+        XCTAssertNil(restoredDebt.paidDate)
+        XCTAssertNil(restoredDebt.paidFromAccountId)
+        XCTAssertNil(restoredDebt.paymentTransactionId)
+        XCTAssertEqual(store.activeDebts.count, 1)
+        XCTAssertEqual(store.paidDebts.count, 0)
+    }
+
+    func testDeleteLinkedTransactionRollbackContractAmortizationAndSettlement() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Caixa",
+            bankPresetId: "caixa",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#0066B3",
+            initialBalance: 400_000.0
+        )
+        let acc = store.accounts.first!
+
+        let contract = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Imóvel",
+            contractNumber: "178770203328-1",
+            financingSubtype: .imovel,
+            amortizationSystem: .price,
+            totalContractedAmount: 350_000.0,
+            outstandingBalance: 324_737.86,
+            installmentAmount: 2658.04,
+            billingDay: 15,
+            totalInstallments: 360,
+            monthlyInterestRate: 8.51 / 12.0,
+            startDate: Date(),
+            accountId: acc.id,
+            overridePastInstallmentsCount: 28,
+            annualNominalInterestRate: 8.51,
+            indexationRate: .tr,
+            adminFee: 25.00,
+            insuranceFee: 86.27,
+            baseInstallmentAmount: 2546.77
+        )
+
+        XCTAssertEqual(store.currentOutstandingBalance(for: contract), 324_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: contract), 332)
+
+        // 1. Amortiza R$ 20.000,00 -> saldo cai para R$ 304.737,86, parcelas caem para 268
+        store.amortizeContract(
+            contractId: contract.id,
+            amountPaid: 20_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        let c1 = store.contracts.first!
+        XCTAssertEqual(c1.outstandingBalance ?? 0.0, 304_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: c1), 268)
+
+        guard let amortTx = store.transactions.first(where: { $0.linkedContractId == contract.id && $0.installmentIndex == nil }) else {
+            XCTFail("Transação de amortização não encontrada")
+            return
+        }
+        XCTAssertEqual(amortTx.effectiveOrigin, .financingAmortization)
+
+        // 2. Deleta a transação de amortização no extrato -> Rollback total: saldo deve voltar para R$ 324.737,86 e parcelas para 332
+        store.deleteTransaction(amortTx.id)
+
+        let cRestored = store.contracts.first!
+        XCTAssertEqual(cRestored.outstandingBalance ?? 0.0, 324_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: cRestored), 324_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: cRestored), 332)
+        XCTAssertEqual(store.unpaidTransactions(forContract: cRestored.id).count, 332)
+        XCTAssertEqual(cRestored.amortizationHistory.count, 0)
+
+        // 3. Agora quita o contrato integralmente com settleContract
+        let payoffBal = store.currentOutstandingBalance(for: cRestored)
+        store.settleContract(
+            contractId: cRestored.id,
+            finalPayoffAmount: payoffBal,
+            accountId: acc.id,
+            date: Date()
+        )
+
+        let cSettled = store.contracts.first!
+        XCTAssertTrue(cSettled.isSettled)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: cSettled), 0)
+        XCTAssertEqual(store.unpaidTransactions(forContract: cSettled.id).count, 0)
+
+        guard let settleTx = store.transactions.first(where: { $0.linkedContractId == contract.id && $0.installmentIndex == nil }) else {
+            XCTFail("Transação de quitação não encontrada")
+            return
+        }
+        XCTAssertEqual(settleTx.effectiveOrigin, .contractSettlement)
+
+        // 4. Deleta a transação de quitação no extrato -> Rollback da quitação:
+        // Contrato deve voltar a ser Ativo, com saldo devedor restaurado e todas as 332 parcelas recriadas no cronograma
+        store.deleteTransaction(settleTx.id)
+
+        let cActiveAgain = store.contracts.first!
+        XCTAssertFalse(cActiveAgain.isSettled)
+        XCTAssertEqual(cActiveAgain.outstandingBalance ?? 0.0, 324_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: cActiveAgain), 324_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: cActiveAgain), 332)
+        XCTAssertEqual(store.unpaidTransactions(forContract: cActiveAgain.id).count, 332)
+        XCTAssertEqual(store.activeContracts(for: .financing).count, 1)
+        XCTAssertEqual(store.settledContracts(for: .financing).count, 0)
+    }
 }

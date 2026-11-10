@@ -351,4 +351,98 @@ public enum AmortizationEngine {
 
         return schedule
     }
+
+    // MARK: - 4. Recálculo e Reversão de Parcela ou Prazo (Tabela Price / SAC)
+
+    /// Estrutura com os resultados do recálculo após modificação ou reversão de saldo.
+    public struct RecalculationResult: Hashable {
+        public let balance: Double
+        public let remainingInstallments: Int
+        public let installmentAmount: Double
+        public let baseInstallmentPrice: Double
+
+        public init(
+            balance: Double,
+            remainingInstallments: Int,
+            installmentAmount: Double,
+            baseInstallmentPrice: Double
+        ) {
+            self.balance = balance
+            self.remainingInstallments = remainingInstallments
+            self.installmentAmount = installmentAmount
+            self.baseInstallmentPrice = baseInstallmentPrice
+        }
+    }
+
+    /// Recalcula o prazo (N) ou a prestação (PMT) com base em um novo saldo devedor
+    /// (utilizado para reverter amortizações/quitações e restaurar a integridade relacional).
+    public static func recalculate(
+        balance: Double,
+        annualNominalRate: Double,
+        basePriceInstallment: Double,
+        totalInstallmentAmount: Double,
+        currentRemainingInstallments: Int,
+        mode: AmortizationRecalculationMode = .reduceTerm,
+        amortizationSystem: AmortizationSystem = .price,
+        adminFee: Double = 25.0,
+        insuranceFee: Double = 0.0
+    ) -> RecalculationResult {
+        let i = (annualNominalRate / 12.0) / 100.0
+        let cleanBalance = max(0.0, balance)
+
+        if cleanBalance <= 0.01 {
+            return RecalculationResult(
+                balance: 0.0,
+                remainingInstallments: 0,
+                installmentAmount: 0.0,
+                baseInstallmentPrice: 0.0
+            )
+        }
+
+        switch mode {
+        case .reduceTerm:
+            let newRemaining: Int
+            if amortizationSystem == .price {
+                if i > 0.000001 && basePriceInstallment > cleanBalance * i {
+                    let ratio = 1.0 - (cleanBalance * i) / basePriceInstallment
+                    let calcN = -log(max(ratio, 0.000001)) / log(1.0 + i)
+                    newRemaining = max(1, Int(ceil(calcN - 1e-9)))
+                } else {
+                    newRemaining = max(1, Int(ceil((cleanBalance / max(basePriceInstallment, 1.0)) - 1e-9)))
+                }
+            } else {
+                let monthlyAmort = max(basePriceInstallment - (cleanBalance * i), 1.0)
+                newRemaining = max(1, Int(ceil(cleanBalance / monthlyAmort)))
+            }
+            return RecalculationResult(
+                balance: cleanBalance,
+                remainingInstallments: newRemaining,
+                installmentAmount: totalInstallmentAmount,
+                baseInstallmentPrice: basePriceInstallment
+            )
+
+        case .reduceInstallment:
+            let rem = max(currentRemainingInstallments, 1)
+            let newBase: Double
+            if amortizationSystem == .price {
+                if i > 0.000001 {
+                    newBase = (cleanBalance * i) / (1.0 - pow(1.0 + i, -Double(rem)))
+                } else {
+                    newBase = cleanBalance / Double(rem)
+                }
+            } else {
+                let amort = cleanBalance / Double(rem)
+                let interest = cleanBalance * i
+                newBase = amort + interest
+            }
+            let newInsurance = insuranceFee
+            let newTotal = newBase + newInsurance + adminFee
+            return RecalculationResult(
+                balance: cleanBalance,
+                remainingInstallments: rem,
+                installmentAmount: newTotal,
+                baseInstallmentPrice: newBase
+            )
+        }
+    }
 }

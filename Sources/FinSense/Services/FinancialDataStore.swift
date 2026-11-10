@@ -2342,16 +2342,29 @@ public final class FinancialDataStore: ObservableObject {
         guard let targetTx = transactions.first(where: { $0.id == id }) else { return }
 
         var deletedIds: [UUID] = []
+        var txsToRevert: [FinancialTransaction] = []
 
         if scope == .onlyThis || !targetTx.isPartOfSeries || targetTx.seriesGroupId == nil {
+            txsToRevert = [targetTx]
+            deletedIds = [id]
+            for tx in txsToRevert {
+                revertLinkedEntities(for: tx)
+            }
             transactions.removeAll(where: { $0.id == id })
+            sortTransactions()
             save()
             cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .delete)
             return
         }
 
         guard let groupId = targetTx.seriesGroupId else {
+            txsToRevert = [targetTx]
+            deletedIds = [id]
+            for tx in txsToRevert {
+                revertLinkedEntities(for: tx)
+            }
             transactions.removeAll(where: { $0.id == id })
+            sortTransactions()
             save()
             cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .delete)
             return
@@ -2359,30 +2372,20 @@ public final class FinancialDataStore: ObservableObject {
 
         switch scope {
         case .onlyThis:
+            txsToRevert = [targetTx]
             deletedIds = [id]
             transactions.removeAll(where: { $0.id == id })
 
         case .allInSeries:
-            deletedIds = transactions.filter({ $0.seriesGroupId == groupId }).map(\.id)
+            txsToRevert = transactions.filter({ $0.seriesGroupId == groupId })
+            deletedIds = txsToRevert.map(\.id)
             transactions.removeAll(where: { $0.seriesGroupId == groupId })
 
         case .thisAndPending:
             let referenceDate = calendar.startOfDay(for: targetTx.date)
             let referenceInstallmentIdx = targetTx.installmentIndex
 
-            deletedIds = transactions.filter { tx in
-                guard tx.seriesGroupId == groupId else { return false }
-                if tx.id == targetTx.id { return true }
-                guard !tx.isPaid else { return false }
-
-                if let refInst = referenceInstallmentIdx, let otherInst = tx.installmentIndex {
-                    return otherInst >= refInst
-                } else {
-                    return calendar.startOfDay(for: tx.date) >= referenceDate
-                }
-            }.map(\.id)
-
-            transactions.removeAll { tx in
+            txsToRevert = transactions.filter { tx in
                 guard tx.seriesGroupId == groupId else { return false }
                 if tx.id == targetTx.id { return true }
                 guard !tx.isPaid else { return false }
@@ -2393,6 +2396,9 @@ public final class FinancialDataStore: ObservableObject {
                     return calendar.startOfDay(for: tx.date) >= referenceDate
                 }
             }
+            deletedIds = txsToRevert.map(\.id)
+            let removeSet = Set(deletedIds)
+            transactions.removeAll { removeSet.contains($0.id) }
 
             // Se for uma série recorrente contínua, encerra a geração futura para que não recrie as pendentes removidas
             if targetTx.recurrenceMode == .recurring {
@@ -2402,9 +2408,215 @@ public final class FinancialDataStore: ObservableObject {
             }
         }
 
+        for tx in txsToRevert {
+            revertLinkedEntities(for: tx)
+        }
+
+        sortTransactions()
         save()
         for delId in deletedIds {
             cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: delId, operation: .delete)
+        }
+    }
+
+    // MARK: - Reversão de Vínculos Relacionais (Rollback ao Deletar Transação)
+
+    /// Intercepta a exclusão de uma transação e reverte atomicamente os efeitos colaterais
+    /// causados na entidade de origem (Investimento, Dívida ou Financiamento/Empréstimo).
+    private func revertLinkedEntities(for tx: FinancialTransaction) {
+        let origin = tx.effectiveOrigin
+        let entityId = tx.effectiveLinkedEntityID
+
+        switch origin {
+        case .investmentDeposit:
+            // Se deletou um aporte (Adição): localiza o investimento e subtrai o valor do saldo
+            if let invId = entityId ?? tx.linkedInvestmentId,
+               let idx = investments.firstIndex(where: { $0.id == invId }) {
+                investments[idx].balance = max(0.0, investments[idx].balance - tx.amount)
+                investments[idx].movements.removeAll { $0.generatedTransactionId == tx.id }
+                cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: invId, operation: .upsert, entity: investments[idx])
+            }
+
+        case .investmentRedemption:
+            // Se deletou um resgate: localiza o investimento e devolve (soma) o valor de volta ao saldo
+            if let invId = entityId ?? tx.linkedInvestmentId,
+               let idx = investments.firstIndex(where: { $0.id == invId }) {
+                investments[idx].balance += tx.amount
+                investments[idx].movements.removeAll { $0.generatedTransactionId == tx.id }
+                cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: invId, operation: .upsert, entity: investments[idx])
+            }
+
+        case .debtPayment:
+            // Se deletou um pagamento de dívida: restaura o status da dívida para "Ativa" e limpa metadados
+            if let dId = entityId ?? tx.linkedDebtId,
+               let idx = debts.firstIndex(where: { $0.id == dId }) {
+                debts[idx].isPaid = false
+                debts[idx].negotiatedAmount = nil
+                debts[idx].paidDate = nil
+                debts[idx].paidFromAccountId = nil
+                debts[idx].paymentTransactionId = nil
+                cloudSyncService?.recordLocalMutation(entityName: "debt_items", entityId: dId, operation: .upsert, entity: debts[idx])
+            }
+
+        case .financingAmortization, .contractSettlement:
+            // Se deletou amortização ou quitação de contrato: reverte o saldo e recalcula o motor
+            if let cId = entityId ?? tx.linkedContractId,
+               let idx = contracts.firstIndex(where: { $0.id == cId }) {
+                revertContractAmortizationOrSettlement(contractIndex: idx, tx: tx)
+            }
+
+        case .standard, .quotaAllocation:
+            break
+        }
+    }
+
+    private func revertContractAmortizationOrSettlement(contractIndex: Int, tx: FinancialTransaction) {
+        var contract = contracts[contractIndex]
+
+        // 1. Localiza e remove o registro correspondente no histórico de amortizações
+        let recordIdx = contract.amortizationHistory.firstIndex(where: { $0.transactionId == tx.id })
+        let record = recordIdx.map { contract.amortizationHistory.remove(at: $0) }
+
+        // 2. Restauração de Status (se estava marcado como quitado devido a essa transação)
+        if contract.isSettled {
+            contract.isSettled = false
+            contract.settledAmount = nil
+            contract.settledDate = nil
+            contract.settledAccountId = nil
+        }
+
+        // 3. Reversão do Saldo Devedor
+        let effectiveAmort = record?.effectiveAmortization ?? tx.amount
+        let restoredBalance: Double
+        if let prevBal = record?.previousBalance, prevBal > 0.01 {
+            restoredBalance = prevBal
+        } else {
+            let currentBal = contract.outstandingBalance ?? (contract.financingDetails?.balance ?? 0.0)
+            restoredBalance = currentBal + effectiveAmort
+        }
+
+        contract.outstandingBalance = restoredBalance
+        if contract.financingDetails != nil {
+            contract.financingDetails?.balance = restoredBalance
+        }
+        contract.extraAmortizedTotal = max(0.0, contract.extraAmortizedTotal - effectiveAmort)
+
+        // 4. Recálculo do Motor (AmortizationEngine.recalculate)
+        let mode = record?.mode ?? .reduceTerm
+        let currentRem = record?.previousRemainingInstallments ?? remainingInstallmentsCount(for: contract)
+        let currentInst = record?.previousInstallmentAmount ?? contract.installmentAmount
+
+        let recalc = AmortizationEngine.recalculate(
+            balance: restoredBalance,
+            annualNominalRate: contract.effectiveAnnualNominalRate,
+            basePriceInstallment: contract.effectiveBaseInstallmentPrice,
+            totalInstallmentAmount: currentInst,
+            currentRemainingInstallments: currentRem,
+            mode: mode,
+            amortizationSystem: contract.amortizationSystem,
+            adminFee: contract.effectiveAdminFee,
+            insuranceFee: contract.effectiveInsuranceFee
+        )
+
+        let targetRemaining = record?.previousRemainingInstallments ?? recalc.remainingInstallments
+        let targetInstallment = record?.previousInstallmentAmount ?? recalc.installmentAmount
+
+        let paidInApp = transactions.filter { $0.linkedContractId == contract.id && $0.isPaid && $0.installmentIndex != nil }.count
+        let minRequiredTotal = contract.pastInstallmentsElapsedAtCreation + paidInApp + targetRemaining
+        if contract.totalInstallments < minRequiredTotal {
+            contract.totalInstallments = minRequiredTotal
+        }
+
+        contract.installmentAmount = targetInstallment
+        if contract.financingDetails != nil {
+            contract.financingDetails?.remainingInstallments = targetRemaining
+            contract.financingDetails?.totalInstallmentAmount = targetInstallment
+            contract.financingDetails?.totalInstallments = contract.totalInstallments
+        }
+
+        // 5. Restauração das Parcelas Futuras Removidas
+        restoreMissingFutureContractTransactions(
+            contract: contract,
+            targetRemaining: targetRemaining,
+            targetInstallment: targetInstallment
+        )
+
+        contracts[contractIndex] = contract
+        cloudSyncService?.recordLocalMutation(entityName: "credit_contracts", entityId: contract.id, operation: .upsert, entity: contract)
+    }
+
+    private func restoreMissingFutureContractTransactions(
+        contract: CreditContract,
+        targetRemaining: Int,
+        targetInstallment: Double
+    ) {
+        let existingUnpaid = transactions
+            .filter { $0.linkedContractId == contract.id && !$0.isPaid && $0.installmentIndex != nil }
+            .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
+
+        // Atualiza parcelas existentes não pagas com a prestação restaurada
+        let existingIds = Set(existingUnpaid.map(\.id))
+        for idx in transactions.indices {
+            if existingIds.contains(transactions[idx].id) {
+                transactions[idx].amount = targetInstallment
+                transactions[idx].installmentTotal = contract.totalInstallments
+                if let instIdx = transactions[idx].installmentIndex {
+                    transactions[idx].name = "\(contract.name) - Parcela \(instIdx)/\(contract.totalInstallments)"
+                }
+            }
+        }
+
+        let missingCount = targetRemaining - existingUnpaid.count
+        guard missingCount > 0 else { return }
+
+        let paidInApp = transactions.filter { $0.linkedContractId == contract.id && $0.isPaid && $0.installmentIndex != nil }.count
+        let creditCategoryId = contract.categoryId
+
+        let startInstallmentNumber: Int
+        let baseDate: Date
+
+        if let lastTx = existingUnpaid.last {
+            startInstallmentNumber = (lastTx.installmentIndex ?? (contract.pastInstallmentsElapsedAtCreation + paidInApp + existingUnpaid.count)) + 1
+            baseDate = lastTx.date
+        } else {
+            startInstallmentNumber = contract.pastInstallmentsElapsedAtCreation + paidInApp + 1
+            let computed = computePastInstallmentsAndFirstFutureDate(
+                startDate: contract.startDate,
+                billingDay: contract.billingDay,
+                totalInstallments: contract.totalInstallments,
+                referenceDate: Date()
+            )
+            baseDate = computed.firstFutureBillingDate
+        }
+
+        for offset in 0..<missingCount {
+            let installmentNumber = startInstallmentNumber + offset
+            let dueDate: Date
+            if existingUnpaid.isEmpty {
+                dueDate = calendar.date(byAdding: .month, value: offset, to: baseDate) ?? baseDate
+            } else {
+                dueDate = calendar.date(byAdding: .month, value: offset + 1, to: baseDate) ?? baseDate
+            }
+
+            let newTx = FinancialTransaction(
+                name: "\(contract.name) - Parcela \(installmentNumber)/\(contract.totalInstallments)",
+                details: "\(contract.kind.title) (\(contract.subtypeDisplayName)) • Juros \(String(format: "%.2f", contract.monthlyInterestRate))% a.m.",
+                amount: targetInstallment,
+                date: dueDate,
+                type: .expense,
+                isPaid: false,
+                categoryId: creditCategoryId,
+                accountId: contract.accountId,
+                ignoreInConsolidated: false,
+                recurrenceMode: .installment,
+                seriesGroupId: contract.id,
+                installmentIndex: installmentNumber,
+                installmentTotal: contract.totalInstallments,
+                linkedContractId: contract.id,
+                transactionOrigin: .standard,
+                linkedEntityID: contract.id
+            )
+            transactions.append(newTx)
         }
     }
 
@@ -2735,7 +2947,9 @@ public final class FinancialDataStore: ObservableObject {
             accountId: sourceAccountId,
             ignoreInConsolidated: false,
             recurrenceMode: .single,
-            linkedInvestmentId: investmentId
+            linkedInvestmentId: investmentId,
+            transactionOrigin: movementType == .deposit ? .investmentDeposit : .investmentRedemption,
+            linkedEntityID: investmentId
         )
         transactions.append(tx)
 
@@ -2890,7 +3104,9 @@ public final class FinancialDataStore: ObservableObject {
             accountId: accountId,
             ignoreInConsolidated: false,
             recurrenceMode: .single,
-            linkedDebtId: debt.id
+            linkedDebtId: debt.id,
+            transactionOrigin: .debtPayment,
+            linkedEntityID: debt.id
         )
         transactions.append(tx)
 
@@ -3344,7 +3560,9 @@ public final class FinancialDataStore: ObservableObject {
             accountId: accountId,
             ignoreInConsolidated: false,
             recurrenceMode: .single,
-            linkedContractId: contract.id
+            linkedContractId: contract.id,
+            transactionOrigin: isFullPayoff ? .contractSettlement : .financingAmortization,
+            linkedEntityID: contract.id
         )
         transactions.append(amortTx)
 
@@ -3407,7 +3625,9 @@ public final class FinancialDataStore: ObservableObject {
             newRemainingInstallments: newRemaining,
             accountId: accountId,
             transactionId: amortTx.id,
-            notes: notes
+            notes: notes,
+            effectiveAmortization: sim.effectiveAmortization,
+            previousBalance: currentPV
         )
         contract.amortizationHistory.insert(record, at: 0)
         contracts[idx] = contract
@@ -3430,6 +3650,9 @@ public final class FinancialDataStore: ObservableObject {
         let cleanFinal = abs(finalPayoffAmount)
         let originalProjected = projectedPayoffAmount(for: contract)
         let nominalRemaining = remainingNominalAmount(for: contract)
+        let prevRemaining = remainingInstallmentsCount(for: contract)
+        let prevInstallment = contract.installmentAmount
+        let currentPV = currentOutstandingBalance(for: contract)
 
         // Remove todas as parcelas futuras ainda não pagas
         let unpaidIds = Set(unpaidTransactions(forContract: contract.id).map(\.id))
@@ -3447,9 +3670,27 @@ public final class FinancialDataStore: ObservableObject {
             accountId: accountId,
             ignoreInConsolidated: false,
             recurrenceMode: .single,
-            linkedContractId: contract.id
+            linkedContractId: contract.id,
+            transactionOrigin: .contractSettlement,
+            linkedEntityID: contract.id
         )
         transactions.append(settleTx)
+
+        let record = AmortizationRecord(
+            date: date,
+            amountPaid: cleanFinal,
+            mode: .reduceTerm,
+            previousInstallmentAmount: prevInstallment,
+            newInstallmentAmount: 0.0,
+            previousRemainingInstallments: prevRemaining,
+            newRemainingInstallments: 0,
+            accountId: accountId,
+            transactionId: settleTx.id,
+            notes: "Quitação integral",
+            effectiveAmortization: currentPV,
+            previousBalance: currentPV
+        )
+        contract.amortizationHistory.insert(record, at: 0)
 
         contract.isSettled = true
         contract.settledAmount = cleanFinal
