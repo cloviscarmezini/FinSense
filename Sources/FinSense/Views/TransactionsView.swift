@@ -145,7 +145,7 @@ public struct TransactionsView: View {
                             icon: "arrow.down.left.circle.fill",
                             tint: Color(hex: "#10B981")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         // 2: Despesas (Total) estritamente transacionadas (sem previsões)
                         MetricCardView(
@@ -155,7 +155,7 @@ public struct TransactionsView: View {
                             icon: "arrow.up.right.circle.fill",
                             tint: Color(hex: "#EF4444")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         // 3: Balanço do Mês (Real)
                         let operationalSubtitle: String = {
@@ -175,7 +175,7 @@ public struct TransactionsView: View {
                             icon: "equal.circle.fill",
                             tint: monthBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         // 4: Previsões & Tetos Restantes com botão integrado
                         MetricCardView(
@@ -196,7 +196,7 @@ public struct TransactionsView: View {
                             actionLabel: "Editar",
                             actionIcon: "pencil"
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         // 5: Saldo Previsto para [DD/MM] ou Resultado Consolidado
                         let transFinalSubtitle = store.deductionSubtitleForProjectedBalance(
@@ -218,7 +218,7 @@ public struct TransactionsView: View {
                             footnoteColor: Color(hex: "#EF4444"),
                             subtitleHelp: transFinalTooltip
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
                     }
                 }
 
@@ -232,7 +232,7 @@ public struct TransactionsView: View {
                             icon: "arrow.up.right.circle.fill",
                             tint: Color(hex: "#EF4444")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: "Total Pendente",
@@ -241,7 +241,7 @@ public struct TransactionsView: View {
                             icon: "clock.badge.exclamationmark",
                             tint: Color(hex: "#F59E0B")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         let remainingForExpenses = isPastMonth ? 0.0 : monthRemainingProvisions
                         let totalCommitted = monthExpense + remainingForExpenses
@@ -258,7 +258,7 @@ public struct TransactionsView: View {
                             actionLabel: "Editar",
                             actionIcon: "pencil"
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
                     }
                 }
 
@@ -272,7 +272,7 @@ public struct TransactionsView: View {
                             icon: "checkmark.circle.fill",
                             tint: Color(hex: "#10B981")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: "À Receber",
@@ -281,7 +281,7 @@ public struct TransactionsView: View {
                             icon: "clock.arrow.circlepath",
                             tint: Color(hex: "#3B82F6")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
                     }
                 }
             }

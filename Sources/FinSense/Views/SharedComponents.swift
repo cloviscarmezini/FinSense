@@ -342,6 +342,8 @@ public struct DashboardPeriodNavigatorBar: View {
 // MARK: - Modern KPI Summary Card
 
 public struct MetricCardView: View {
+    public static let standardCardHeight: CGFloat = 116
+
     public let title: String
     public let value: String
     public let subtitle: String
@@ -353,6 +355,7 @@ public struct MetricCardView: View {
     public var actionLabel: String?
     public var actionIcon: String?
     public var subtitleHelp: String?
+    public var cardHeight: CGFloat = MetricCardView.standardCardHeight
 
     public init(
         title: String,
@@ -365,7 +368,8 @@ public struct MetricCardView: View {
         action: (() -> Void)? = nil,
         actionLabel: String? = nil,
         actionIcon: String? = nil,
-        subtitleHelp: String? = nil
+        subtitleHelp: String? = nil,
+        cardHeight: CGFloat = MetricCardView.standardCardHeight
     ) {
         self.title = title
         self.value = value
@@ -378,18 +382,19 @@ public struct MetricCardView: View {
         self.actionLabel = actionLabel
         self.actionIcon = actionIcon
         self.subtitleHelp = subtitleHelp
+        self.cardHeight = cardHeight
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Zona 1: Cabeçalho (Topo)
+        VStack(alignment: .leading, spacing: 4) {
+            // 1. Linha de Cabeçalho (Topo)
             HStack(alignment: .center, spacing: 6) {
                 Text(title)
                     .font(.subheadline)
                     .fontWeight(.medium)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.85)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 4)
@@ -418,62 +423,61 @@ public struct MetricCardView: View {
 
                 ZStack {
                     Circle()
-                        .fill(tint.opacity(0.15))
-                        .frame(width: 32, height: 32)
+                        .fill(tint.opacity(0.14))
+                        .frame(width: 28, height: 28)
                     Image(systemName: icon)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(tint)
                 }
             }
-            .frame(minHeight: 32)
+            .frame(minHeight: 28)
 
-            // Zona 2: Valor Principal (Centro)
+            // 2. Linha do Valor Principal (Centro) - posicionado imediatamente abaixo do cabeçalho
             Text(value)
-                .font(.system(size: 22, weight: .bold, design: .rounded))
+                .font(.system(size: 20, weight: .bold, design: .rounded))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .monospacedDigit()
 
-            // Espaçador flexível (mola) para empurrar o rodapé para a base
-            Spacer(minLength: 6)
-
-            // Zona 3: Metadados e Rodapé (Base ancorada)
-            VStack(alignment: .leading, spacing: 3) {
+            // 3. Linha de Subtítulo / Metadados (Base) - sem abismo vazio, espaçamento imediato
+            VStack(alignment: .leading, spacing: 2) {
                 if let subtitleHelp {
                     Text(subtitle)
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
-                        .minimumScaleFactor(0.85)
+                        .minimumScaleFactor(0.82)
                         .help(subtitleHelp)
                 } else {
                     Text(subtitle)
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
-                        .minimumScaleFactor(0.85)
+                        .minimumScaleFactor(0.82)
                 }
 
                 if let footnote, !footnote.isEmpty {
                     Text(footnote)
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(footnoteColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .bottomLeading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 126, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: cardHeight)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
     }
 }

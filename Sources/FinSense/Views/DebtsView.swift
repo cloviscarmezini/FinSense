@@ -69,7 +69,7 @@ public struct DebtsView: View {
                             icon: "exclamationmark.shield.fill",
                             tint: Color(hex: "#EF4444")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: "Saldo Disponível em Contas",
@@ -78,7 +78,7 @@ public struct DebtsView: View {
                             icon: "building.columns.fill",
                             tint: Color(hex: "#3B82F6")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: "Dívidas Já Quitadas",
@@ -87,7 +87,7 @@ public struct DebtsView: View {
                             icon: "checkmark.seal.fill",
                             tint: Color(hex: "#10B981")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
                     }
                 }
 

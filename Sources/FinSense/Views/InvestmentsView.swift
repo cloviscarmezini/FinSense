@@ -57,7 +57,7 @@ public struct InvestmentsView: View {
                             icon: "chart.line.uptrend.xyaxis",
                             tint: Color(hex: "#10B981")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: "Exibido no Consolidado",
@@ -66,7 +66,7 @@ public struct InvestmentsView: View {
                             icon: "checkmark.seal.fill",
                             tint: Color(hex: "#3B82F6")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: "Fora do Consolidado",
@@ -75,7 +75,7 @@ public struct InvestmentsView: View {
                             icon: "eye.slash.fill",
                             tint: Color(hex: "#64748B")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
                     }
                 }
 

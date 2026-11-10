@@ -77,7 +77,7 @@ public struct LoansAndFinancingsView: View {
                             icon: "exclamationmark.shield.fill",
                             tint: Color(hex: "#EF4444")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: kind == .loan ? "Economia se Quitar Hoje" : "Soma Nominal das Parcelas",
@@ -86,7 +86,7 @@ public struct LoansAndFinancingsView: View {
                             icon: kind == .loan ? "sparkles.rectangle.stack.fill" : (kind == .loan ? "banknote.fill" : "house.and.flag.fill"),
                             tint: kind == .loan ? Color(hex: "#10B981") : Color(hex: "#8B5CF6")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: kind == .loan ? "Soma Nominal (c/ Juros Futuros)" : "Projeção para Quitar Hoje",
@@ -95,7 +95,7 @@ public struct LoansAndFinancingsView: View {
                             icon: kind == .loan ? "banknote.fill" : "sparkles.rectangle.stack.fill",
                             tint: kind == .loan ? Color(hex: "#64748B") : Color(hex: "#10B981")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         MetricCardView(
                             title: kind == .loan ? "Contratos Liquidados" : "Economia Estimada na Quitação",
@@ -104,7 +104,7 @@ public struct LoansAndFinancingsView: View {
                             icon: kind == .loan ? "checkmark.seal.fill" : "arrow.down.right.circle.fill",
                             tint: Color(hex: "#3B82F6")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
                     }
                 }
 

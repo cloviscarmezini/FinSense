@@ -190,7 +190,7 @@ public struct DashboardView: View {
                             icon: "arrow.down.left.circle.fill",
                             tint: Color(hex: "#10B981")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         // Card 2 — Despesas do Mês / Ano (Estritamente compromissos/transações lançadas, NUNCA somar tetos/cotas)
                         MetricCardView(
@@ -200,7 +200,7 @@ public struct DashboardView: View {
                             icon: "arrow.up.right.circle.fill",
                             tint: Color(hex: "#EF4444")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         // Card 3 — Balanço Operacional (Receitas - Despesas com Taxa de Poupança / Margem Líquida)
                         let operationalSubtitle: String = {
@@ -220,7 +220,7 @@ public struct DashboardView: View {
                             icon: "equal.circle.fill",
                             tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
 
                         // Card 4 — Saldo Projetado / Resultado Final
                         let finalTitle: String = {
@@ -252,7 +252,7 @@ public struct DashboardView: View {
                             footnoteColor: Color(hex: "#EF4444"),
                             subtitleHelp: finalTooltip
                         )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(maxWidth: .infinity)
                     }
                 }
 
@@ -580,7 +580,7 @@ public struct DashboardView: View {
                                 colorHex: "#F59E0B",
                                 icon: "calendar.badge.exclamationmark"
                             )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(maxWidth: .infinity)
 
                             debtPillarCard(
                                 title: "Transações Futuras",
@@ -590,7 +590,7 @@ public struct DashboardView: View {
                                 colorHex: "#3B82F6",
                                 icon: "clock.arrow.circlepath"
                             )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(maxWidth: .infinity)
 
                             debtPillarCard(
                                 title: "Dívidas (Acordos/Serasa)",
@@ -600,7 +600,7 @@ public struct DashboardView: View {
                                 colorHex: "#EF4444",
                                 icon: "exclamationmark.triangle.fill"
                             )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(maxWidth: .infinity)
 
                             debtPillarCard(
                                 title: "Empréstimos",
@@ -613,7 +613,7 @@ public struct DashboardView: View {
                                 colorHex: "#D97706",
                                 icon: "banknote.fill"
                             )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(maxWidth: .infinity)
 
                             debtPillarCard(
                                 title: "Financiamentos",
@@ -626,7 +626,7 @@ public struct DashboardView: View {
                                 colorHex: "#8B5CF6",
                                 icon: "house.and.flag.fill"
                             )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(maxWidth: .infinity)
                         }
                     }
                 }
@@ -1210,7 +1210,8 @@ public struct DashboardView: View {
             .frame(maxWidth: .infinity, minHeight: 48, alignment: .bottomLeading)
         }
         .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 136, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: 136)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(hex: colorHex).opacity(0.08))
