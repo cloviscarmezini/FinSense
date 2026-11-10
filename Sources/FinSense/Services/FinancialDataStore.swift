@@ -264,6 +264,64 @@ public struct ComprehensiveDebtSummary: Hashable {
         self.grandTotalWithPayoffProjection = grandTotalWithPayoffProjection
         self.itemizedLines = itemizedLines
     }
+
+    /// Total a Quitar Estrito do Balanço Patrimonial (Dívida Real Consolidada = Dívidas + Empréstimos PV + Financiamentos PV)
+    public var totalRealLiabilities: Double {
+        unpaidDebtsTotal + loansProjectedPayoffTotal + financingsProjectedPayoffTotal
+    }
+
+    /// Soma Nominal Futura Estrita dos Contratos (Dívidas + Empréstimos Nominal + Financiamentos Nominal)
+    public var totalNominalLiabilities: Double {
+        unpaidDebtsTotal + loansRemainingNominalTotal + financingsRemainingNominalTotal
+    }
+}
+
+// MARK: - Period Debt Service Breakdown (Fluxo / DTI vs Receitas)
+
+public struct PeriodDebtServiceBreakdown: Hashable {
+    public let financingInstallments: Double
+    public let loanInstallments: Double
+    public let debtInstallments: Double
+    public let operationalExpenses: Double
+    public let totalDebtService: Double
+    public let totalOutflows: Double
+    public let periodIncome: Double
+    public let freeMargin: Double
+    public let deficit: Double
+    public let debtToIncomeRatio: Double
+    public let totalCommitmentRatio: Double
+    public let isAnnual: Bool
+    public let yearStr: String
+
+    public init(
+        financingInstallments: Double,
+        loanInstallments: Double,
+        debtInstallments: Double,
+        operationalExpenses: Double,
+        totalDebtService: Double,
+        totalOutflows: Double,
+        periodIncome: Double,
+        freeMargin: Double,
+        deficit: Double,
+        debtToIncomeRatio: Double,
+        totalCommitmentRatio: Double,
+        isAnnual: Bool,
+        yearStr: String
+    ) {
+        self.financingInstallments = financingInstallments
+        self.loanInstallments = loanInstallments
+        self.debtInstallments = debtInstallments
+        self.operationalExpenses = operationalExpenses
+        self.totalDebtService = totalDebtService
+        self.totalOutflows = totalOutflows
+        self.periodIncome = periodIncome
+        self.freeMargin = freeMargin
+        self.deficit = deficit
+        self.debtToIncomeRatio = debtToIncomeRatio
+        self.totalCommitmentRatio = totalCommitmentRatio
+        self.isAnnual = isAnnual
+        self.yearStr = yearStr
+    }
 }
 
 // MARK: - FinancialDataStore
@@ -5219,6 +5277,112 @@ public final class FinancialDataStore: ObservableObject {
             grandTotalNominal: grandNominal,
             grandTotalWithPayoffProjection: grandProjected,
             itemizedLines: items
+        )
+    }
+
+    // MARK: - Period Debt Service & Cash Flow Breakdown (DTI vs Receitas)
+
+    public func buildPeriodDebtServiceBreakdown(
+        referenceDate: Date = Date(),
+        isAnnual: Bool = false
+    ) -> PeriodDebtServiceBreakdown {
+        let income = isAnnual ? annualIncome(for: referenceDate) : monthlyIncome(for: referenceDate)
+        let totalExpense = isAnnual ? annualExpense(for: referenceDate) : monthlyExpense(for: referenceDate)
+        let periodTxs = isAnnual ? transactionsForYear(referenceDate) : transactionsForMonth(referenceDate)
+        let expenseTxs = periodTxs.filter { $0.type == .expense && !$0.ignoreInConsolidated }
+
+        let openLoans = activeContracts(for: .loan)
+        let openFinancings = activeContracts(for: .financing)
+        let loanIds = Set(openLoans.map(\.id))
+        let financingIds = Set(openFinancings.map(\.id))
+        let debtIds = Set(debts.map(\.id))
+
+        let endOfPeriod = isAnnual ? endOfYear(for: referenceDate) : endOfMonth(for: referenceDate)
+
+        // 1. Financiamentos no Período (Parcelas)
+        let finTxSum = expenseTxs.filter { tx in
+            (tx.linkedContractId.map { financingIds.contains($0) } ?? false) ||
+            (tx.seriesGroupId.map { financingIds.contains($0) } ?? false)
+        }.reduce(0.0) { $0 + $1.amount }
+
+        let financingInstallments: Double
+        if finTxSum > 0.001 {
+            financingInstallments = finTxSum
+        } else {
+            financingInstallments = openFinancings.reduce(0.0) { sum, fin in
+                let rem = remainingInstallmentsCount(for: fin, asOf: endOfPeriod)
+                guard rem > 0 else { return sum }
+                let countInPeriod = isAnnual ? min(rem, 12) : 1
+                return sum + (Double(countInPeriod) * fin.installmentAmount)
+            }
+        }
+
+        // 2. Empréstimos no Período (Parcelas)
+        let loanTxSum = expenseTxs.filter { tx in
+            (tx.linkedContractId.map { loanIds.contains($0) } ?? false) ||
+            (tx.seriesGroupId.map { loanIds.contains($0) } ?? false)
+        }.reduce(0.0) { $0 + $1.amount }
+
+        let loanInstallments: Double
+        if loanTxSum > 0.001 {
+            loanInstallments = loanTxSum
+        } else {
+            loanInstallments = openLoans.reduce(0.0) { sum, loan in
+                let rem = remainingInstallmentsCount(for: loan, asOf: endOfPeriod)
+                guard rem > 0 else { return sum }
+                let countInPeriod = isAnnual ? min(rem, 12) : 1
+                return sum + (Double(countInPeriod) * loan.installmentAmount)
+            }
+        }
+
+        // 3. Acordos e Dívidas no Período
+        let debtInstallments = expenseTxs.filter { tx in
+            (tx.linkedDebtId != nil) ||
+            (tx.transactionOrigin == .debtPayment) ||
+            (tx.linkedContractId.map { debtIds.contains($0) } ?? false)
+        }.reduce(0.0) { $0 + $1.amount }
+
+        let totalDebtService = financingInstallments + loanInstallments + debtInstallments
+
+        // 4. Custo de Vida / Despesas Operacionais (exclusivas, sem duplicidade com parcelas de crédito/dívidas)
+        let nonDebtExpenseTxs = expenseTxs.filter { tx in
+            let isFin = (tx.linkedContractId.map { financingIds.contains($0) } ?? false) ||
+                        (tx.seriesGroupId.map { financingIds.contains($0) } ?? false)
+            let isLoan = (tx.linkedContractId.map { loanIds.contains($0) } ?? false) ||
+                         (tx.seriesGroupId.map { loanIds.contains($0) } ?? false)
+            let isDebt = (tx.linkedDebtId != nil) ||
+                         (tx.transactionOrigin == .debtPayment) ||
+                         (tx.linkedContractId.map { debtIds.contains($0) } ?? false)
+            return !isFin && !isLoan && !isDebt
+        }
+        let operationalTxsSum = nonDebtExpenseTxs.reduce(0.0) { $0 + $1.amount }
+        let operationalExpenses = max(operationalTxsSum, max(0.0, totalExpense - (finTxSum + loanTxSum + debtInstallments)))
+
+        // 5. Total de Saídas & Margens
+        let totalOutflows = operationalExpenses + totalDebtService
+        let freeMargin = max(0.0, income - totalOutflows)
+        let deficit = max(0.0, totalOutflows - income)
+
+        let dtiRatio = income > 0 ? (totalDebtService / income) * 100.0 : 0.0
+        let commitmentRatio = income > 0 ? (totalOutflows / income) * 100.0 : (totalOutflows > 0 ? 100.0 : 0.0)
+
+        let cal = Calendar.current
+        let yearNumber = cal.component(.year, from: referenceDate)
+
+        return PeriodDebtServiceBreakdown(
+            financingInstallments: financingInstallments,
+            loanInstallments: loanInstallments,
+            debtInstallments: debtInstallments,
+            operationalExpenses: operationalExpenses,
+            totalDebtService: totalDebtService,
+            totalOutflows: totalOutflows,
+            periodIncome: income,
+            freeMargin: freeMargin,
+            deficit: deficit,
+            debtToIncomeRatio: dtiRatio,
+            totalCommitmentRatio: commitmentRatio,
+            isAnnual: isAnnual,
+            yearStr: String(yearNumber)
         )
     }
 }

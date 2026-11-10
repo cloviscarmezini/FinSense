@@ -3290,6 +3290,140 @@ final class FinSenseTests: XCTestCase {
         XCTAssertLessThan(updatedSummary.financingsRealAmortizationInPeriodTotal, updatedSummary.financingsPaidInPeriodTotal)
     }
 
+    func testPeriodDebtServiceAndIncomeCommitmentDecouplingFromStockLiabilities() {
+        let store = makeIsolatedStore(seedStatement: false)
+        let cal = Calendar.current
+        let referenceNow = cal.date(from: DateComponents(year: 2026, month: 3, day: 15))!
+
+        store.addAccount(
+            name: "Conta Principal",
+            bankPresetId: "nubank",
+            customImagePath: nil,
+            iconSymbol: "creditcard.fill",
+            colorHex: "#8B5CF6",
+            initialBalance: 20_000.0
+        )
+        let acc = store.accounts.first!
+
+        // 1. Receita Mensal: R$ 12.443,00
+        let salCat = store.categories.first(where: { $0.type == .income }) ?? store.categories.first!
+        store.createTransaction(
+            name: "Salário Mensal",
+            amount: 12_443.00,
+            date: referenceNow,
+            type: .income,
+            isPaid: true,
+            categoryId: salCat.id,
+            accountId: acc.id
+        )
+
+        // 2. Financiamento Habitacional: Parcela R$ 2.658,04, Saldo Devedor R$ 324.737,86
+        _ = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Imóvel CAIXA",
+            financingSubtype: .imovel,
+            amortizationSystem: .price,
+            totalContractedAmount: 350_000.0,
+            outstandingBalance: 324_737.86,
+            installmentAmount: 2658.04,
+            billingDay: 15,
+            totalInstallments: 360,
+            monthlyInterestRate: 8.51 / 12.0,
+            startDate: referenceNow,
+            accountId: acc.id,
+            annualNominalInterestRate: 8.51,
+            indexationRate: .tr,
+            adminFee: 25.00,
+            insuranceFee: 86.27,
+            baseInstallmentAmount: 2546.77
+        )
+
+        // 3. Empréstimo Consignado: Parcela R$ 4.867,00, Saldo Devedor R$ 60.000,00
+        _ = store.createCreditContract(
+            kind: .loan,
+            name: "Empréstimo Consignado",
+            loanSubtype: .consignado,
+            amortizationSystem: .price,
+            totalContractedAmount: 60_000.0,
+            outstandingBalance: 60_000.0,
+            installmentAmount: 4867.00,
+            billingDay: 15,
+            totalInstallments: 18,
+            monthlyInterestRate: 1.85,
+            startDate: referenceNow,
+            accountId: acc.id
+        )
+
+        // 4. Dívida Ativa no Serasa: R$ 5.000,00
+        store.addDebt(
+            name: "Negociação Cartão",
+            customImagePath: nil,
+            bankPresetId: nil,
+            iconSymbol: "exclamationmark.triangle.fill",
+            colorHex: "#EF4444",
+            originalAmount: 5_000.00,
+            contractedDate: referenceNow
+        )
+
+        // 5. Custo de Vida / Despesas Operacionais: R$ 3.000,00 (alimentação, energia, etc.)
+        let foodCat = store.categories.first(where: { $0.type == .expense && $0.name.lowercased().contains("aliment") }) ?? store.categories.first!
+        store.createTransaction(
+            name: "Supermercado e Energia",
+            amount: 3_000.00,
+            date: referenceNow,
+            type: .expense,
+            isPaid: true,
+            categoryId: foodCat.id,
+            accountId: acc.id
+        )
+
+        // TESTE DO BLOCO SUPERIOR: Estoque Patrimonial (Sem mistura de despesas correntes)
+        let debtSummary = store.buildComprehensiveDebtSummary(referenceDate: referenceNow, isAnnual: false)
+        let totalRealLiabilities = debtSummary.totalRealLiabilities
+        let totalNominalLiabilities = debtSummary.totalNominalLiabilities
+
+        // O passivo patrimonial real deve ser rigorosamente Financiamento PV (324.737,86) + Empréstimo PV (60.000,00) + Dívida (5.000,00) = R$ 389.737,86
+        // NUNCA somando o custo de vida operacional de R$ 3.000!
+        XCTAssertEqual(debtSummary.unpaidDebtsTotal, 5000.00, accuracy: 0.01)
+        XCTAssertEqual(debtSummary.loansProjectedPayoffTotal, 60000.00, accuracy: 1.0)
+        XCTAssertEqual(debtSummary.financingsProjectedPayoffTotal, 324737.86, accuracy: 1.0)
+        XCTAssertEqual(totalRealLiabilities, 389737.86, accuracy: 1.0)
+        XCTAssertGreaterThan(totalNominalLiabilities, 800_000.00) // Nominal inclui juros de décadas
+
+        // TESTE DO BLOCO INFERIOR: Fluxo / DTI (Debt-to-Income) e Ausência de Dupla Contagem
+        let breakdown = store.buildPeriodDebtServiceBreakdown(referenceDate: referenceNow, isAnnual: false)
+
+        XCTAssertEqual(breakdown.periodIncome, 12_443.00, accuracy: 0.01)
+        XCTAssertEqual(breakdown.financingInstallments, 2658.04, accuracy: 0.01)
+        XCTAssertEqual(breakdown.loanInstallments, 4867.00, accuracy: 0.01)
+        XCTAssertEqual(breakdown.debtInstallments, 0.00, accuracy: 0.01)
+
+        // Custo de vida deve ser exatamente os R$ 3.000 de gastos correntes, sem duplicar parcelas
+        XCTAssertEqual(breakdown.operationalExpenses, 3000.00, accuracy: 0.01)
+
+        // Serviço da dívida: 2.658,04 + 4.867,00 = R$ 7.525,04
+        XCTAssertEqual(breakdown.totalDebtService, 7525.04, accuracy: 0.01)
+
+        // DTI Mensal: 7.525,04 / 12.443 = 60,47%
+        XCTAssertEqual(breakdown.debtToIncomeRatio, 60.47, accuracy: 0.10)
+
+        // Total de Saídas: 7.525,04 + 3.000,00 = 10.525,04
+        XCTAssertEqual(breakdown.totalOutflows, 10525.04, accuracy: 0.01)
+
+        // Margem Livre / Poupança: 12.443,00 - 10.525,04 = R$ 1.917,96 (15,41% da receita)
+        XCTAssertEqual(breakdown.freeMargin, 1917.96, accuracy: 0.01)
+        XCTAssertEqual(breakdown.deficit, 0.00, accuracy: 0.01)
+
+        // Soma exata de 100% da receita: Financiamento + Empréstimo + Custo de Vida + Margem Livre == Receita
+        let sumSlices = breakdown.financingInstallments + breakdown.loanInstallments + breakdown.debtInstallments + breakdown.operationalExpenses + breakdown.freeMargin
+        XCTAssertEqual(sumSlices, breakdown.periodIncome, accuracy: 0.01)
+
+        // TESTE DA VISÃO ANUAL (Consolidação de 12 meses)
+        let annualBreakdown = store.buildPeriodDebtServiceBreakdown(referenceDate: referenceNow, isAnnual: true)
+        XCTAssertEqual(annualBreakdown.periodIncome, 12_443.00, accuracy: 0.01)
+        XCTAssertGreaterThan(annualBreakdown.totalDebtService, breakdown.totalDebtService)
+    }
+
     func testStatementImportServiceCaixaHabitacaoParsing() {
         let sampleCaixaText = """
         CAIXA ECONÔMICA FEDERAL

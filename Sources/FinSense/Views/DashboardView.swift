@@ -70,6 +70,10 @@ public struct DashboardView: View {
             referenceDate: store.selectedMonth,
             isAnnual: isAnnual
         )
+        let debtServiceBreakdown = store.buildPeriodDebtServiceBreakdown(
+            referenceDate: store.selectedMonth,
+            isAnnual: isAnnual
+        )
         let monthEnvelopes = store.provisionEnvelopes(for: store.selectedMonth)
         let monthQuotas = store.allQuotaEnvelopes(for: store.selectedMonth)
         let hasAnyProvisionOrQuota = !monthEnvelopes.isEmpty || !monthQuotas.isEmpty
@@ -538,23 +542,23 @@ public struct DashboardView: View {
                     )
                 }
 
-                // MARK: - Total de Dívidas e Compromissos
+                // MARK: - Total de Dívidas e Passivos (Balanço Patrimonial)
                 VStack(alignment: .leading, spacing: 18) {
-                    let totalCommitments = periodExpense + debtSummary.unpaidDebtsTotal + debtSummary.loansProjectedPayoffTotal + debtSummary.financingsProjectedPayoffTotal
-                    let totalNominalCommitments = periodExpense + debtSummary.unpaidDebtsTotal + debtSummary.loansRemainingNominalTotal + debtSummary.financingsRemainingNominalTotal
+                    let totalRealLiabilities = debtSummary.totalRealLiabilities
+                    let totalNominalLiabilities = debtSummary.totalNominalLiabilities
 
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.shield.fill")
+                                Image(systemName: "building.columns.fill")
                                     .foregroundStyle(Color(hex: "#EF4444"))
-                                Text("Total de Dívidas e Compromissos")
+                                Text("Total de Dívidas e Passivos")
                                     .font(.title3.bold())
                             }
                             Text(
                                 isAnnual
-                                    ? "Detalhamento de despesas do ano, dívidas em aberto (ex: Serasa/Cartões), empréstimos e financiamentos frente às receitas anuais"
-                                    : "Detalhamento de despesas do mês, dívidas em aberto (ex: Serasa/Cartões), empréstimos e financiamentos frente às receitas mensais"
+                                    ? "Estoque de passivos e saldos devedores consolidados projetados até 31/12 de \(yearStr)"
+                                    : "Estoque de passivos e saldos devedores consolidados projetados para o mês selecionado"
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -565,37 +569,45 @@ public struct DashboardView: View {
                             Text("Total a Quitar (Dívida Real)")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            Text(BRLFormatters.currency(totalCommitments))
+                            Text(BRLFormatters.currency(totalRealLiabilities))
                                 .font(.system(size: 22, weight: .heavy, design: .rounded))
                                 .foregroundStyle(Color(hex: "#EF4444"))
-                            if abs(totalNominalCommitments - totalCommitments) > 0.01 {
-                                Text("Soma nominal futura (com juros): \(BRLFormatters.currency(totalNominalCommitments))")
+                                .monospacedDigit()
+                            if abs(totalNominalLiabilities - totalRealLiabilities) > 0.01 {
+                                Text("Soma nominal futura (com juros): \(BRLFormatters.currency(totalNominalLiabilities))")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+                                    .monospacedDigit()
                             }
                         }
                     }
 
-                    // 4 Pillars Breakdown (Equal-Height Grid)
+                    // 4 Pillars Breakdown (Equal-Height Grid - Estoque / Balanço Patrimonial)
                     Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                         GridRow {
                             debtPillarCard(
-                                title: isAnnual ? "Despesas do Ano" : "Despesas do Mês",
+                                title: "Passivo Total (Dívida Real)",
                                 subtitle: isAnnual
-                                    ? "\(BRLFormatters.currency(periodPaidExpense)) pagas • \(BRLFormatters.currency(periodPendingExpense)) pendentes em \(yearStr)"
-                                    : "\(BRLFormatters.currency(periodPaidExpense)) pagas • \(BRLFormatters.currency(periodPendingExpense)) pendentes",
-                                amount: periodExpense,
+                                    ? "\(BRLFormatters.currency(debtServiceBreakdown.totalDebtService)) em parcelas no ano"
+                                    : "\(BRLFormatters.currency(debtServiceBreakdown.totalDebtService)) em parcelas no mês",
+                                amount: totalRealLiabilities,
                                 projected: nil,
-                                colorHex: "#F59E0B",
-                                icon: "calendar.badge.exclamationmark"
+                                nominalAmount: totalNominalLiabilities,
+                                paidInPeriod: debtSummary.loansPaidInPeriodTotal + debtSummary.financingsPaidInPeriodTotal + debtServiceBreakdown.debtInstallments,
+                                realAmortizationInPeriod: debtSummary.loansRealAmortizationInPeriodTotal + debtSummary.financingsRealAmortizationInPeriodTotal,
+                                colorHex: "#EF4444",
+                                icon: "building.columns.fill"
                             )
                             .frame(maxWidth: .infinity)
 
                             debtPillarCard(
                                 title: "Dívidas (Acordos/Serasa)",
-                                subtitle: "\(debtSummary.activeDebts.count) dívida(s) ativa(s)",
+                                subtitle: debtSummary.activeDebts.count == 1 ? "1 dívida ativa" : "\(debtSummary.activeDebts.count) dívidas ativas",
                                 amount: debtSummary.unpaidDebtsTotal,
                                 projected: nil,
+                                nominalAmount: nil,
+                                paidInPeriod: debtServiceBreakdown.debtInstallments > 0 ? debtServiceBreakdown.debtInstallments : nil,
+                                realAmortizationInPeriod: nil,
                                 colorHex: "#EF4444",
                                 icon: "exclamationmark.triangle.fill"
                             )
@@ -603,7 +615,9 @@ public struct DashboardView: View {
 
                             debtPillarCard(
                                 title: "Empréstimos",
-                                subtitle: "\(debtSummary.activeLoans.count) contrato(s) ativo(s)",
+                                subtitle: isAnnual
+                                    ? "\(BRLFormatters.currency(debtServiceBreakdown.loanInstallments)) no ano • \(debtSummary.activeLoans.count) contrato(s)"
+                                    : "\(BRLFormatters.currency(debtServiceBreakdown.loanInstallments))/mês • \(debtSummary.activeLoans.count) contrato(s)",
                                 amount: debtSummary.loansProjectedPayoffTotal,
                                 projected: nil,
                                 nominalAmount: debtSummary.loansRemainingNominalTotal,
@@ -616,7 +630,9 @@ public struct DashboardView: View {
 
                             debtPillarCard(
                                 title: "Financiamentos",
-                                subtitle: "\(debtSummary.activeFinancings.count) contrato(s) (Imóvel/Carro)",
+                                subtitle: isAnnual
+                                    ? "\(BRLFormatters.currency(debtServiceBreakdown.financingInstallments)) no ano • \(debtSummary.activeFinancings.count) contrato(s)"
+                                    : "\(BRLFormatters.currency(debtServiceBreakdown.financingInstallments))/mês • \(debtSummary.activeFinancings.count) contrato(s)",
                                 amount: debtSummary.financingsProjectedPayoffTotal,
                                 projected: nil,
                                 nominalAmount: debtSummary.financingsRemainingNominalTotal,
@@ -633,18 +649,8 @@ public struct DashboardView: View {
                         .opacity(0.5)
                         .padding(.vertical, 2)
 
-                    // MARK: - Gráfico Donut de Dívidas e Compromissos vs Receitas
-                    DebtCommitmentsDonutChartView(
-                        periodExpenseTitle: isAnnual ? "Despesas do Ano" : "Despesas do Mês",
-                        periodIncomeTitle: isAnnual ? "Receitas do Ano" : "Receitas do Mês",
-                        periodExpense: periodExpense,
-                        debtsAmount: debtSummary.unpaidDebtsTotal,
-                        loansAmount: debtSummary.loansProjectedPayoffTotal,
-                        financingsAmount: debtSummary.financingsProjectedPayoffTotal,
-                        periodIncome: periodIncome,
-                        isAnnual: isAnnual,
-                        yearStr: yearStr
-                    )
+                    // MARK: - Painel Analítico: Comprometimento de Renda vs. Obrigações (Fluxo / DTI)
+                    DebtCommitmentsDonutChartView(breakdown: debtServiceBreakdown)
                 }
                 .padding(18)
                 .background(
@@ -2235,18 +2241,10 @@ public struct MonthlyCashFlowChartView: View {
     }
 }
 
-// MARK: - Gráfico Donut: Compromissos e Dívidas vs Receitas
+// MARK: - Painel Analítico: Comprometimento de Renda vs. Obrigações (Fluxo / DTI)
 
 public struct DebtCommitmentsDonutChartView: View {
-    public let periodExpenseTitle: String
-    public let periodIncomeTitle: String
-    public let periodExpense: Double
-    public let debtsAmount: Double
-    public let loansAmount: Double
-    public let financingsAmount: Double
-    public let periodIncome: Double
-    public let isAnnual: Bool
-    public let yearStr: String
+    public let breakdown: PeriodDebtServiceBreakdown
 
     public struct DonutSegment: Identifiable {
         public let id: String
@@ -2254,100 +2252,68 @@ public struct DebtCommitmentsDonutChartView: View {
         public let amount: Double
         public let color: Color
         public let icon: String
-        public let isSurplus: Bool
+        public let isFreeMargin: Bool
     }
 
-    public init(
-        periodExpenseTitle: String,
-        periodIncomeTitle: String,
-        periodExpense: Double,
-        debtsAmount: Double,
-        loansAmount: Double,
-        financingsAmount: Double,
-        periodIncome: Double,
-        isAnnual: Bool,
-        yearStr: String
-    ) {
-        self.periodExpenseTitle = periodExpenseTitle
-        self.periodIncomeTitle = periodIncomeTitle
-        self.periodExpense = periodExpense
-        self.debtsAmount = debtsAmount
-        self.loansAmount = loansAmount
-        self.financingsAmount = financingsAmount
-        self.periodIncome = periodIncome
-        self.isAnnual = isAnnual
-        self.yearStr = yearStr
-    }
-
-    private var totalDebtsAndCommitments: Double {
-        periodExpense + debtsAmount + loansAmount + financingsAmount
-    }
-
-    private var surplus: Double {
-        max(0.0, periodIncome - totalDebtsAndCommitments)
-    }
-
-    private var commitmentPercentage: Double {
-        guard periodIncome > 0 else { return totalDebtsAndCommitments > 0 ? 100.0 : 0.0 }
-        return (totalDebtsAndCommitments / periodIncome) * 100.0
+    public init(breakdown: PeriodDebtServiceBreakdown) {
+        self.breakdown = breakdown
     }
 
     private var segments: [DonutSegment] {
         var list: [DonutSegment] = []
 
-        if periodExpense > 0 {
+        if breakdown.financingInstallments > 0.001 {
             list.append(DonutSegment(
-                id: "expense",
-                name: periodExpenseTitle,
-                amount: periodExpense,
-                color: Color(hex: "#F59E0B"),
-                icon: "calendar.badge.exclamationmark",
-                isSurplus: false
-            ))
-        }
-
-        if debtsAmount > 0 {
-            list.append(DonutSegment(
-                id: "debts",
-                name: "Dívidas",
-                amount: debtsAmount,
-                color: Color(hex: "#EF4444"),
-                icon: "exclamationmark.triangle.fill",
-                isSurplus: false
-            ))
-        }
-
-        if loansAmount > 0 {
-            list.append(DonutSegment(
-                id: "loans",
-                name: "Empréstimos",
-                amount: loansAmount,
-                color: Color(hex: "#D97706"),
-                icon: "banknote.fill",
-                isSurplus: false
-            ))
-        }
-
-        if financingsAmount > 0 {
-            list.append(DonutSegment(
-                id: "financings",
-                name: "Financiamentos",
-                amount: financingsAmount,
+                id: "financing",
+                name: breakdown.isAnnual ? "Parcelas Financiamentos (Ano)" : "Parcelas Financiamentos",
+                amount: breakdown.financingInstallments,
                 color: Color(hex: "#8B5CF6"),
                 icon: "house.and.flag.fill",
-                isSurplus: false
+                isFreeMargin: false
             ))
         }
 
-        // Se a receita for maior que os compromissos, a fatia verde representa a receita livre restante
-        if periodIncome > totalDebtsAndCommitments && surplus > 0.01 {
+        if breakdown.loanInstallments > 0.001 {
             list.append(DonutSegment(
-                id: "surplus",
-                name: isAnnual ? "Receita Livre do Ano" : "Receita Livre do Mês",
-                amount: surplus,
+                id: "loans",
+                name: breakdown.isAnnual ? "Parcelas Empréstimos (Ano)" : "Parcelas Empréstimos",
+                amount: breakdown.loanInstallments,
+                color: Color(hex: "#D97706"),
+                icon: "banknote.fill",
+                isFreeMargin: false
+            ))
+        }
+
+        if breakdown.debtInstallments > 0.001 {
+            list.append(DonutSegment(
+                id: "debts",
+                name: breakdown.isAnnual ? "Parcelas Acordos / Dívidas (Ano)" : "Parcelas Acordos / Dívidas",
+                amount: breakdown.debtInstallments,
+                color: Color(hex: "#EF4444"),
+                icon: "exclamationmark.triangle.fill",
+                isFreeMargin: false
+            ))
+        }
+
+        if breakdown.operationalExpenses > 0.001 {
+            list.append(DonutSegment(
+                id: "operational",
+                name: breakdown.isAnnual ? "Custo de Vida Operacional (Ano)" : "Custo de Vida Operacional",
+                amount: breakdown.operationalExpenses,
+                color: Color(hex: "#0284C7"),
+                icon: "cart.fill",
+                isFreeMargin: false
+            ))
+        }
+
+        if breakdown.freeMargin > 0.001 {
+            list.append(DonutSegment(
+                id: "freeMargin",
+                name: breakdown.isAnnual ? "Margem Livre / Poupança (Ano)" : "Margem Livre / Poupança",
+                amount: breakdown.freeMargin,
                 color: Color(hex: "#10B981"),
-                icon: "checkmark.shield.fill",
-                isSurplus: true
+                icon: "shield.lefthalf.filled",
+                isFreeMargin: true
             ))
         }
 
@@ -2363,13 +2329,13 @@ public struct DebtCommitmentsDonutChartView: View {
                         Image(systemName: "chart.pie.fill")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color(hex: "#6366F1"))
-                        Text("Distribuição de Compromissos vs Receitas")
+                        Text("Comprometimento de Renda vs. Obrigações (Fluxo / DTI)")
                             .font(.subheadline.weight(.bold))
                     }
                     Text(
-                        isAnnual
-                            ? "Proporção das despesas do ano, dívidas e empréstimos/financiamentos frente à receita total anual de \(yearStr)"
-                            : "Proporção das despesas do mês, dívidas e empréstimos/financiamentos frente à receita total mensal"
+                        breakdown.isAnnual
+                            ? "Fatiamento da receita anual de \(breakdown.yearStr) entre parcelas de crédito, custo de vida e margem livre"
+                            : "Fatiamento da receita mensal entre parcelas de crédito, custo de vida e margem livre"
                     )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -2377,7 +2343,7 @@ public struct DebtCommitmentsDonutChartView: View {
 
                 Spacer()
 
-                // Badge de Nível de Comprometimento
+                // Badge de Nível de Comprometimento / Risco
                 HStack(spacing: 5) {
                     Circle()
                         .fill(statusColor)
@@ -2392,12 +2358,12 @@ public struct DebtCommitmentsDonutChartView: View {
                 .clipShape(Capsule())
             }
 
-            if segments.isEmpty && periodIncome <= 0 {
+            if segments.isEmpty && breakdown.periodIncome <= 0 {
                 VStack(spacing: 8) {
                     Image(systemName: "chart.pie")
                         .font(.system(size: 32))
                         .foregroundStyle(.secondary.opacity(0.5))
-                    Text(isAnnual ? "Nenhum compromisso ou receita registrada em \(yearStr)." : "Nenhum compromisso ou receita registrada neste mês.")
+                    Text(breakdown.isAnnual ? "Nenhuma movimentação financeira ou receita registrada em \(breakdown.yearStr)." : "Nenhuma movimentação financeira ou receita registrada neste mês.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -2419,41 +2385,64 @@ public struct DebtCommitmentsDonutChartView: View {
 
                         // Center Overlay
                         VStack(spacing: 2) {
-                            Text(isAnnual ? "Receita Anual" : "Receita Mensal")
-                                .font(.system(size: 9, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
+                            if breakdown.deficit > 0.001 {
+                                Text(breakdown.isAnnual ? "Déficit Anual" : "Déficit Mensal")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                    .lineLimit(1)
 
-                            Text(BRLFormatters.currency(periodIncome))
-                                .font(.system(size: 13, weight: .bold, design: .rounded))
-                                .foregroundStyle(Color(hex: "#10B981"))
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                                .monospacedDigit()
+                                Text("-" + BRLFormatters.currency(breakdown.deficit))
+                                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                    .monospacedDigit()
 
-                            Divider()
-                                .frame(width: 36)
-                                .opacity(0.35)
-                                .padding(.vertical, 1)
+                                Divider()
+                                    .frame(width: 36)
+                                    .opacity(0.35)
+                                    .padding(.vertical, 1)
 
-                            if totalDebtsAndCommitments == 0 {
-                                Text("0% dívidas")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                            } else if periodIncome >= totalDebtsAndCommitments {
-                                Text(String(format: "%.1f%%", commitmentPercentage))
+                                let excessPct = (breakdown.deficit / max(breakdown.periodIncome, 1.0)) * 100.0
+                                Text(String(format: "+%.1f%%", excessPct))
                                     .font(.system(size: 11, weight: .heavy, design: .rounded))
-                                    .foregroundStyle(statusColor)
-                                Text("comprometida")
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                Text("excesso orçamentário")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+
+                                Text("DTI: \(String(format: "%.1f%%", breakdown.debtToIncomeRatio))")
                                     .font(.system(size: 8, weight: .medium))
                                     .foregroundStyle(.secondary)
                             } else {
-                                Text(String(format: "%.0f%%", commitmentPercentage))
+                                Text(breakdown.isAnnual ? "Margem Livre Anual" : "Margem Livre Mensal")
+                                    .font(.system(size: 9, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+
+                                Text(BRLFormatters.currency(breakdown.freeMargin))
+                                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                    .monospacedDigit()
+
+                                Divider()
+                                    .frame(width: 36)
+                                    .opacity(0.35)
+                                    .padding(.vertical, 1)
+
+                                let freePct = breakdown.periodIncome > 0 ? (breakdown.freeMargin / breakdown.periodIncome) * 100.0 : 0.0
+                                Text(String(format: "%.1f%%", freePct))
                                     .font(.system(size: 11, weight: .heavy, design: .rounded))
-                                    .foregroundStyle(Color(hex: "#EF4444"))
-                                Text("excede receita")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                                Text("receita livre")
+                                    .font(.system(size: 8, weight: .medium))
+                                    .foregroundStyle(.secondary)
+
+                                Text("DTI: \(String(format: "%.1f%%", breakdown.debtToIncomeRatio))")
+                                    .font(.system(size: 8, weight: .medium))
+                                    .foregroundStyle(.secondary)
                             }
                         }
                         .padding(6)
@@ -2462,27 +2451,28 @@ public struct DebtCommitmentsDonutChartView: View {
 
                     // Right Breakdown Panel
                     VStack(alignment: .leading, spacing: 10) {
-                        // 3 Mini Cards Comparativos
+                        // 3 Mini Cards Comparativos de Fluxo
                         HStack(spacing: 10) {
                             miniMetricBox(
-                                title: isAnnual ? "Receita do Ano" : "Receita do Mês",
-                                value: BRLFormatters.currency(periodIncome),
+                                title: breakdown.isAnnual ? "Receita do Ano" : "Receita do Mês",
+                                value: BRLFormatters.currency(breakdown.periodIncome),
                                 color: Color(hex: "#10B981"),
                                 icon: "arrow.down.left.circle.fill"
                             )
 
                             miniMetricBox(
-                                title: "Total Compromissos",
-                                value: BRLFormatters.currency(totalDebtsAndCommitments),
-                                color: Color(hex: "#EF4444"),
-                                icon: "exclamationmark.shield.fill"
+                                title: "Serviço da Dívida (DTI)",
+                                value: BRLFormatters.currency(breakdown.totalDebtService),
+                                color: breakdown.debtToIncomeRatio > 50 ? Color(hex: "#EF4444") : (breakdown.debtToIncomeRatio > 30 ? Color(hex: "#F59E0B") : Color(hex: "#10B981")),
+                                icon: "creditcard.fill",
+                                badgeText: String(format: "%.1f%% da renda", breakdown.debtToIncomeRatio)
                             )
 
                             miniMetricBox(
-                                title: surplus > 0 ? "Receita Livre" : "Excesso s/ Receita",
-                                value: BRLFormatters.currency(surplus > 0 ? surplus : (totalDebtsAndCommitments - periodIncome)),
-                                color: surplus > 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
-                                icon: surplus > 0 ? "checkmark.circle.fill" : "xmark.octagon.fill"
+                                title: breakdown.deficit > 0 ? "Déficit Orçamentário" : "Margem Livre",
+                                value: BRLFormatters.currency(breakdown.deficit > 0 ? breakdown.deficit : breakdown.freeMargin),
+                                color: breakdown.deficit > 0 ? Color(hex: "#EF4444") : Color(hex: "#10B981"),
+                                icon: breakdown.deficit > 0 ? "xmark.octagon.fill" : "checkmark.shield.fill"
                             )
                         }
 
@@ -2506,14 +2496,14 @@ public struct DebtCommitmentsDonutChartView: View {
                                     Spacer()
 
                                     // Badge de proporção sobre a Receita
-                                    if periodIncome > 0 {
-                                        let pctOfIncome = (item.amount / periodIncome) * 100.0
+                                    if breakdown.periodIncome > 0 {
+                                        let pctOfIncome = (item.amount / breakdown.periodIncome) * 100.0
                                         Text(String(format: "%.1f%% da receita", pctOfIncome))
-                                            .font(.system(size: 10, weight: .medium))
-                                            .foregroundStyle(.secondary)
+                                            .font(.system(size: 10, weight: item.isFreeMargin ? .bold : .medium))
+                                            .foregroundStyle(item.isFreeMargin ? Color(hex: "#10B981") : .secondary)
                                             .padding(.horizontal, 6)
                                             .padding(.vertical, 2)
-                                            .background(Color.primary.opacity(0.04))
+                                            .background(item.isFreeMargin ? Color(hex: "#10B981").opacity(0.12) : Color.primary.opacity(0.04))
                                             .clipShape(Capsule())
                                     }
 
@@ -2525,6 +2515,47 @@ public struct DebtCommitmentsDonutChartView: View {
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 4)
                                 .background(item.color.opacity(0.04))
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            }
+
+                            // Linha destacada de Déficit caso as saídas superem a receita
+                            if breakdown.deficit > 0.001 {
+                                HStack(spacing: 8) {
+                                    Circle()
+                                        .fill(Color(hex: "#EF4444"))
+                                        .frame(width: 8, height: 8)
+
+                                    Image(systemName: "exclamationmark.octagon.fill")
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(Color(hex: "#EF4444"))
+                                        .frame(width: 14)
+
+                                    Text(breakdown.isAnnual ? "Déficit Anual Projetado" : "Déficit Mensal do Período")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(Color(hex: "#EF4444"))
+                                        .lineLimit(1)
+
+                                    Spacer()
+
+                                    if breakdown.periodIncome > 0 {
+                                        let defPct = (breakdown.deficit / breakdown.periodIncome) * 100.0
+                                        Text(String(format: "+%.1f%% acima da receita", defPct))
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(Color(hex: "#EF4444"))
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color(hex: "#EF4444").opacity(0.12))
+                                            .clipShape(Capsule())
+                                    }
+
+                                    Text("-" + BRLFormatters.currency(breakdown.deficit))
+                                        .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Color(hex: "#EF4444"))
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color(hex: "#EF4444").opacity(0.06))
                                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                             }
                         }
@@ -2544,7 +2575,13 @@ public struct DebtCommitmentsDonutChartView: View {
         )
     }
 
-    private func miniMetricBox(title: String, value: String, color: Color, icon: String) -> some View {
+    private func miniMetricBox(
+        title: String,
+        value: String,
+        color: Color,
+        icon: String,
+        badgeText: String? = nil
+    ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
                 Image(systemName: icon)
@@ -2561,6 +2598,13 @@ public struct DebtCommitmentsDonutChartView: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+
+            if let badgeText {
+                Text(badgeText)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -2570,9 +2614,11 @@ public struct DebtCommitmentsDonutChartView: View {
     }
 
     private var statusColor: Color {
-        if commitmentPercentage <= 70 {
+        if breakdown.deficit > 0.001 {
+            return Color(hex: "#EF4444")
+        } else if breakdown.debtToIncomeRatio <= 30.0 {
             return Color(hex: "#10B981")
-        } else if commitmentPercentage <= 100 {
+        } else if breakdown.debtToIncomeRatio <= 50.0 {
             return Color(hex: "#F59E0B")
         } else {
             return Color(hex: "#EF4444")
@@ -2580,12 +2626,23 @@ public struct DebtCommitmentsDonutChartView: View {
     }
 
     private var statusText: String {
-        if commitmentPercentage <= 70 {
-            return "Comprometimento Saudável (\(String(format: "%.0f%%", commitmentPercentage)))"
-        } else if commitmentPercentage <= 100 {
-            return "Comprometimento Elevado (\(String(format: "%.0f%%", commitmentPercentage)))"
+        if breakdown.deficit > 0.001 {
+            let excessPct = breakdown.periodIncome > 0 ? (breakdown.totalOutflows / breakdown.periodIncome) * 100.0 : 100.0
+            return breakdown.isAnnual
+                ? "Déficit Anual (\(String(format: "%.0f%%", excessPct)) da receita)"
+                : "Déficit Mensal (\(String(format: "%.0f%%", excessPct)) da receita)"
+        } else if breakdown.debtToIncomeRatio <= 30.0 {
+            return breakdown.isAnnual
+                ? "DTI Saudável (\(String(format: "%.1f%%", breakdown.debtToIncomeRatio)) a.a.)"
+                : "DTI Saudável (\(String(format: "%.1f%%", breakdown.debtToIncomeRatio)) da renda)"
+        } else if breakdown.debtToIncomeRatio <= 50.0 {
+            return breakdown.isAnnual
+                ? "DTI em Atenção (\(String(format: "%.1f%%", breakdown.debtToIncomeRatio)) a.a.)"
+                : "DTI em Atenção (\(String(format: "%.1f%%", breakdown.debtToIncomeRatio)) da renda)"
         } else {
-            return "Comprometimento Crítico (\(String(format: "%.0f%%", commitmentPercentage)))"
+            return breakdown.isAnnual
+                ? "DTI Crítico (\(String(format: "%.1f%%", breakdown.debtToIncomeRatio)) a.a.)"
+                : "DTI Crítico (\(String(format: "%.1f%%", breakdown.debtToIncomeRatio)) da renda)"
         }
     }
 }
