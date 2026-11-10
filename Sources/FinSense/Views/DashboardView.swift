@@ -623,7 +623,7 @@ public struct DashboardView: View {
                                 nominalAmount: debtSummary.loansRemainingNominalTotal,
                                 paidInPeriod: debtSummary.loansPaidInPeriodTotal,
                                 realAmortizationInPeriod: debtSummary.loansRealAmortizationInPeriodTotal,
-                                colorHex: "#D97706",
+                                colorHex: "#F97316",
                                 icon: "banknote.fill"
                             )
                             .frame(maxWidth: .infinity)
@@ -638,8 +638,8 @@ public struct DashboardView: View {
                                 nominalAmount: debtSummary.financingsRemainingNominalTotal,
                                 paidInPeriod: debtSummary.financingsPaidInPeriodTotal,
                                 realAmortizationInPeriod: debtSummary.financingsRealAmortizationInPeriodTotal,
-                                colorHex: "#8B5CF6",
-                                icon: "house.and.flag.fill"
+                                colorHex: "#C2410C",
+                                icon: "house.fill"
                             )
                             .frame(maxWidth: .infinity)
                         }
@@ -2246,74 +2246,105 @@ public struct MonthlyCashFlowChartView: View {
 public struct DebtCommitmentsDonutChartView: View {
     public let breakdown: PeriodDebtServiceBreakdown
 
-    public struct DonutSegment: Identifiable {
+    public struct DonutSegment: Identifiable, Hashable {
         public let id: String
         public let name: String
         public let amount: Double
         public let color: Color
         public let icon: String
         public let isFreeMargin: Bool
+        public let isDeficit: Bool
+
+        public init(
+            id: String,
+            name: String,
+            amount: Double,
+            color: Color,
+            icon: String,
+            isFreeMargin: Bool = false,
+            isDeficit: Bool = false
+        ) {
+            self.id = id
+            self.name = name
+            self.amount = amount
+            self.color = color
+            self.icon = icon
+            self.isFreeMargin = isFreeMargin
+            self.isDeficit = isDeficit
+        }
     }
 
     public init(breakdown: PeriodDebtServiceBreakdown) {
         self.breakdown = breakdown
     }
 
+    /// Segmentos ordenados para o anel contínuo (Opção 1: Família de Cores Contíguas de Dívida)
     private var segments: [DonutSegment] {
         var list: [DonutSegment] = []
 
+        // 1. Financiamentos (Terracota / Coral Escuro - tom irmão do laranja)
         if breakdown.financingInstallments > 0.001 {
             list.append(DonutSegment(
                 id: "financing",
-                name: breakdown.isAnnual ? "Parcelas Financiamentos (Ano)" : "Parcelas Financiamentos",
+                name: "Parcelas Financiamentos",
                 amount: breakdown.financingInstallments,
-                color: Color(hex: "#8B5CF6"),
-                icon: "house.and.flag.fill",
-                isFreeMargin: false
+                color: Color(hex: "#C2410C"),
+                icon: "house.fill"
             ))
         }
 
+        // 2. Empréstimos (Laranja Vibrante - contíguo ao financiamento para formar o bloco contínuo DTI)
         if breakdown.loanInstallments > 0.001 {
             list.append(DonutSegment(
                 id: "loans",
-                name: breakdown.isAnnual ? "Parcelas Empréstimos (Ano)" : "Parcelas Empréstimos",
+                name: "Parcelas Empréstimos",
                 amount: breakdown.loanInstallments,
-                color: Color(hex: "#D97706"),
-                icon: "banknote.fill",
-                isFreeMargin: false
+                color: Color(hex: "#F97316"),
+                icon: "banknote.fill"
             ))
         }
 
+        // 3. Acordos / Dívidas (se houver no período, Carmim contíguo)
         if breakdown.debtInstallments > 0.001 {
             list.append(DonutSegment(
                 id: "debts",
-                name: breakdown.isAnnual ? "Parcelas Acordos / Dívidas (Ano)" : "Parcelas Acordos / Dívidas",
+                name: "Parcelas Acordos / Dívidas",
                 amount: breakdown.debtInstallments,
-                color: Color(hex: "#EF4444"),
-                icon: "exclamationmark.triangle.fill",
-                isFreeMargin: false
+                color: Color(hex: "#E11D48"),
+                icon: "exclamationmark.triangle.fill"
             ))
         }
 
+        // 4. Custo de Vida Operacional (Azul Clássico / Ciano Suave)
         if breakdown.operationalExpenses > 0.001 {
             list.append(DonutSegment(
                 id: "operational",
-                name: breakdown.isAnnual ? "Custo de Vida Operacional (Ano)" : "Custo de Vida Operacional",
+                name: "Custo de Vida Operacional",
                 amount: breakdown.operationalExpenses,
                 color: Color(hex: "#0284C7"),
-                icon: "cart.fill",
-                isFreeMargin: false
+                icon: "cart.fill"
             ))
         }
 
+        // 5. Margem Livre / Poupança (Verde Esmeralda)
         if breakdown.freeMargin > 0.001 {
             list.append(DonutSegment(
                 id: "freeMargin",
-                name: breakdown.isAnnual ? "Margem Livre / Poupança (Ano)" : "Margem Livre / Poupança",
+                name: "Margem Livre / Poupança",
                 amount: breakdown.freeMargin,
                 color: Color(hex: "#10B981"),
-                icon: "shield.lefthalf.filled",
+                icon: "shield.fill",
                 isFreeMargin: true
+            ))
+        } else if breakdown.deficit > 0.001 {
+            // Em caso de déficit, insere o segmento contrastante em vermelho representando o excesso sobre a receita
+            list.append(DonutSegment(
+                id: "deficit",
+                name: "Déficit Operacional (Excesso)",
+                amount: breakdown.deficit,
+                color: Color(hex: "#EF4444"),
+                icon: "exclamationmark.octagon.fill",
+                isDeficit: true
             ))
         }
 
@@ -2329,13 +2360,13 @@ public struct DebtCommitmentsDonutChartView: View {
                         Image(systemName: "chart.pie.fill")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Color(hex: "#6366F1"))
-                        Text("Comprometimento de Renda vs. Obrigações (Fluxo / DTI)")
+                        Text("Distribuição de Compromissos vs Receitas")
                             .font(.subheadline.weight(.bold))
                     }
                     Text(
                         breakdown.isAnnual
-                            ? "Fatiamento da receita anual de \(breakdown.yearStr) entre parcelas de crédito, custo de vida e margem livre"
-                            : "Fatiamento da receita mensal entre parcelas de crédito, custo de vida e margem livre"
+                            ? "Proporção do serviço das dívidas, custo de vida e margem livre frente à receita total anual de \(breakdown.yearStr)"
+                            : "Proporção do serviço das dívidas, custo de vida e margem livre frente à receita total mensal"
                     )
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -2369,90 +2400,78 @@ public struct DebtCommitmentsDonutChartView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 160)
             } else {
-                HStack(alignment: .center, spacing: 24) {
-                    // Donut Chart
+                HStack(alignment: .center, spacing: 22) {
+                    // Donut Chart (Anel Único Contínuo sem Sobreposições)
                     ZStack {
                         Chart(segments) { item in
                             SectorMark(
                                 angle: .value("Valor", item.amount),
-                                innerRadius: .ratio(0.64),
-                                angularInset: 1.5
+                                innerRadius: .ratio(0.66),
+                                angularInset: 2.5
                             )
                             .cornerRadius(4)
                             .foregroundStyle(item.color)
                         }
-                        .frame(width: 190, height: 190)
+                        .frame(width: 196, height: 196)
 
-                        // Center Overlay
+                        // Center Overlay (Indicador Central de Saúde)
                         VStack(spacing: 2) {
                             if breakdown.deficit > 0.001 {
                                 Text(breakdown.isAnnual ? "Déficit Anual" : "Déficit Mensal")
-                                    .font(.system(size: 9, weight: .bold))
+                                    .font(.system(size: 9, weight: .semibold))
                                     .foregroundStyle(Color(hex: "#EF4444"))
                                     .lineLimit(1)
 
                                 Text("-" + BRLFormatters.currency(breakdown.deficit))
-                                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                                    .font(.system(size: 15, weight: .heavy, design: .rounded))
                                     .foregroundStyle(Color(hex: "#EF4444"))
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.7)
                                     .monospacedDigit()
 
-                                Divider()
-                                    .frame(width: 36)
-                                    .opacity(0.35)
-                                    .padding(.vertical, 1)
-
                                 let excessPct = (breakdown.deficit / max(breakdown.periodIncome, 1.0)) * 100.0
-                                Text(String(format: "+%.1f%%", excessPct))
-                                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                Text(String(format: "+%.1f%% da receita", excessPct))
+                                    .font(.caption.bold())
                                     .foregroundStyle(Color(hex: "#EF4444"))
-                                Text("excesso orçamentário")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                    .lineLimit(1)
 
                                 Text("DTI: \(String(format: "%.1f%%", breakdown.debtToIncomeRatio))")
-                                    .font(.system(size: 8, weight: .medium))
+                                    .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             } else {
                                 Text(breakdown.isAnnual ? "Margem Livre Anual" : "Margem Livre Mensal")
-                                    .font(.system(size: 9, weight: .medium))
+                                    .font(.system(size: 9, weight: .semibold))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
 
                                 Text(BRLFormatters.currency(breakdown.freeMargin))
-                                    .font(.system(size: 13, weight: .heavy, design: .rounded))
+                                    .font(.system(size: 15, weight: .heavy, design: .rounded))
                                     .foregroundStyle(Color(hex: "#10B981"))
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.7)
                                     .monospacedDigit()
 
-                                Divider()
-                                    .frame(width: 36)
-                                    .opacity(0.35)
-                                    .padding(.vertical, 1)
-
                                 let freePct = breakdown.periodIncome > 0 ? (breakdown.freeMargin / breakdown.periodIncome) * 100.0 : 0.0
-                                Text(String(format: "%.1f%%", freePct))
-                                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                Text(String(format: "%.1f%% receita livre", freePct))
+                                    .font(.caption.bold())
                                     .foregroundStyle(Color(hex: "#10B981"))
-                                Text("receita livre")
-                                    .font(.system(size: 8, weight: .medium))
-                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
 
                                 Text("DTI: \(String(format: "%.1f%%", breakdown.debtToIncomeRatio))")
-                                    .font(.system(size: 8, weight: .medium))
+                                    .font(.system(size: 10, weight: .semibold))
                                     .foregroundStyle(.secondary)
+                                    .lineLimit(1)
                             }
                         }
                         .padding(6)
                     }
-                    .frame(width: 190, height: 190)
+                    .frame(width: 196, height: 196)
 
-                    // Right Breakdown Panel
-                    VStack(alignment: .leading, spacing: 10) {
+                    // Right Breakdown Panel (Legenda Analítica com Barras Horizontais)
+                    VStack(alignment: .leading, spacing: 9) {
                         // 3 Mini Cards Comparativos de Fluxo
-                        HStack(spacing: 10) {
+                        HStack(spacing: 8) {
                             miniMetricBox(
                                 title: breakdown.isAnnual ? "Receita do Ano" : "Receita do Mês",
                                 value: BRLFormatters.currency(breakdown.periodIncome),
@@ -2461,11 +2480,11 @@ public struct DebtCommitmentsDonutChartView: View {
                             )
 
                             miniMetricBox(
-                                title: "Serviço da Dívida (DTI)",
+                                title: "Serviço da Dívida",
                                 value: BRLFormatters.currency(breakdown.totalDebtService),
-                                color: breakdown.debtToIncomeRatio > 50 ? Color(hex: "#EF4444") : (breakdown.debtToIncomeRatio > 30 ? Color(hex: "#F59E0B") : Color(hex: "#10B981")),
+                                color: breakdown.debtToIncomeRatio > 50 ? Color(hex: "#EF4444") : (breakdown.debtToIncomeRatio > 30 ? Color(hex: "#F97316") : Color(hex: "#10B981")),
                                 icon: "creditcard.fill",
-                                badgeText: String(format: "%.1f%% da renda", breakdown.debtToIncomeRatio)
+                                badgeText: String(format: "DTI: %.1f%%", breakdown.debtToIncomeRatio)
                             )
 
                             miniMetricBox(
@@ -2476,87 +2495,10 @@ public struct DebtCommitmentsDonutChartView: View {
                             )
                         }
 
-                        // Lista detalhada dos itens do gráfico
-                        VStack(spacing: 6) {
+                        // Lista Detalhada com Barras Horizontais Proporcionais
+                        VStack(spacing: 5) {
                             ForEach(segments) { item in
-                                HStack(spacing: 8) {
-                                    Circle()
-                                        .fill(item.color)
-                                        .frame(width: 8, height: 8)
-
-                                    Image(systemName: item.icon)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(item.color)
-                                        .frame(width: 14)
-
-                                    Text(item.name)
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .lineLimit(1)
-
-                                    Spacer()
-
-                                    // Badge de proporção sobre a Receita
-                                    if breakdown.periodIncome > 0 {
-                                        let pctOfIncome = (item.amount / breakdown.periodIncome) * 100.0
-                                        Text(String(format: "%.1f%% da receita", pctOfIncome))
-                                            .font(.system(size: 10, weight: item.isFreeMargin ? .bold : .medium))
-                                            .foregroundStyle(item.isFreeMargin ? Color(hex: "#10B981") : .secondary)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(item.isFreeMargin ? Color(hex: "#10B981").opacity(0.12) : Color.primary.opacity(0.04))
-                                            .clipShape(Capsule())
-                                    }
-
-                                    Text(BRLFormatters.currency(item.amount))
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .monospacedDigit()
-                                        .foregroundStyle(item.color)
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(item.color.opacity(0.04))
-                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                            }
-
-                            // Linha destacada de Déficit caso as saídas superem a receita
-                            if breakdown.deficit > 0.001 {
-                                HStack(spacing: 8) {
-                                    Circle()
-                                        .fill(Color(hex: "#EF4444"))
-                                        .frame(width: 8, height: 8)
-
-                                    Image(systemName: "exclamationmark.octagon.fill")
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(Color(hex: "#EF4444"))
-                                        .frame(width: 14)
-
-                                    Text(breakdown.isAnnual ? "Déficit Anual Projetado" : "Déficit Mensal do Período")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(Color(hex: "#EF4444"))
-                                        .lineLimit(1)
-
-                                    Spacer()
-
-                                    if breakdown.periodIncome > 0 {
-                                        let defPct = (breakdown.deficit / breakdown.periodIncome) * 100.0
-                                        Text(String(format: "+%.1f%% acima da receita", defPct))
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundStyle(Color(hex: "#EF4444"))
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Color(hex: "#EF4444").opacity(0.12))
-                                            .clipShape(Capsule())
-                                    }
-
-                                    Text("-" + BRLFormatters.currency(breakdown.deficit))
-                                        .font(.system(size: 11, weight: .heavy, design: .rounded))
-                                        .monospacedDigit()
-                                        .foregroundStyle(Color(hex: "#EF4444"))
-                                }
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color(hex: "#EF4444").opacity(0.06))
-                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                distributionRow(item: item)
                             }
                         }
                     }
@@ -2572,6 +2514,94 @@ public struct DebtCommitmentsDonutChartView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .animation(.easeInOut(duration: 0.28), value: breakdown)
+    }
+
+    @ViewBuilder
+    private func distributionRow(item: DonutSegment) -> some View {
+        let pctOfIncome: Double = {
+            guard breakdown.periodIncome > 0 else { return 0.0 }
+            return (item.amount / breakdown.periodIncome) * 100.0
+        }()
+        let progressRatio: Double = {
+            guard breakdown.periodIncome > 0 else { return 0.0 }
+            return min(max(item.amount / breakdown.periodIncome, 0.0), 1.0)
+        }()
+
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                // Marcador / Ícone com fundo temático
+                ZStack {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(item.color.opacity(0.14))
+                        .frame(width: 20, height: 20)
+
+                    Image(systemName: item.icon)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(item.color)
+                }
+
+                // Título
+                Text(item.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 6)
+
+                // Métrica de proporção sobre a Receita
+                if breakdown.periodIncome > 0 {
+                    Text(
+                        item.isDeficit
+                            ? String(format: "+%.1f%% acima da receita", pctOfIncome)
+                            : String(format: "%.1f%% da receita", pctOfIncome)
+                    )
+                    .font(.system(size: 10, weight: (item.isFreeMargin || item.isDeficit) ? .bold : .medium))
+                    .foregroundStyle(item.isDeficit ? Color(hex: "#EF4444") : (item.isFreeMargin ? Color(hex: "#10B981") : .secondary))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        item.isDeficit
+                            ? Color(hex: "#EF4444").opacity(0.12)
+                            : (item.isFreeMargin ? Color(hex: "#10B981").opacity(0.12) : Color.primary.opacity(0.04))
+                    )
+                    .clipShape(Capsule())
+                }
+
+                // Valor Monetário Formatado
+                Text(item.isDeficit ? ("-" + BRLFormatters.currency(item.amount)) : BRLFormatters.currency(item.amount))
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(item.color)
+            }
+
+            // Barra Horizontal Proporcional
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.05))
+                        .frame(height: 3.5)
+
+                    Capsule()
+                        .fill(item.color)
+                        .frame(
+                            width: max(geo.size.width * progressRatio, progressRatio > 0 ? 4 : 0),
+                            height: 3.5
+                        )
+                }
+            }
+            .frame(height: 3.5)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(item.color.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(item.color.opacity(0.10), lineWidth: 1)
         )
     }
 
@@ -2619,7 +2649,7 @@ public struct DebtCommitmentsDonutChartView: View {
         } else if breakdown.debtToIncomeRatio <= 30.0 {
             return Color(hex: "#10B981")
         } else if breakdown.debtToIncomeRatio <= 50.0 {
-            return Color(hex: "#F59E0B")
+            return Color(hex: "#F97316")
         } else {
             return Color(hex: "#EF4444")
         }
