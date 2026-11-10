@@ -916,6 +916,99 @@ public struct AmortizationRecord: Identifiable, Codable, Hashable {
     }
 }
 
+/// Métricas de Acompanhamento e Conquista de Progresso do Contrato de Crédito.
+/// Adota o conceito de Prazo Original Imutável como régua mestra de progresso,
+/// discriminando o avanço natural no fluxo das parcelas pagas da aceleração conquistada por amortizações extraordinárias.
+public struct ContractProgressMetrics: Hashable, Identifiable {
+    public var id: UUID
+
+    /// Prazo Original Contratado imutável (Base total invariável = 100% da régua do tempo)
+    public let originalTotalInstallments: Int
+
+    /// Parcelas quitadas mês a mês no fluxo regular ao longo do tempo
+    public let paidInFlowCount: Int
+
+    /// Parcelas futuras que ainda restam ser pagas no cenário atual
+    public let remainingCount: Int
+
+    /// Parcelas eliminadas antecipadamente por amortizações extraordinárias
+    public let eliminatedByAmortizationCount: Int
+
+    /// Total de meses superados (pagos no fluxo + eliminados por amortização)
+    public let totalOvercomeMonths: Int
+
+    /// Percentual de conclusão global em relação ao plano original (0.0 a 1.0)
+    public let globalCompletionPercentage: Double
+
+    /// Proporção do progresso natural (0.0 a 1.0)
+    public let naturalProgressRatio: Double
+
+    /// Proporção da aceleração por amortização (0.0 a 1.0)
+    public let amortizationAccelerationRatio: Double
+
+    /// Proporção da dívida futura restante (0.0 a 1.0)
+    public let remainingRatio: Double
+
+    /// Anos de vida financeira poupados
+    public let savedYears: Int
+
+    /// Meses residuais poupados
+    public let savedRemainingMonths: Int
+
+    /// Texto traduzido do tempo de vida financeira recuperado (anos e meses)
+    public var savedTimeString: String {
+        if savedYears > 0 && savedRemainingMonths > 0 {
+            return "\(savedYears) ano\(savedYears > 1 ? "s" : "") e \(savedRemainingMonths) m\(savedRemainingMonths > 1 ? "eses" : "ês")"
+        } else if savedYears > 0 {
+            return "\(savedYears) ano\(savedYears > 1 ? "s" : "")"
+        } else {
+            return "\(savedRemainingMonths) m\(savedRemainingMonths > 1 ? "eses" : "ês")"
+        }
+    }
+
+    public init(
+        id: UUID = UUID(),
+        originalTotalInstallments: Int,
+        paidInFlowCount: Int,
+        remainingCount: Int,
+        isSettled: Bool = false
+    ) {
+        self.id = id
+        let original = max(originalTotalInstallments, 1)
+        self.originalTotalInstallments = original
+
+        if isSettled || remainingCount <= 0 {
+            let paid = min(paidInFlowCount, original)
+            let eliminated = max(0, original - paid)
+            self.paidInFlowCount = paid
+            self.remainingCount = 0
+            self.eliminatedByAmortizationCount = eliminated
+            self.totalOvercomeMonths = original
+            self.globalCompletionPercentage = 1.0
+            self.naturalProgressRatio = Double(paid) / Double(original)
+            self.amortizationAccelerationRatio = Double(eliminated) / Double(original)
+            self.remainingRatio = 0.0
+            self.savedYears = eliminated / 12
+            self.savedRemainingMonths = eliminated % 12
+        } else {
+            let paid = min(paidInFlowCount, original)
+            let rem = min(remainingCount, max(0, original - paid))
+            let eliminated = max(0, original - (paid + rem))
+            let overcome = min(paid + eliminated, original)
+            self.paidInFlowCount = paid
+            self.remainingCount = rem
+            self.eliminatedByAmortizationCount = eliminated
+            self.totalOvercomeMonths = overcome
+            self.globalCompletionPercentage = Double(overcome) / Double(original)
+            self.naturalProgressRatio = Double(paid) / Double(original)
+            self.amortizationAccelerationRatio = Double(eliminated) / Double(original)
+            self.remainingRatio = Double(rem) / Double(original)
+            self.savedYears = eliminated / 12
+            self.savedRemainingMonths = eliminated % 12
+        }
+    }
+}
+
 public struct CreditContract: Identifiable, Codable, Hashable {
     public var id: UUID
     public var kind: CreditContractKind
@@ -929,6 +1022,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
     public var installmentAmount: Double
     public var billingDay: Int
     public var totalInstallments: Int
+    public var originalTotalInstallments: Int?
     public var monthlyInterestRate: Double // percentage, e.g., 1.65 means 1.65% a.m.
     public var startDate: Date?
     public var accountId: UUID
@@ -965,6 +1059,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         installmentAmount: Double,
         billingDay: Int,
         totalInstallments: Int,
+        originalTotalInstallments: Int? = nil,
         monthlyInterestRate: Double,
         startDate: Date? = nil,
         accountId: UUID,
@@ -998,6 +1093,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.installmentAmount = abs(installmentAmount)
         self.billingDay = min(max(billingDay, 1), 31)
         self.totalInstallments = max(totalInstallments, 1)
+        self.originalTotalInstallments = originalTotalInstallments ?? totalInstallments
         self.monthlyInterestRate = max(monthlyInterestRate, 0.0)
         self.startDate = startDate
         self.accountId = accountId
@@ -1155,10 +1251,28 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         )
     }
 
+    /// Prazo Original Contratado imutável (régua mestra invariável do contrato).
+    /// Se não foi persistido diretamente, recupera de financingDetails, loanDetails ou calcula recompondo as parcelas eliminadas por amortizações prévias.
+    public var effectiveOriginalTotalInstallments: Int {
+        if let original = originalTotalInstallments, original > 0 {
+            return max(original, totalInstallments)
+        }
+        if let finTotal = financingDetails?.totalInstallments, finTotal > 0 {
+            return max(finTotal, totalInstallments)
+        }
+        if let loanTotal = loanDetails?.totalInstallments, loanTotal > 0 {
+            return max(loanTotal, totalInstallments)
+        }
+        let eliminatedInHistory = amortizationHistory
+            .filter { $0.mode == .reduceTerm }
+            .reduce(0) { $0 + max(0, $1.previousRemainingInstallments - $1.newRemainingInstallments) }
+        return max(totalInstallments + eliminatedInHistory, totalInstallments)
+    }
+
     enum CodingKeys: String, CodingKey {
         case id, kind, name, contractNumber, loanSubtype, financingSubtype, amortizationSystem
         case totalContractedAmount, outstandingBalance, installmentAmount, billingDay
-        case totalInstallments, monthlyInterestRate, startDate, accountId, categoryId
+        case totalInstallments, originalTotalInstallments, monthlyInterestRate, startDate, accountId, categoryId
         case pastInstallmentsElapsedAtCreation, extraAmortizedTotal, amortizationHistory
         case isSettled, settledAmount, settledDate, settledAccountId, notes, createdAt
         case annualNominalInterestRate, indexationRate, adminFee, insuranceFee
@@ -1188,6 +1302,8 @@ public struct CreditContract: Identifiable, Codable, Hashable {
             ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("billing_day"))) ?? 1
         self.totalInstallments = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("totalInstallments")))
             ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("total_installments"))) ?? 1
+        self.originalTotalInstallments = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("originalTotalInstallments")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("original_total_installments")))
         self.monthlyInterestRate = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthlyInterestRate")))
             ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthly_interest_rate"))) ?? 0.0
         self.startDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("startDate")))
@@ -1244,6 +1360,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         try c.encode(installmentAmount, forKey: .installmentAmount)
         try c.encode(billingDay, forKey: .billingDay)
         try c.encode(totalInstallments, forKey: .totalInstallments)
+        try c.encodeIfPresent(originalTotalInstallments, forKey: .originalTotalInstallments)
         try c.encode(monthlyInterestRate, forKey: .monthlyInterestRate)
         try c.encodeIfPresent(startDate, forKey: .startDate)
         try c.encode(accountId, forKey: .accountId)

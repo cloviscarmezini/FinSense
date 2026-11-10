@@ -140,6 +140,24 @@ public struct LoansAndFinancingsView: View {
                         }
                     }
                 }
+
+                if !settledList.isEmpty {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(Color(hex: "#10B981"))
+                            Text("Contratos Liquidados / Quitados (\(settledList.count))")
+                                .font(.headline.bold())
+                        }
+                        .padding(.top, 12)
+
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 18), GridItem(.flexible(), spacing: 18)], spacing: 18) {
+                            ForEach(settledList) { contract in
+                                contractCard(contract)
+                            }
+                        }
+                    }
+                }
             }
             .padding(24)
         }
@@ -177,13 +195,13 @@ public struct LoansAndFinancingsView: View {
 
     @ViewBuilder
     private func contractCard(_ contract: CreditContract) -> some View {
-        let paidCount = store.paidTransactionsCount(forContract: contract)
-        let remainingCount = store.remainingInstallmentsCount(for: contract)
+        let metrics = store.progressMetrics(for: contract)
+        let paidCount = metrics.paidInFlowCount
+        let remainingCount = metrics.remainingCount
         let outstandingBalance = store.currentOutstandingBalance(for: contract)
         let nominalRemaining = store.remainingNominalAmount(for: contract)
         let projectedPayoff = store.projectedPayoffAmount(for: contract)
         let discountEstimate = max(nominalRemaining - projectedPayoff, 0)
-        let progress = Double(paidCount) / Double(max(contract.totalInstallments, 1))
         let accentHex = kind == .loan ? "#D97706" : "#8B5CF6"
 
         VStack(alignment: .leading, spacing: 14) {
@@ -201,6 +219,15 @@ public struct LoansAndFinancingsView: View {
                             .padding(.vertical, 3)
                             .background(Capsule().fill(Color(hex: accentHex).opacity(0.16)))
                             .foregroundStyle(Color(hex: accentHex))
+
+                        if contract.isSettled {
+                            Text("QUITADO")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
+                                .foregroundStyle(Color(hex: "#10B981"))
+                        }
 
                         if contract.kind == .loan && (contract.loanSubtype == .consignado || contract.effectiveLoanModel?.isPayrollDeductible == true) {
                             HStack(spacing: 4) {
@@ -270,8 +297,20 @@ public struct LoansAndFinancingsView: View {
                     )
 
                     detailCell(label: "Indexador", value: contract.indexationRate?.rawValue ?? "TR")
-                    detailCell(label: "Parcelas Totais", value: "\(contract.totalInstallments)x (\(remainingCount)x futuras)")
+                    detailCell(label: "Prazo Original Contratado", value: "\(metrics.originalTotalInstallments) meses")
+                    detailCell(
+                        label: "Meses Superados",
+                        value: "\(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments)",
+                        valueColor: Color(hex: "#10B981")
+                    )
+
+                    detailCell(label: "Parcelas Futuras Restantes", value: "\(remainingCount)x futuras")
                     detailCell(label: "Soma Nominal Futura", value: BRLFormatters.currency(nominalRemaining))
+                    detailCell(
+                        label: "Amortizado Extraordinário",
+                        value: BRLFormatters.currency(contract.extraAmortizedTotal),
+                        valueColor: Color(hex: "#10B981")
+                    )
                 }
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
@@ -304,86 +343,171 @@ public struct LoansAndFinancingsView: View {
                     )
 
                     detailCell(label: "Taxa de Juros Mensal", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
-                    detailCell(label: "Parcelas Totais", value: "\(contract.totalInstallments)x (\(remainingCount)x futuras)")
+                    detailCell(label: "Prazo Original Contratado", value: "\(metrics.originalTotalInstallments) meses")
+                    detailCell(
+                        label: "Meses Superados",
+                        value: "\(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments)",
+                        valueColor: Color(hex: "#10B981")
+                    )
+
+                    detailCell(label: "Parcelas Futuras Restantes", value: "\(remainingCount)x futuras")
                     detailCell(
                         label: "Soma Nominal (Fluxo c/ Juros)",
                         value: BRLFormatters.currency(nominalRemaining),
                         valueColor: Color(hex: "#64748B")
                     )
-
                     detailCell(
-                        label: "Data de Contratação",
-                        value: contract.startDate.map { BRLFormatters.shortDate($0) } ?? "A partir da criação"
+                        label: "Amortizado Extraordinário",
+                        value: BRLFormatters.currency(contract.extraAmortizedTotal),
+                        valueColor: Color(hex: "#10B981")
                     )
-                    detailCell(label: "Parcelas Pagas", value: "\(paidCount) de \(contract.totalInstallments)")
-                    detailCell(label: "Vencimento Mensal", value: "Todo dia \(contract.billingDay)")
                 }
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
             }
 
-            // Progress Bar
-            VStack(alignment: .leading, spacing: 4) {
+            // Segmented Progress Bar & Conquest Indicators
+            VStack(alignment: .leading, spacing: 8) {
+                // Bar Header
                 HStack {
-                    Text("Progresso do Contrato: \(paidCount) de \(contract.totalInstallments) parcelas decorridas/pagas")
-                        .font(.caption)
+                    Text("Progresso do Contrato: \(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments) meses superados")
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text(String(format: "%.0f%%", progress * 100))
+                    Text(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100))
                         .font(.caption.bold())
+                        .foregroundStyle(metrics.globalCompletionPercentage >= 1.0 ? Color(hex: "#10B981") : .primary)
                 }
-                ProgressView(value: min(max(progress, 0), 1))
-                    .tint(Color(hex: accentHex))
-            }
 
-            // Highlighted Line: "Projeção de valor para quitar" + "Simular Prazo com IA"
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "sparkles")
-                            .foregroundStyle(Color(hex: "#10B981"))
-                        Text(kind == .loan ? "Valor para Quitar Hoje (Saldo Devedor PV):" : "Projeção de valor para quitar:")
-                            .font(.subheadline.weight(.semibold))
+                // 3-Segment Visual Bar
+                SegmentedContractProgressBar(metrics: metrics, accentHex: accentHex)
+
+                // Legend & Lower Badges
+                HStack(alignment: .center, spacing: 12) {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(Color(hex: accentHex))
+                            .frame(width: 8, height: 8)
+                        Text("\(paidCount) pagas no fluxo")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
-                    Text(kind == .loan
-                        ? "Economia estimada de juros futuros: \(BRLFormatters.currency(discountEstimate)) (Soma Nominal: \(BRLFormatters.currency(nominalRemaining)))"
-                        : "Saldo Devedor: \(BRLFormatters.currency(outstandingBalance)) • Desconto est. sobre nominal: \(BRLFormatters.currency(discountEstimate))"
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
 
-                Spacer()
+                    if metrics.eliminatedByAmortizationCount > 0 {
+                        HStack(spacing: 4) {
+                            Text("⚡️ \(metrics.eliminatedByAmortizationCount) eliminadas por amortização (-\(metrics.savedTimeString) poupados!)")
+                                .font(.caption2.bold())
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
+                        .foregroundStyle(Color(hex: "#10B981"))
+                    }
 
-                Button {
-                    let kindLower = contract.kind == .loan ? "empréstimo" : "financiamento"
-                    let question = "[NOVA SIMULAÇÃO DO SISTEMA] Monte um plano de ação para eu quitar meu \(kindLower) \"\(contract.name)\" no menor prazo possível"
-                    store.requireInstalledLLM(forFeature: "Simular Prazo de '\(contract.name)' com IA Local") {
-                        store.isAIChatPresented = true
-                        Task {
-                            await llmService.sendUserQuestion(question, store: store)
+                    Spacer()
+
+                    if contract.isSettled || remainingCount == 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "checkmark.seal.fill")
+                            Text("Totalmente Quitado")
+                        }
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
+                        .foregroundStyle(Color(hex: "#10B981"))
+                    } else {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(Color.primary.opacity(0.25))
+                                .frame(width: 8, height: 8)
+                            Text("\(remainingCount) restantes")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
-                } label: {
-                    Label("Simular Prazo com IA", systemImage: "sparkles")
-                        .font(.caption.weight(.semibold))
                 }
-                .buttonStyle(.bordered)
-                .help("Gerar plano de ação na IA Local para quitar este \(contract.kind.title.lowercased()) no menor prazo possível")
-
-                Text(BRLFormatters.currency(kind == .loan ? outstandingBalance : projectedPayoff))
-                    .font(.system(size: 22, weight: .heavy, design: .rounded))
-                    .foregroundStyle(Color(hex: "#10B981"))
             }
-            .padding(12)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color(hex: "#10B981").opacity(0.10))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Color(hex: "#10B981").opacity(0.30), lineWidth: 1)
-            )
+
+            // Highlighted Line: "Projeção de valor para quitar" / "Contrato Quitado"
+            if contract.isSettled {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(Color(hex: "#10B981"))
+                            Text("Contrato Liquidado com Sucesso")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        Text(contract.settledDate.map { "Encerrado em \(BRLFormatters.shortDate($0)) • Nenhuma parcela futura pendente" } ?? "Nenhuma parcela futura pendente")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Text(BRLFormatters.currency(0.0))
+                        .font(.system(size: 22, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Color(hex: "#10B981"))
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: "#10B981").opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color(hex: "#10B981").opacity(0.30), lineWidth: 1)
+                )
+            } else {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "sparkles")
+                                .foregroundStyle(Color(hex: "#10B981"))
+                            Text(kind == .loan ? "Valor para Quitar Hoje (Saldo Devedor PV):" : "Projeção de valor para quitar:")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        Text(kind == .loan
+                            ? "Economia estimada de juros futuros: \(BRLFormatters.currency(discountEstimate)) (Soma Nominal: \(BRLFormatters.currency(nominalRemaining)))"
+                            : "Saldo Devedor: \(BRLFormatters.currency(outstandingBalance)) • Desconto est. sobre nominal: \(BRLFormatters.currency(discountEstimate))"
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button {
+                        let kindLower = contract.kind == .loan ? "empréstimo" : "financiamento"
+                        let question = "[NOVA SIMULAÇÃO DO SISTEMA] Monte um plano de ação para eu quitar meu \(kindLower) \"\(contract.name)\" no menor prazo possível"
+                        store.requireInstalledLLM(forFeature: "Simular Prazo de '\(contract.name)' com IA Local") {
+                            store.isAIChatPresented = true
+                            Task {
+                                await llmService.sendUserQuestion(question, store: store)
+                            }
+                        }
+                    } label: {
+                        Label("Simular Prazo com IA", systemImage: "sparkles")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Gerar plano de ação na IA Local para quitar este \(contract.kind.title.lowercased()) no menor prazo possível")
+
+                    Text(BRLFormatters.currency(kind == .loan ? outstandingBalance : projectedPayoff))
+                        .font(.system(size: 22, weight: .heavy, design: .rounded))
+                        .foregroundStyle(Color(hex: "#10B981"))
+                }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: "#10B981").opacity(0.10))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color(hex: "#10B981").opacity(0.30), lineWidth: 1)
+                )
+            }
 
             if !contract.notes.isEmpty {
                 Text(contract.notes)
@@ -393,24 +517,45 @@ public struct LoansAndFinancingsView: View {
             }
 
             // Action Buttons: Amortizar & Quitar
-            HStack(spacing: 12) {
-                Button {
-                    contractToAmortize = contract
-                } label: {
-                    Label("Amortizar Parcelas / Saldo", systemImage: "arrow.down.forward.and.arrow.up.backward.circle.fill")
-                        .frame(maxWidth: .infinity)
+            if contract.isSettled {
+                HStack {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(Color(hex: "#10B981"))
+                    Text("Contrato Liquidado / Quitado")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(Color(hex: "#10B981"))
+                    Spacer()
+                    if let settledDate = contract.settledDate {
+                        Text("Liquidado em \(BRLFormatters.shortDate(settledDate))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                .buttonStyle(.bordered)
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color(hex: "#10B981").opacity(0.12))
+                )
+            } else {
+                HStack(spacing: 12) {
+                    Button {
+                        contractToAmortize = contract
+                    } label: {
+                        Label("Amortizar Parcelas / Saldo", systemImage: "arrow.down.forward.and.arrow.up.backward.circle.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
 
-                Button {
-                    contractToSettle = contract
-                } label: {
-                    Label("Quitar \(kind.title)", systemImage: "checkmark.seal.fill")
-                        .fontWeight(.semibold)
-                        .frame(maxWidth: .infinity)
+                    Button {
+                        contractToSettle = contract
+                    } label: {
+                        Label("Quitar \(kind.title)", systemImage: "checkmark.seal.fill")
+                            .fontWeight(.semibold)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#10B981"))
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#10B981"))
             }
         }
         .padding(18)
@@ -435,6 +580,53 @@ public struct LoansAndFinancingsView: View {
                 .foregroundStyle(valueColor)
                 .lineLimit(1)
         }
+    }
+}
+
+// MARK: - Segmented Contract Progress Bar
+
+public struct SegmentedContractProgressBar: View {
+    public let metrics: ContractProgressMetrics
+    public let accentHex: String
+
+    public init(metrics: ContractProgressMetrics, accentHex: String) {
+        self.metrics = metrics
+        self.accentHex = accentHex
+    }
+
+    public var body: some View {
+        GeometryReader { geometry in
+            let totalWidth = geometry.size.width
+            let naturalRatio = CGFloat(min(max(metrics.naturalProgressRatio, 0.0), 1.0))
+            let amortRatio = CGFloat(min(max(metrics.amortizationAccelerationRatio, 0.0), 1.0))
+
+            let naturalWidth = totalWidth * naturalRatio
+            let amortWidth = min(totalWidth * amortRatio, max(0, totalWidth - naturalWidth))
+
+            ZStack(alignment: .leading) {
+                // Segment 3: Dívida Restante / Trilho Neutro
+                Capsule()
+                    .fill(Color.primary.opacity(0.12))
+
+                HStack(spacing: 0) {
+                    // Segment 1: Progresso Natural (Pagas no Fluxo)
+                    if naturalWidth > 0.001 {
+                        Rectangle()
+                            .fill(Color(hex: accentHex))
+                            .frame(width: naturalWidth)
+                    }
+
+                    // Segment 2: Aceleração por Amortização (Conquista Extraordinária)
+                    if amortWidth > 0.001 {
+                        Rectangle()
+                            .fill(Color(hex: "#10B981"))
+                            .frame(width: amortWidth)
+                    }
+                }
+                .clipShape(Capsule())
+            }
+        }
+        .frame(height: 10)
     }
 }
 

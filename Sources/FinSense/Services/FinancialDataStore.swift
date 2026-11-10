@@ -2559,6 +2559,7 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         contract.installmentAmount = targetInstallment
+        contract.originalTotalInstallments = contract.effectiveOriginalTotalInstallments
 
         // 5. Restauração das Parcelas Futuras Removidas
         restoreMissingFutureContractTransactions(
@@ -3221,6 +3222,7 @@ public final class FinancialDataStore: ObservableObject {
         installmentAmount: Double,
         billingDay: Int,
         totalInstallments: Int,
+        originalTotalInstallments: Int? = nil,
         monthlyInterestRate: Double,
         startDate: Date?,
         accountId: UUID,
@@ -3267,6 +3269,7 @@ public final class FinancialDataStore: ObservableObject {
             installmentAmount: installmentAmount,
             billingDay: billingDay,
             totalInstallments: totalInstallments,
+            originalTotalInstallments: originalTotalInstallments ?? totalInstallments,
             monthlyInterestRate: monthlyInterestRate,
             startDate: startDate,
             accountId: accountId,
@@ -3441,7 +3444,36 @@ public final class FinancialDataStore: ObservableObject {
 
     public func paidTransactionsCount(forContract contract: CreditContract) -> Int {
         let paidInApp = transactions.filter { $0.linkedContractId == contract.id && $0.isPaid && $0.installmentIndex != nil }.count
-        return min(contract.pastInstallmentsElapsedAtCreation + paidInApp, contract.totalInstallments)
+        return min(contract.pastInstallmentsElapsedAtCreation + paidInApp, contract.effectiveOriginalTotalInstallments)
+    }
+
+    /// Métricas completas de acompanhamento, régua mestra e progresso conquistado do contrato de crédito
+    public func progressMetrics(for contract: CreditContract) -> ContractProgressMetrics {
+        let original = contract.effectiveOriginalTotalInstallments
+        let paidInFlow = paidTransactionsCount(forContract: contract)
+        let remaining = contract.isSettled ? 0 : remainingInstallmentsCount(for: contract)
+        return ContractProgressMetrics(
+            id: contract.id,
+            originalTotalInstallments: original,
+            paidInFlowCount: paidInFlow,
+            remainingCount: remaining,
+            isSettled: contract.isSettled
+        )
+    }
+
+    /// Quantidade de parcelas eliminadas antecipadamente por amortizações extraordinárias
+    public func eliminatedInstallmentsCount(for contract: CreditContract) -> Int {
+        progressMetrics(for: contract).eliminatedByAmortizationCount
+    }
+
+    /// Total de meses superados (pagos no fluxo + eliminados por amortização)
+    public func totalOvercomeMonths(for contract: CreditContract) -> Int {
+        progressMetrics(for: contract).totalOvercomeMonths
+    }
+
+    /// Percentual de conclusão global em relação ao plano original (0.0 a 1.0)
+    public func globalCompletionPercentage(for contract: CreditContract) -> Double {
+        progressMetrics(for: contract).globalCompletionPercentage
     }
 
     public func remainingInstallmentsCount(for contract: CreditContract, asOf asOfCutoff: Date? = nil) -> Int {
@@ -3750,6 +3782,7 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         contract.extraAmortizedTotal += effectiveAmortization
+        contract.originalTotalInstallments = contract.effectiveOriginalTotalInstallments
         let record = AmortizationRecord(
             date: date,
             amountPaid: cleanPaid,
@@ -3842,6 +3875,7 @@ public final class FinancialDataStore: ObservableObject {
             contract.loanDetails?.remainingInstallments = 0
             contract.loanDetails?.installmentValue = 0.0
         }
+        contract.originalTotalInstallments = contract.effectiveOriginalTotalInstallments
         contracts[idx] = contract
 
         sortTransactions()

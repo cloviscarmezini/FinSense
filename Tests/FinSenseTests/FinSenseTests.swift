@@ -3951,4 +3951,144 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(store.activeContracts(for: .loan).count, 1)
         XCTAssertEqual(store.settledContracts(for: .loan).count, 0)
     }
+
+    func testSegmentedContractProgressAndEliminatedInstallmentsCalculation() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Corrente Caixa",
+            bankPresetId: "caixa",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#005CA9",
+            initialBalance: 150_000.0
+        )
+        let acc = store.accounts.first!
+
+        // 1. Cria Financiamento Imobiliário Caixa: 360 meses, sendo 28 já decorridos no momento do cadastro (restam 332)
+        // Saldo Devedor Teórico: R$ 324.737,86, Parcela: R$ 2.658,04
+        let financing = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Imóvel Caixa",
+            financingSubtype: .imovel,
+            amortizationSystem: .price,
+            totalContractedAmount: 350_000.00,
+            outstandingBalance: 324_737.86,
+            installmentAmount: 2658.04,
+            billingDay: 10,
+            totalInstallments: 360,
+            originalTotalInstallments: 360,
+            monthlyInterestRate: 0.7092, // ~8.51% a.a.
+            startDate: Date(),
+            accountId: acc.id,
+            overridePastInstallmentsCount: 28,
+            annualNominalInterestRate: 8.51,
+            adminFee: 25.0,
+            insuranceFee: 86.27,
+            baseInstallmentAmount: 2546.77
+        )
+
+        // Verificação Inicial da Régua Mestra e Métricas
+        let initialMetrics = store.progressMetrics(for: financing)
+        XCTAssertEqual(initialMetrics.originalTotalInstallments, 360)
+        XCTAssertEqual(initialMetrics.paidInFlowCount, 28)
+        XCTAssertEqual(initialMetrics.remainingCount, 332)
+        XCTAssertEqual(initialMetrics.eliminatedByAmortizationCount, 0)
+        XCTAssertEqual(initialMetrics.totalOvercomeMonths, 28)
+        XCTAssertEqual(initialMetrics.globalCompletionPercentage, 28.0 / 360.0, accuracy: 0.001)
+        XCTAssertEqual(initialMetrics.naturalProgressRatio, 28.0 / 360.0, accuracy: 0.001)
+        XCTAssertEqual(initialMetrics.amortizationAccelerationRatio, 0.0, accuracy: 0.001)
+        XCTAssertEqual(initialMetrics.remainingRatio, 332.0 / 360.0, accuracy: 0.001)
+
+        // 2. Amortização Extraordinária com Redução de Prazo (.reduceTerm)
+        // Amortiza R$ 20.000,00 -> saldo cai para R$ 304.737,86 e parcelas futuras caem de 332 para 268 (64 eliminadas!)
+        store.amortizeContract(
+            contractId: financing.id,
+            amountPaid: 20_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        let contractAfterAmort = store.contracts.first(where: { $0.id == financing.id })!
+        let metricsAfterAmort = store.progressMetrics(for: contractAfterAmort)
+
+        XCTAssertEqual(metricsAfterAmort.originalTotalInstallments, 360, "Régua mestra original deve permanecer invariável em 360 meses")
+        XCTAssertEqual(metricsAfterAmort.paidInFlowCount, 28, "Parcelas pagas no fluxo regular devem se manter 28")
+        XCTAssertEqual(metricsAfterAmort.remainingCount, 268, "Parcelas futuras devem ser 268 após amortização")
+        XCTAssertEqual(metricsAfterAmort.eliminatedByAmortizationCount, 64, "Devem ser 64 parcelas eliminadas por amortização (360 - 28 - 268)")
+        XCTAssertEqual(metricsAfterAmort.totalOvercomeMonths, 92, "Meses superados: 28 no fluxo + 64 eliminadas = 92 meses")
+        XCTAssertEqual(metricsAfterAmort.globalCompletionPercentage, 92.0 / 360.0, accuracy: 0.001, "Progresso global deve saltar de ~7.7% para ~25.56%")
+        XCTAssertEqual(metricsAfterAmort.savedYears, 5, "64 meses / 12 = 5 anos")
+        XCTAssertEqual(metricsAfterAmort.savedRemainingMonths, 4, "64 meses % 12 = 4 meses")
+        XCTAssertEqual(metricsAfterAmort.savedTimeString, "5 anos e 4 meses")
+        XCTAssertEqual(metricsAfterAmort.amortizationAccelerationRatio, 64.0 / 360.0, accuracy: 0.001)
+
+        // 3. Rollback da Amortização ao Deletar a Transação no Extrato
+        let amortTx = store.transactions.first(where: { $0.linkedContractId == financing.id && $0.installmentIndex == nil })!
+        store.deleteTransaction(amortTx.id)
+
+        let contractRolledBack = store.contracts.first(where: { $0.id == financing.id })!
+        let metricsRolledBack = store.progressMetrics(for: contractRolledBack)
+        XCTAssertEqual(metricsRolledBack.originalTotalInstallments, 360)
+        XCTAssertEqual(metricsRolledBack.paidInFlowCount, 28)
+        XCTAssertEqual(metricsRolledBack.remainingCount, 332)
+        XCTAssertEqual(metricsRolledBack.eliminatedByAmortizationCount, 0)
+        XCTAssertEqual(metricsRolledBack.totalOvercomeMonths, 28)
+        XCTAssertEqual(metricsRolledBack.globalCompletionPercentage, 28.0 / 360.0, accuracy: 0.001)
+
+        // 4. Teste de Amortização por Redução de Parcela (.reduceInstallment)
+        // Neste modo, o prazo não encurta, logo eliminadas por amortização deve ser 0
+        store.amortizeContract(
+            contractId: financing.id,
+            amountPaid: 10_000.00,
+            accountId: acc.id,
+            mode: .reduceInstallment
+        )
+
+        let contractReduceInst = store.contracts.first(where: { $0.id == financing.id })!
+        let metricsReduceInst = store.progressMetrics(for: contractReduceInst)
+        XCTAssertEqual(metricsReduceInst.originalTotalInstallments, 360)
+        XCTAssertEqual(metricsReduceInst.paidInFlowCount, 28)
+        XCTAssertEqual(metricsReduceInst.remainingCount, 332)
+        XCTAssertEqual(metricsReduceInst.eliminatedByAmortizationCount, 0, "Redução de parcela não elimina meses do prazo")
+        XCTAssertEqual(metricsReduceInst.totalOvercomeMonths, 28)
+        XCTAssertEqual(metricsReduceInst.globalCompletionPercentage, 28.0 / 360.0, accuracy: 0.001)
+
+        // Limpa transação de redução de parcela para o próximo teste
+        let redTx = store.transactions.first(where: { $0.linkedContractId == financing.id && $0.installmentIndex == nil })!
+        store.deleteTransaction(redTx.id)
+
+        // 5. Quitação Total Antecipada (Payoff Integral)
+        let balanceToPayoff = store.currentOutstandingBalance(for: financing)
+        store.settleContract(
+            contractId: financing.id,
+            finalPayoffAmount: balanceToPayoff,
+            accountId: acc.id
+        )
+
+        let contractSettled = store.contracts.first(where: { $0.id == financing.id })!
+        XCTAssertTrue(contractSettled.isSettled)
+        let metricsSettled = store.progressMetrics(for: contractSettled)
+        XCTAssertEqual(metricsSettled.originalTotalInstallments, 360)
+        XCTAssertEqual(metricsSettled.paidInFlowCount, 28)
+        XCTAssertEqual(metricsSettled.remainingCount, 0)
+        XCTAssertEqual(metricsSettled.eliminatedByAmortizationCount, 332, "Todas as 332 parcelas restantes foram antecipadas")
+        XCTAssertEqual(metricsSettled.totalOvercomeMonths, 360, "Todos os 360 meses foram superados")
+        XCTAssertEqual(metricsSettled.globalCompletionPercentage, 1.0, "Contrato quitado deve estar 100% concluído")
+        XCTAssertEqual(metricsSettled.savedYears, 27)
+        XCTAssertEqual(metricsSettled.savedRemainingMonths, 8)
+        XCTAssertEqual(metricsSettled.savedTimeString, "27 anos e 8 meses")
+
+        // 6. Rollback da Quitação ao Deletar a Transação de Quitação
+        let settleTx = store.transactions.first(where: { $0.linkedContractId == financing.id && $0.installmentIndex == nil })!
+        store.deleteTransaction(settleTx.id)
+
+        let contractRestoredFromSettlement = store.contracts.first(where: { $0.id == financing.id })!
+        XCTAssertFalse(contractRestoredFromSettlement.isSettled)
+        let metricsRestored = store.progressMetrics(for: contractRestoredFromSettlement)
+        XCTAssertEqual(metricsRestored.originalTotalInstallments, 360)
+        XCTAssertEqual(metricsRestored.paidInFlowCount, 28)
+        XCTAssertEqual(metricsRestored.remainingCount, 332)
+        XCTAssertEqual(metricsRestored.eliminatedByAmortizationCount, 0)
+        XCTAssertEqual(metricsRestored.totalOvercomeMonths, 28)
+    }
 }
