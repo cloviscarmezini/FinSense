@@ -400,8 +400,10 @@ public final class LocalLLMService: ObservableObject {
         try? await Task.sleep(nanoseconds: 180_000_000)
 
         let modelLabel = store.llmConfig.selectedModel?.displayName ?? "Agente Financeiro Local (macOS)"
-        let agentOutput = AgenticFinancialEngine.runAgentLoop(
-            prompt: trimmed,
+
+        // Orquestrador de Conversação Multi-Turno Orientado a Ferramentas (AIToolRegistry + Agent-First)
+        let orchestratorOutput = await AIChatOrchestrator.shared.processTurn(
+            userPrompt: trimmed,
             store: store,
             modelLabel: modelLabel,
             onStepUpdate: { [weak self] stepText in
@@ -413,7 +415,7 @@ public final class LocalLLMService: ObservableObject {
         currentAgentStepMessage = ""
 
         // Efeito visual de digitação contínua (streaming suave)
-        let fullMarkdown = agentOutput.responseMarkdown
+        let fullMarkdown = orchestratorOutput.responseMarkdown
         isTypingResponse = true
         liveTypingResponseText = ""
 
@@ -432,14 +434,14 @@ public final class LocalLLMService: ObservableObject {
             role: .assistant,
             content: fullMarkdown,
             modelUsed: modelLabel,
-            agentSteps: agentOutput.executedSteps,
-            suggestedFollowUps: agentOutput.suggestedFollowUps,
-            shouldCloseChat: agentOutput.shouldCloseChat
+            agentSteps: orchestratorOutput.executedSteps,
+            suggestedFollowUps: orchestratorOutput.followUps,
+            shouldCloseChat: orchestratorOutput.shouldClose
         )
         store.chatHistory.append(assistantMsg)
         store.save()
 
-        if agentOutput.shouldCloseChat {
+        if orchestratorOutput.shouldClose {
             shouldCloseChatSheet = true
         }
     }

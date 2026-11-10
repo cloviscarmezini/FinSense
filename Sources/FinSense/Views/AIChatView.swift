@@ -106,7 +106,7 @@ public struct AIChatSheetView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(store.chatHistory) { msg in
-                            if msg.role != .system {
+                            if msg.role != .system && msg.role != .tool {
                                 chatBubble(msg)
                                     .id(msg.id)
                             }

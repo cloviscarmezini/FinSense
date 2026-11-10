@@ -1509,6 +1509,7 @@ public enum ChatMessageRole: String, Codable, Hashable {
     case user
     case assistant
     case system
+    case tool
 }
 
 public struct ChatMessage: Identifiable, Codable, Hashable {
@@ -1520,6 +1521,9 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
     public var agentSteps: [String]?
     public var suggestedFollowUps: [String]?
     public var shouldCloseChat: Bool?
+    public var toolName: String?
+    public var toolCallId: String?
+    public var toolCalls: [AIToolCall]?
 
     public init(
         id: UUID = UUID(),
@@ -1529,7 +1533,10 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
         modelUsed: String? = nil,
         agentSteps: [String]? = nil,
         suggestedFollowUps: [String]? = nil,
-        shouldCloseChat: Bool? = nil
+        shouldCloseChat: Bool? = nil,
+        toolName: String? = nil,
+        toolCallId: String? = nil,
+        toolCalls: [AIToolCall]? = nil
     ) {
         self.id = id
         self.role = role
@@ -1539,6 +1546,9 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
         self.agentSteps = agentSteps
         self.suggestedFollowUps = suggestedFollowUps
         self.shouldCloseChat = shouldCloseChat
+        self.toolName = toolName
+        self.toolCallId = toolCallId
+        self.toolCalls = toolCalls
     }
 }
 
