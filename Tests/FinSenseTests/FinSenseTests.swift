@@ -4091,4 +4091,85 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(metricsRestored.eliminatedByAmortizationCount, 0)
         XCTAssertEqual(metricsRestored.totalOvercomeMonths, 28)
     }
+
+    func testDualPacingAndConditionalZeroAmortizationDisplay() {
+        // Validação das funções de formatação de prazos em meses e anos
+        XCTAssertEqual(ContractProgressMetrics.formatMonthsAndYears(360), "360 meses (30 anos)")
+        XCTAssertEqual(ContractProgressMetrics.formatMonthsAndYears(251), "251 meses (~21 anos)")
+        XCTAssertEqual(ContractProgressMetrics.formatMonthsAndYears(96), "96 meses (8 anos)")
+        XCTAssertEqual(ContractProgressMetrics.formatMonthsAndYears(24), "24 meses (2 anos)")
+
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Santander",
+            bankPresetId: "santander",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#CC0000",
+            initialBalance: 100_000.0
+        )
+        let acc = store.accounts.first!
+
+        // Cria Consignado: 96 meses original, 12 pagas no fluxo na criação (84 restantes)
+        let loan = store.createCreditContract(
+            kind: .loan,
+            name: "Consignado Siape",
+            loanSubtype: .consignado,
+            totalContractedAmount: 50_000.00,
+            outstandingBalance: 45_000.00,
+            installmentAmount: 1100.00,
+            billingDay: 1,
+            totalInstallments: 96,
+            originalTotalInstallments: 96,
+            monthlyInterestRate: 1.65,
+            startDate: Date(),
+            accountId: acc.id,
+            overridePastInstallmentsCount: 12
+        )
+
+        // 1. Estado SEM Amortização Extraordinária
+        let metricsZero = store.progressMetrics(for: loan)
+        XCTAssertEqual(metricsZero.originalTotalInstallments, 96)
+        XCTAssertEqual(metricsZero.paidInFlowCount, 12)
+        XCTAssertEqual(metricsZero.remainingCount, 84)
+        XCTAssertEqual(metricsZero.eliminatedByAmortizationCount, 0)
+        XCTAssertEqual(metricsZero.totalOvercomeMonths, 12)
+        XCTAssertEqual(metricsZero.newRecalculatedTotalInstallments, 96, "Sem amortização extraordinária, novo plano é idêntico ao original")
+        XCTAssertEqual(metricsZero.currentPlanCompletionPercentage, 12.0 / 96.0, accuracy: 0.001)
+        XCTAssertEqual(metricsZero.globalCompletionPercentage, 12.0 / 96.0, accuracy: 0.001)
+
+        let hasExtraAmortZero = metricsZero.eliminatedByAmortizationCount > 0 || loan.extraAmortizedTotal > 0.01
+        XCTAssertFalse(hasExtraAmortZero, "Deve detectar que NÃO há amortização extraordinária e simplificar a interface")
+
+        // 2. Transição Dinâmica ao Realizar Primeira Amortização
+        // Amortiza R$ 15.000,00 com redução de prazo
+        store.amortizeContract(
+            contractId: loan.id,
+            amountPaid: 15_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        let loanAmortized = store.contracts.first(where: { $0.id == loan.id })!
+        let metricsAmortized = store.progressMetrics(for: loanAmortized)
+
+        let hasExtraAmortActive = metricsAmortized.eliminatedByAmortizationCount > 0 || loanAmortized.extraAmortizedTotal > 0.01
+        XCTAssertTrue(hasExtraAmortActive, "Deve ativar dinamicamente o modo de dualidade de prazos e métricas de tempo poupado")
+
+        // Visão 1: Avanço Frente ao Original
+        XCTAssertEqual(metricsAmortized.originalTotalInstallments, 96)
+        XCTAssertGreaterThan(metricsAmortized.eliminatedByAmortizationCount, 0)
+        XCTAssertEqual(metricsAmortized.totalOvercomeMonths, metricsAmortized.paidInFlowCount + metricsAmortized.eliminatedByAmortizationCount)
+        XCTAssertEqual(metricsAmortized.globalCompletionPercentage, Double(metricsAmortized.totalOvercomeMonths) / 96.0, accuracy: 0.001)
+
+        // Visão 2: Andamento do Plano Atual
+        XCTAssertLessThan(metricsAmortized.newRecalculatedTotalInstallments, 96)
+        XCTAssertEqual(metricsAmortized.newRecalculatedTotalInstallments, metricsAmortized.paidInFlowCount + metricsAmortized.remainingCount)
+        XCTAssertEqual(
+            metricsAmortized.currentPlanCompletionPercentage,
+            Double(metricsAmortized.paidInFlowCount) / Double(metricsAmortized.newRecalculatedTotalInstallments),
+            accuracy: 0.001
+        )
+        XCTAssertGreaterThan(metricsAmortized.savedYears * 12 + metricsAmortized.savedRemainingMonths, 0)
+    }
 }

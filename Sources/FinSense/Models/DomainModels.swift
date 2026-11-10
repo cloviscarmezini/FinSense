@@ -966,6 +966,44 @@ public struct ContractProgressMetrics: Hashable, Identifiable {
         }
     }
 
+    /// Novo Prazo Total Recalculado (parcelas pagas no fluxo + parcelas restantes a pagar)
+    public var newRecalculatedTotalInstallments: Int {
+        paidInFlowCount + remainingCount
+    }
+
+    /// Percentual de andamento do plano atual no cronograma vigente (0.0 a 1.0)
+    public var currentPlanCompletionPercentage: Double {
+        let total = newRecalculatedTotalInstallments
+        return total > 0 ? Double(paidInFlowCount) / Double(total) : 1.0
+    }
+
+    /// Formatação amigável de total de meses e anos equivalentes (ex.: "360 meses (30 anos)" ou "251 meses (~21 anos)")
+    public static func formatMonthsAndYears(_ months: Int) -> String {
+        guard months > 0 else { return "0 meses" }
+        if months % 12 == 0 {
+            let y = months / 12
+            return "\(months) meses (\(y) ano\(y > 1 ? "s" : ""))"
+        } else {
+            let years = Double(months) / 12.0
+            let roundedYears = Int(round(years))
+            if roundedYears > 0 {
+                return "\(months) meses (~\(roundedYears) ano\(roundedYears > 1 ? "s" : ""))"
+            } else {
+                return "\(months) m\(months > 1 ? "eses" : "ês")"
+            }
+        }
+    }
+
+    /// Prazo Original Contratado formatado em meses e anos
+    public var originalMonthsFormatted: String {
+        Self.formatMonthsAndYears(originalTotalInstallments)
+    }
+
+    /// Novo Prazo Recalculado formatado em meses e anos
+    public var newRecalculatedMonthsFormatted: String {
+        Self.formatMonthsAndYears(newRecalculatedTotalInstallments)
+    }
+
     public init(
         id: UUID = UUID(),
         originalTotalInstallments: Int,

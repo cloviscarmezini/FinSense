@@ -196,6 +196,7 @@ public struct LoansAndFinancingsView: View {
     @ViewBuilder
     private func contractCard(_ contract: CreditContract) -> some View {
         let metrics = store.progressMetrics(for: contract)
+        let hasExtraAmortization = metrics.eliminatedByAmortizationCount > 0 || contract.extraAmortizedTotal > 0.01
         let paidCount = metrics.paidInFlowCount
         let remainingCount = metrics.remainingCount
         let outstandingBalance = store.currentOutstandingBalance(for: contract)
@@ -297,20 +298,48 @@ public struct LoansAndFinancingsView: View {
                     )
 
                     detailCell(label: "Indexador", value: contract.indexationRate?.rawValue ?? "TR")
-                    detailCell(label: "Prazo Original Contratado", value: "\(metrics.originalTotalInstallments) meses")
-                    detailCell(
-                        label: "Meses Superados",
-                        value: "\(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments)",
-                        valueColor: Color(hex: "#10B981")
-                    )
 
-                    detailCell(label: "Parcelas Futuras Restantes", value: "\(remainingCount)x futuras")
-                    detailCell(label: "Soma Nominal Futura", value: BRLFormatters.currency(nominalRemaining))
-                    detailCell(
-                        label: "Amortizado Extraordinário",
-                        value: BRLFormatters.currency(contract.extraAmortizedTotal),
-                        valueColor: Color(hex: "#10B981")
-                    )
+                    if hasExtraAmortization {
+                        detailCell(
+                            label: "Prazo Original Contratado",
+                            value: metrics.originalMonthsFormatted
+                        )
+                        detailCell(
+                            label: "Novo Prazo Recalculado",
+                            value: metrics.newRecalculatedMonthsFormatted
+                        )
+                        detailCell(
+                            label: "Tempo Poupado",
+                            value: "⚡ \(metrics.savedTimeString) adiantados",
+                            valueColor: Color(hex: "#10B981")
+                        )
+                        detailCell(
+                            label: "Total Amortizado Extraordinário",
+                            value: "\(BRLFormatters.currency(contract.extraAmortizedTotal)) (\(metrics.eliminatedByAmortizationCount) parcelas eliminadas)",
+                            valueColor: Color(hex: "#10B981")
+                        )
+                        detailCell(
+                            label: "Parcelas Futuras Restantes",
+                            value: "\(remainingCount) parcelas a pagar"
+                        )
+                        detailCell(
+                            label: "Soma Nominal Futura",
+                            value: BRLFormatters.currency(nominalRemaining)
+                        )
+                    } else {
+                        detailCell(
+                            label: "Prazo Contratado",
+                            value: metrics.originalMonthsFormatted
+                        )
+                        detailCell(
+                            label: "Parcelas Restantes",
+                            value: "\(remainingCount) parcelas a pagar"
+                        )
+                        detailCell(
+                            label: "Soma Nominal Futura",
+                            value: BRLFormatters.currency(nominalRemaining)
+                        )
+                    }
                 }
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
@@ -343,89 +372,128 @@ public struct LoansAndFinancingsView: View {
                     )
 
                     detailCell(label: "Taxa de Juros Mensal", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
-                    detailCell(label: "Prazo Original Contratado", value: "\(metrics.originalTotalInstallments) meses")
-                    detailCell(
-                        label: "Meses Superados",
-                        value: "\(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments)",
-                        valueColor: Color(hex: "#10B981")
-                    )
 
-                    detailCell(label: "Parcelas Futuras Restantes", value: "\(remainingCount)x futuras")
-                    detailCell(
-                        label: "Soma Nominal (Fluxo c/ Juros)",
-                        value: BRLFormatters.currency(nominalRemaining),
-                        valueColor: Color(hex: "#64748B")
-                    )
-                    detailCell(
-                        label: "Amortizado Extraordinário",
-                        value: BRLFormatters.currency(contract.extraAmortizedTotal),
-                        valueColor: Color(hex: "#10B981")
-                    )
+                    if hasExtraAmortization {
+                        detailCell(
+                            label: "Prazo Original Contratado",
+                            value: metrics.originalMonthsFormatted
+                        )
+                        detailCell(
+                            label: "Novo Prazo Recalculado",
+                            value: metrics.newRecalculatedMonthsFormatted
+                        )
+                        detailCell(
+                            label: "Tempo Poupado",
+                            value: "⚡ \(metrics.savedTimeString) adiantados",
+                            valueColor: Color(hex: "#10B981")
+                        )
+                        detailCell(
+                            label: "Total Amortizado Extraordinário",
+                            value: "\(BRLFormatters.currency(contract.extraAmortizedTotal)) (\(metrics.eliminatedByAmortizationCount) parcelas eliminadas)",
+                            valueColor: Color(hex: "#10B981")
+                        )
+                        detailCell(
+                            label: "Parcelas Futuras Restantes",
+                            value: "\(remainingCount) parcelas a pagar"
+                        )
+                        detailCell(
+                            label: "Soma Nominal (Fluxo c/ Juros)",
+                            value: BRLFormatters.currency(nominalRemaining),
+                            valueColor: Color(hex: "#64748B")
+                        )
+                    } else {
+                        detailCell(
+                            label: "Prazo Contratado",
+                            value: metrics.originalMonthsFormatted
+                        )
+                        detailCell(
+                            label: "Parcelas Restantes",
+                            value: "\(remainingCount) parcelas a pagar"
+                        )
+                        detailCell(
+                            label: "Soma Nominal (Fluxo c/ Juros)",
+                            value: BRLFormatters.currency(nominalRemaining),
+                            valueColor: Color(hex: "#64748B")
+                        )
+                    }
                 }
                 .padding(12)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
             }
 
-            // Segmented Progress Bar & Conquest Indicators
+            // Segmented Progress Bar & Legend
             VStack(alignment: .leading, spacing: 8) {
-                // Bar Header
-                HStack {
-                    Text("Progresso do Contrato: \(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments) meses superados")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100))
-                        .font(.caption.bold())
-                        .foregroundStyle(metrics.globalCompletionPercentage >= 1.0 ? Color(hex: "#10B981") : .primary)
+                // Bar Header: Dualidade de Prazos vs. Unificado
+                if hasExtraAmortization {
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack {
+                            Text("Avanço Frente ao Original: \(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments) meses superados (\(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100)))")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Spacer()
+                        }
+                        HStack {
+                            Text("Plano Atual: \(metrics.paidInFlowCount) de \(metrics.newRecalculatedTotalInstallments) parcelas (\(String(format: "%.0f%%", metrics.currentPlanCompletionPercentage * 100)))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                    }
+                } else {
+                    HStack {
+                        Text("Progresso: \(paidCount) de \(contract.totalInstallments) parcelas pagas (\(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100)))")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Spacer()
+                    }
                 }
 
                 // 3-Segment Visual Bar
                 SegmentedContractProgressBar(metrics: metrics, accentHex: accentHex)
 
-                // Legend & Lower Badges
-                HStack(alignment: .center, spacing: 12) {
-                    HStack(spacing: 5) {
+                // Legend: Bullets Alinhados Minimalistas
+                HStack(alignment: .center, spacing: 18) {
+                    HStack(spacing: 6) {
                         Circle()
                             .fill(Color(hex: accentHex))
                             .frame(width: 8, height: 8)
-                        Text("\(paidCount) pagas no fluxo")
+                        Text("\(paidCount) parcelas pagas")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
 
-                    if metrics.eliminatedByAmortizationCount > 0 {
-                        HStack(spacing: 4) {
-                            Text("⚡️ \(metrics.eliminatedByAmortizationCount) eliminadas por amortização (-\(metrics.savedTimeString) poupados!)")
-                                .font(.caption2.bold())
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
-                        .foregroundStyle(Color(hex: "#10B981"))
-                    }
-
-                    Spacer()
-
-                    if contract.isSettled || remainingCount == 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "checkmark.seal.fill")
-                            Text("Totalmente Quitado")
-                        }
-                        .font(.caption2.bold())
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
-                        .foregroundStyle(Color(hex: "#10B981"))
-                    } else {
-                        HStack(spacing: 5) {
+                    if hasExtraAmortization {
+                        HStack(spacing: 6) {
                             Circle()
-                                .fill(Color.primary.opacity(0.25))
+                                .fill(Color(hex: "#10B981"))
                                 .frame(width: 8, height: 8)
-                            Text("\(remainingCount) restantes")
+                            Text("\(metrics.eliminatedByAmortizationCount) parcelas amortizadas")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
+
+                    if contract.isSettled || remainingCount == 0 {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(Color(hex: "#10B981"))
+                                .frame(width: 8, height: 8)
+                            Text("Totalmente quitado")
+                                .font(.caption2.bold())
+                                .foregroundStyle(Color(hex: "#10B981"))
+                        }
+                    } else {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(Color.primary.opacity(0.28))
+                                .frame(width: 8, height: 8)
+                            Text("\(remainingCount) parcelas a pagar")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Spacer()
                 }
             }
 
@@ -617,7 +685,7 @@ public struct SegmentedContractProgressBar: View {
                     }
 
                     // Segment 2: Aceleração por Amortização (Conquista Extraordinária)
-                    if amortWidth > 0.001 {
+                    if metrics.eliminatedByAmortizationCount > 0 && amortWidth > 0.001 {
                         Rectangle()
                             .fill(Color(hex: "#10B981"))
                             .frame(width: amortWidth)
