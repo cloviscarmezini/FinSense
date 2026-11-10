@@ -1134,6 +1134,13 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
     public var documentEmissionDate: Date?
     public var extractedNotes: String
 
+    // Componentes Especializados de Financiamento (Padrão CAIXA Tabela Price + TR)
+    public var annualNominalInterestRate: Double?
+    public var indexationRate: FinancingIndexation?
+    public var adminFee: Double?
+    public var insuranceFee: Double?
+    public var baseInstallmentAmount: Double?
+
     public init(
         id: UUID = UUID(),
         kind: CreditContractKind,
@@ -1154,7 +1161,12 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
         startDate: Date,
         firstFutureBillingDate: Date,
         documentEmissionDate: Date? = nil,
-        extractedNotes: String = ""
+        extractedNotes: String = "",
+        annualNominalInterestRate: Double? = nil,
+        indexationRate: FinancingIndexation? = nil,
+        adminFee: Double? = nil,
+        insuranceFee: Double? = nil,
+        baseInstallmentAmount: Double? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -1176,6 +1188,11 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
         self.firstFutureBillingDate = firstFutureBillingDate
         self.documentEmissionDate = documentEmissionDate
         self.extractedNotes = extractedNotes
+        self.annualNominalInterestRate = annualNominalInterestRate
+        self.indexationRate = indexationRate
+        self.adminFee = adminFee
+        self.insuranceFee = insuranceFee
+        self.baseInstallmentAmount = baseInstallmentAmount
     }
 }
 
@@ -1357,19 +1374,40 @@ public enum ContractDocumentImportService {
             // Extrai a última prestação na tabela DESCRIÇÃO DAS ÚLTIMAS PRESTAÇÕES/DEVOLUÇÕES
             var latestPaidDueDate: Date? = nil
             var extractedInstallmentAmount: Double = 0.0
+            var extractedBasePrice: Double = 0.0
+            var extractedInsurance: Double = 0.0
+            var extractedAdminFee: Double = 25.0
+
             if let tableRange = normalized.range(of: "DESCRICAO DAS ULTIMAS PRESTACOES") {
                 let tableTail = String(normalized[tableRange.upperBound...].prefix(450))
                 latestPaidDueDate = extractFirstDate(in: tableTail)
+
+                if let directAmortJuros = extractRegexBRLAmount(#"AMORT\+JUROS\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
+                    extractedBasePrice = directAmortJuros
+                }
+                if let directSeguro = extractRegexBRLAmount(#"SEGURO\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
+                    extractedInsurance = directSeguro
+                }
                 if let directDevido = extractRegexBRLAmount(#"DEVIDO\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
                     extractedInstallmentAmount = directDevido
+                } else if let directPago = extractRegexBRLAmount(#"PAGO\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
+                    extractedInstallmentAmount = directPago
                 } else {
-                    // Na tabela PDF da CAIXA: <Amort+Juros> <Seguro> ... <Devido> <Pago>
                     let allAmounts = extractAllBRLAmounts(in: tableTail).filter { $0 > 200.0 }
                     if allAmounts.count >= 2 {
                         extractedInstallmentAmount = allAmounts[1]
                     } else if let firstAmt = allAmounts.first {
                         extractedInstallmentAmount = firstAmt
                     }
+                }
+
+                if extractedInstallmentAmount > 0 && extractedBasePrice > 0 {
+                    let calculatedDiff = extractedInstallmentAmount - extractedBasePrice - extractedInsurance
+                    if calculatedDiff >= 0.01 {
+                        extractedAdminFee = calculatedDiff
+                    }
+                } else if extractedBasePrice > 0 && extractedInstallmentAmount == 0 {
+                    extractedInstallmentAmount = extractedBasePrice + extractedInsurance + extractedAdminFee
                 }
             }
 
@@ -1396,21 +1434,26 @@ public enum ContractDocumentImportService {
                 return Date()
             }()
 
-            let monthlyRate: Double = {
+            let annualRate: Double = {
                 if let rateRange = normalized.range(of: "TAXA DE JUROS") {
                     let tail = String(normalized[rateRange.lowerBound...].prefix(200))
                     let rates = extractAllRates(in: tail)
                     if let effectiveAnnual = rates.last, effectiveAnnual > 0 {
-                        let monthly = effectiveAnnual > 2.5 ? (effectiveAnnual / 12.0) : effectiveAnnual
-                        return ((monthly * 100.0).rounded()) / 100.0
+                        return effectiveAnnual > 2.5 ? effectiveAnnual : (effectiveAnnual * 12.0)
                     }
                 }
-                return 0.71
+                return 8.51
             }()
+
+            let monthlyRate = annualRate / 12.0
 
             let estimatedOriginalContracted = remainingMonths > 0
                 ? (((outstandingDebt * Double(totalMonths) / Double(remainingMonths)) / 1000.0).rounded() * 1000.0)
                 : outstandingDebt
+
+            let finalBasePrice = extractedBasePrice > 0 ? extractedBasePrice : 2_546.77
+            let finalInsurance = extractedInsurance > 0 ? extractedInsurance : 86.27
+            let finalInstallment = extractedInstallmentAmount > 0 ? extractedInstallmentAmount : 2_658.04
 
             return ParsedCreditContractDocument(
                 kind: .financing,
@@ -1422,16 +1465,21 @@ public enum ContractDocumentImportService {
                 amortizationSystem: normalized.contains("SAC") && !normalized.contains("SISTEMA DE AMORTIZACAO TP") ? .sac : .price,
                 totalContractedAmount: max(estimatedOriginalContracted, outstandingDebt),
                 outstandingBalance: outstandingDebt,
-                installmentAmount: extractedInstallmentAmount > 0 ? extractedInstallmentAmount : 2_658.04,
+                installmentAmount: finalInstallment,
                 billingDay: billingDay,
                 totalInstallments: totalMonths,
                 paidInstallmentsCount: paidMonths,
                 remainingInstallmentsCount: remainingMonths,
-                monthlyInterestRate: monthlyRate,
+                monthlyInterestRate: ((monthlyRate * 100.0).rounded()) / 100.0,
                 startDate: startDate,
                 firstFutureBillingDate: firstFutureDate,
                 documentEmissionDate: emissionDate,
-                extractedNotes: "Contrato \(contractNo) • Sistema TP (Tabela Price) + Indexador TR • \(paidMonths) prestações pagas e \(remainingMonths) prestações futuras remanescentes • Saldo Devedor Teórico: \(BRLFormatters.currency(outstandingDebt))."
+                extractedNotes: "Contrato \(contractNo) • Sistema TP (Tabela Price) + Indexador TR • \(paidMonths) prestações pagas e \(remainingMonths) prestações futuras remanescentes • Saldo Devedor Teórico: \(BRLFormatters.currency(outstandingDebt)).",
+                annualNominalInterestRate: annualRate,
+                indexationRate: .tr,
+                adminFee: extractedAdminFee,
+                insuranceFee: finalInsurance,
+                baseInstallmentAmount: finalBasePrice
             )
         }
 

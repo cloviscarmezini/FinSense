@@ -209,6 +209,12 @@ public struct ComprehensiveDebtSummary: Hashable {
     public let financingsProjectedPayoffTotal: Double
     public let financingsAmortizedInPeriodTotal: Double
 
+    // Métricas Desacopladas de Pagamentos vs Amortização Real no Principal (Padrão SFH / Tabela Price)
+    public let loansPaidInPeriodTotal: Double
+    public let loansRealAmortizationInPeriodTotal: Double
+    public let financingsPaidInPeriodTotal: Double
+    public let financingsRealAmortizationInPeriodTotal: Double
+
     public let grandTotalNominal: Double
     public let grandTotalWithPayoffProjection: Double
     public let itemizedLines: [DebtLineItem]
@@ -228,6 +234,10 @@ public struct ComprehensiveDebtSummary: Hashable {
         financingsRemainingNominalTotal: Double,
         financingsProjectedPayoffTotal: Double,
         financingsAmortizedInPeriodTotal: Double = 0.0,
+        loansPaidInPeriodTotal: Double? = nil,
+        loansRealAmortizationInPeriodTotal: Double = 0.0,
+        financingsPaidInPeriodTotal: Double? = nil,
+        financingsRealAmortizationInPeriodTotal: Double = 0.0,
         grandTotalNominal: Double,
         grandTotalWithPayoffProjection: Double,
         itemizedLines: [DebtLineItem]
@@ -246,6 +256,10 @@ public struct ComprehensiveDebtSummary: Hashable {
         self.financingsRemainingNominalTotal = financingsRemainingNominalTotal
         self.financingsProjectedPayoffTotal = financingsProjectedPayoffTotal
         self.financingsAmortizedInPeriodTotal = financingsAmortizedInPeriodTotal
+        self.loansPaidInPeriodTotal = loansPaidInPeriodTotal ?? loansAmortizedInPeriodTotal
+        self.loansRealAmortizationInPeriodTotal = loansRealAmortizationInPeriodTotal
+        self.financingsPaidInPeriodTotal = financingsPaidInPeriodTotal ?? financingsAmortizedInPeriodTotal
+        self.financingsRealAmortizationInPeriodTotal = financingsRealAmortizationInPeriodTotal
         self.grandTotalNominal = grandTotalNominal
         self.grandTotalWithPayoffProjection = grandTotalWithPayoffProjection
         self.itemizedLines = itemizedLines
@@ -2971,7 +2985,12 @@ public final class FinancialDataStore: ObservableObject {
         notes: String = "",
         referenceDate: Date = Date(),
         overridePastInstallmentsCount: Int? = nil,
-        overrideFirstFutureBillingDate: Date? = nil
+        overrideFirstFutureBillingDate: Date? = nil,
+        annualNominalInterestRate: Double? = nil,
+        indexationRate: FinancingIndexation? = nil,
+        adminFee: Double? = nil,
+        insuranceFee: Double? = nil,
+        baseInstallmentAmount: Double? = nil
     ) -> CreditContract {
         let creditCategoryId = fallbackCategoryId(for: .expense, matchingSubstring: "Empréstimos")
 
@@ -3001,7 +3020,12 @@ public final class FinancialDataStore: ObservableObject {
             accountId: accountId,
             categoryId: creditCategoryId,
             pastInstallmentsElapsedAtCreation: pastCount,
-            notes: notes
+            notes: notes,
+            annualNominalInterestRate: annualNominalInterestRate,
+            indexationRate: indexationRate,
+            adminFee: adminFee,
+            insuranceFee: insuranceFee,
+            baseInstallmentAmount: baseInstallmentAmount
         )
         contracts.append(contract)
 
@@ -3035,10 +3059,44 @@ public final class FinancialDataStore: ObservableObject {
         return contract
     }
 
-    /// Retorna o Saldo Devedor do contrato (informado/extraído do documento menos amortizações, ou calculado a valor presente),
+    /// Retorna o Saldo Devedor do contrato (informado/extraído do demonstrativo menos amortizações, ou calculado via Tabela Price / valor presente),
     /// projetado para a data de corte informada (`asOfCutoff`, ex: fim do mês ou 31/12 do ano).
     public func currentOutstandingBalance(for contract: CreditContract, asOf asOfCutoff: Date? = nil) -> Double {
         guard !contract.isSettled else { return 0.0 }
+
+        // Para Financiamentos Imobiliários (Tabela Price CAIXA):
+        if contract.kind == .financing, let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
+            let basePrice = contract.effectiveBaseInstallmentPrice
+            let annualRate = contract.effectiveAnnualNominalRate
+            let admin = contract.effectiveAdminFee
+            let insurance = contract.effectiveInsuranceFee
+
+            let elapsedInApp: Int
+            if let asOfCutoff {
+                elapsedInApp = transactions.filter { $0.linkedContractId == contract.id && ($0.isPaid || $0.date <= asOfCutoff) && $0.installmentIndex != nil }.count
+            } else {
+                elapsedInApp = transactions.filter { $0.linkedContractId == contract.id && $0.isPaid && $0.installmentIndex != nil }.count
+            }
+
+            var runningBalance = explicitBalance
+            if elapsedInApp > 0 {
+                for idx in 1...elapsedInApp {
+                    guard runningBalance > 0.01 else { break }
+                    let step = AmortizationEngine.calculateNextInstallment(
+                        currentBalance: runningBalance,
+                        annualNominalRate: annualRate,
+                        basePriceInstallment: basePrice,
+                        adminFee: admin,
+                        insuranceFee: insurance,
+                        monthlyTR: 0.0,
+                        installmentIndex: idx
+                    )
+                    runningBalance = step.newBalance
+                }
+            }
+            return max(0.0, runningBalance - contract.extraAmortizedTotal)
+        }
+
         if let explicitBalance = contract.outstandingBalance, explicitBalance > 0 {
             let totalToAmortize = max(contract.totalInstallments - contract.pastInstallmentsElapsedAtCreation, 1)
             let estimatedPrincipalPerInstallment = explicitBalance / Double(totalToAmortize)
@@ -3155,7 +3213,7 @@ public final class FinancialDataStore: ObservableObject {
         return calculatedPayoff
     }
 
-    /// Total amortizado/pago no período selecionado (mês ou ano) para um determinado contrato
+    /// Total amortizado/pago (fluxo de caixa desembolsado pelo usuário) no período selecionado para o contrato
     public func amortizedAmountInPeriod(for contract: CreditContract, referenceDate: Date, isAnnual: Bool) -> Double {
         transactions
             .filter { tx in
@@ -3165,6 +3223,44 @@ public final class FinancialDataStore: ObservableObject {
             .reduce(0.0) { $0 + $1.amount }
     }
 
+    /// Retorna a fração de AMORTIZAÇÃO REAL que de fato abateu o principal do contrato no período selecionado (mês ou ano).
+    /// Isola a fração real de amortização na Tabela Price (ex: ~R$ 240/mês), separando-a de juros, taxas e seguros.
+    public func realAmortizationAmountInPeriod(for contract: CreditContract, referenceDate: Date, isAnnual: Bool) -> Double {
+        let periodTransactions = transactions.filter { tx in
+            tx.linkedContractId == contract.id &&
+            (isAnnual ? isInYear(tx.date, yearReference: referenceDate) : isInMonth(tx.date, monthReference: referenceDate))
+        }
+
+        guard !periodTransactions.isEmpty else { return 0.0 }
+
+        if contract.kind == .financing {
+            var totalReal = 0.0
+            let basePrice = contract.effectiveBaseInstallmentPrice
+            let annualRate = contract.effectiveAnnualNominalRate
+            let admin = contract.effectiveAdminFee
+            let insurance = contract.effectiveInsuranceFee
+            let currentBal = currentOutstandingBalance(for: contract)
+
+            for tx in periodTransactions {
+                if tx.installmentIndex != nil {
+                    let breakdown = AmortizationEngine.calculateNextInstallment(
+                        currentBalance: currentBal,
+                        annualNominalRate: annualRate,
+                        basePriceInstallment: basePrice,
+                        adminFee: admin,
+                        insuranceFee: insurance
+                    )
+                    totalReal += breakdown.amortizationAmount
+                } else {
+                    totalReal += tx.amount
+                }
+            }
+            return totalReal
+        } else {
+            return periodTransactions.reduce(0.0) { $0 + $1.amount }
+        }
+    }
+
     /// Amortizar empréstimo/financiamento: registra pagamento na conta escolhida e recalcula parcelas futuras
     public func amortizeContract(
         contractId: UUID,
@@ -3172,6 +3268,7 @@ public final class FinancialDataStore: ObservableObject {
         accountId: UUID,
         date: Date = Date(),
         mode: AmortizationRecalculationMode,
+        proRataInterest: Double = 0.0,
         customNewInstallmentAmount: Double? = nil,
         customNewRemainingInstallments: Int? = nil,
         notes: String = ""
@@ -3183,51 +3280,36 @@ public final class FinancialDataStore: ObservableObject {
 
         let prevRemaining = remainingInstallmentsCount(for: contract)
         let prevInstallment = contract.installmentAmount
-        let currentPV = max(projectedPayoffAmount(for: contract), cleanPaid)
-        let newPV = max(currentPV - cleanPaid, 0)
-        let i = contract.monthlyInterestRate / 100.0
+        let currentPV = max(currentOutstandingBalance(for: contract), cleanPaid)
 
-        var newInstallment = prevInstallment
-        var newRemaining = prevRemaining
+        let sim = AmortizationEngine.simulateExtraAmortization(
+            currentBalance: currentPV,
+            annualNominalRate: contract.effectiveAnnualNominalRate,
+            basePriceInstallment: contract.effectiveBaseInstallmentPrice,
+            totalInstallmentAmount: contract.installmentAmount,
+            currentRemainingInstallments: prevRemaining,
+            extraPayment: cleanPaid,
+            proRataInterest: proRataInterest,
+            mode: mode,
+            adminFee: contract.effectiveAdminFee,
+            insuranceFee: contract.effectiveInsuranceFee
+        )
 
-        if newPV <= 0.01 {
-            newRemaining = 0
-            newInstallment = 0
-        } else {
-            switch mode {
-            case .reduceTerm:
-                if let customCount = customNewRemainingInstallments, customCount > 0 {
-                    newRemaining = min(customCount, prevRemaining)
-                } else if i > 0.0001 && prevInstallment > newPV * i {
-                    // n = -ln(1 - (PV * i) / PMT) / ln(1 + i)
-                    let ratio = 1.0 - (newPV * i) / prevInstallment
-                    let calcN = Int(ceil(-log(max(ratio, 0.0001)) / log(1.0 + i)))
-                    newRemaining = max(1, min(calcN, prevRemaining))
-                } else {
-                    newRemaining = max(1, Int(ceil(newPV / max(prevInstallment, 1))))
-                }
-                if let customInst = customNewInstallmentAmount, customInst > 0 {
-                    newInstallment = customInst
-                }
-            case .reduceInstallment:
-                if let customInst = customNewInstallmentAmount, customInst > 0 {
-                    newInstallment = customInst
-                } else if i > 0.0001 && prevRemaining > 0 {
-                    // PMT = PV * i / (1 - (1 + i)^(-n))
-                    newInstallment = newPV * i / (1.0 - pow(1.0 + i, -Double(prevRemaining)))
-                } else if prevRemaining > 0 {
-                    newInstallment = newPV / Double(prevRemaining)
-                }
-                if let customCount = customNewRemainingInstallments, customCount > 0 {
-                    newRemaining = customCount
-                }
-            }
+        var newInstallment = sim.newInstallmentAmount
+        var newRemaining = sim.newRemainingInstallments
+
+        if let customInst = customNewInstallmentAmount, customInst > 0 {
+            newInstallment = customInst
+        }
+        if let customCount = customNewRemainingInstallments, customCount > 0 {
+            newRemaining = customCount
         }
 
         // Cria transação de saída na conta selecionada
+        let proRataNote = sim.proRataInterest > 0 ? " • Juros Pró-rata: \(BRLFormatters.currency(sim.proRataInterest))" : ""
         let amortTx = FinancialTransaction(
             name: "Amortização: \(contract.name)",
-            details: "Amortização extraordinária (\(mode.rawValue)). \(notes)".trimmingCharacters(in: .whitespaces),
+            details: "Amortização extraordinária (\(mode.rawValue)). Amortização Efetiva no Saldo: \(BRLFormatters.currency(sim.effectiveAmortization))\(proRataNote). \(notes)".trimmingCharacters(in: .whitespaces),
             amount: cleanPaid,
             date: date,
             type: .expense,
@@ -3273,7 +3355,10 @@ public final class FinancialDataStore: ObservableObject {
             }
         }
 
-        contract.extraAmortizedTotal += cleanPaid
+        contract.extraAmortizedTotal += sim.effectiveAmortization
+        if contract.outstandingBalance != nil {
+            contract.outstandingBalance = sim.newBalance
+        }
         let record = AmortizationRecord(
             date: date,
             amountPaid: cleanPaid,
@@ -4547,11 +4632,13 @@ public final class FinancialDataStore: ObservableObject {
 
         let loansNominalSum = openLoans.reduce(0.0) { $0 + remainingNominalAmount(for: $1, asOf: endOfCurrentPeriod) }
         let loansProjectedSum = openLoans.reduce(0.0) { $0 + projectedPayoffAmount(for: $1, asOf: endOfCurrentPeriod) }
-        let loansAmortizedInPeriodTotal = openLoans.reduce(0.0) { $0 + amortizedAmountInPeriod(for: $1, referenceDate: referenceDate, isAnnual: isAnnual) }
+        let loansPaidTotal = openLoans.reduce(0.0) { $0 + amortizedAmountInPeriod(for: $1, referenceDate: referenceDate, isAnnual: isAnnual) }
+        let loansRealAmortizationTotal = openLoans.reduce(0.0) { $0 + realAmortizationAmountInPeriod(for: $1, referenceDate: referenceDate, isAnnual: isAnnual) }
 
         let financingsNominalSum = openFinancings.reduce(0.0) { $0 + remainingNominalAmount(for: $1, asOf: endOfCurrentPeriod) }
         let financingsProjectedSum = openFinancings.reduce(0.0) { $0 + projectedPayoffAmount(for: $1, asOf: endOfCurrentPeriod) }
-        let financingsAmortizedInPeriodTotal = openFinancings.reduce(0.0) { $0 + amortizedAmountInPeriod(for: $1, referenceDate: referenceDate, isAnnual: isAnnual) }
+        let financingsPaidTotal = openFinancings.reduce(0.0) { $0 + amortizedAmountInPeriod(for: $1, referenceDate: referenceDate, isAnnual: isAnnual) }
+        let financingsRealAmortizationTotal = openFinancings.reduce(0.0) { $0 + realAmortizationAmountInPeriod(for: $1, referenceDate: referenceDate, isAnnual: isAnnual) }
 
         var items: [DebtLineItem] = []
 
@@ -4605,13 +4692,13 @@ public final class FinancialDataStore: ObservableObject {
             let remCount = remainingInstallmentsCount(for: loan, asOf: endOfCurrentPeriod)
             let nom = remainingNominalAmount(for: loan, asOf: endOfCurrentPeriod)
             let proj = projectedPayoffAmount(for: loan, asOf: endOfCurrentPeriod)
-            let amortized = amortizedAmountInPeriod(for: loan, referenceDate: referenceDate, isAnnual: isAnnual)
-            let amortizedStr = amortized > 0 ? " • Amortizado no período: \(BRLFormatters.currency(amortized))" : ""
+            let paid = amortizedAmountInPeriod(for: loan, referenceDate: referenceDate, isAnnual: isAnnual)
+            let paidStr = paid > 0 ? " • Pagamentos: \(BRLFormatters.currency(paid))" : ""
             items.append(
                 DebtLineItem(
                     id: loan.id,
                     title: "\(loan.name) (\(loan.subtypeDisplayName))",
-                    subtitle: "\(remCount)x restantes de \(BRLFormatters.currency(loan.installmentAmount))\(amortizedStr) • Juros \(String(format: "%.2f", loan.monthlyInterestRate))% a.m.",
+                    subtitle: "\(remCount)x restantes de \(BRLFormatters.currency(loan.installmentAmount))\(paidStr) • Juros \(String(format: "%.2f", loan.monthlyInterestRate))% a.m.",
                     section: "Empréstimos",
                     nominalAmount: nom,
                     projectedPayoffAmount: proj,
@@ -4625,13 +4712,20 @@ public final class FinancialDataStore: ObservableObject {
             let remCount = remainingInstallmentsCount(for: fin, asOf: endOfCurrentPeriod)
             let nom = remainingNominalAmount(for: fin, asOf: endOfCurrentPeriod)
             let proj = projectedPayoffAmount(for: fin, asOf: endOfCurrentPeriod)
-            let amortized = amortizedAmountInPeriod(for: fin, referenceDate: referenceDate, isAnnual: isAnnual)
-            let amortizedStr = amortized > 0 ? " • Amortizado no período: \(BRLFormatters.currency(amortized))" : ""
+            let paid = amortizedAmountInPeriod(for: fin, referenceDate: referenceDate, isAnnual: isAnnual)
+            let realAmort = realAmortizationAmountInPeriod(for: fin, referenceDate: referenceDate, isAnnual: isAnnual)
+            var metricsStr = ""
+            if paid > 0 {
+                metricsStr += " • Pagamentos: \(BRLFormatters.currency(paid))"
+            }
+            if realAmort > 0 {
+                metricsStr += " • Amortização Real: \(BRLFormatters.currency(realAmort))"
+            }
             items.append(
                 DebtLineItem(
                     id: fin.id,
                     title: "\(fin.name) (\(fin.subtypeDisplayName))",
-                    subtitle: "\(remCount)x restantes de \(BRLFormatters.currency(fin.installmentAmount))\(amortizedStr) • Juros \(String(format: "%.2f", fin.monthlyInterestRate))% a.m.",
+                    subtitle: "\(remCount)x restantes de \(BRLFormatters.currency(fin.installmentAmount))\(metricsStr) • Juros \(String(format: "%.2f", fin.effectiveAnnualNominalRate))% a.a.",
                     section: "Financiamentos",
                     nominalAmount: nom,
                     projectedPayoffAmount: proj,
@@ -4655,10 +4749,14 @@ public final class FinancialDataStore: ObservableObject {
             unpaidDebtsTotal: debtsSum,
             loansRemainingNominalTotal: loansNominalSum,
             loansProjectedPayoffTotal: loansProjectedSum,
-            loansAmortizedInPeriodTotal: loansAmortizedInPeriodTotal,
+            loansAmortizedInPeriodTotal: loansPaidTotal,
             financingsRemainingNominalTotal: financingsNominalSum,
             financingsProjectedPayoffTotal: financingsProjectedSum,
-            financingsAmortizedInPeriodTotal: financingsAmortizedInPeriodTotal,
+            financingsAmortizedInPeriodTotal: financingsPaidTotal,
+            loansPaidInPeriodTotal: loansPaidTotal,
+            loansRealAmortizationInPeriodTotal: loansRealAmortizationTotal,
+            financingsPaidInPeriodTotal: financingsPaidTotal,
+            financingsRealAmortizationInPeriodTotal: financingsRealAmortizationTotal,
             grandTotalNominal: grandNominal,
             grandTotalWithPayoffProjection: grandProjected,
             itemizedLines: items

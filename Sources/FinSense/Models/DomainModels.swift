@@ -892,6 +892,14 @@ public struct CreditContract: Identifiable, Codable, Hashable {
     public var notes: String
     public var createdAt: Date
 
+    // Componentes de Financiamento Imobiliário (SFH/SFI - Padrão CAIXA)
+    public var annualNominalInterestRate: Double? // Taxa Nominal Contratual Anual (ex: 8.51% a.a.)
+    public var indexationRate: FinancingIndexation? // TR, IPCA, Fixo
+    public var adminFee: Double? // Taxa de Administração fixa (ex: R$ 25,00)
+    public var insuranceFee: Double? // Seguros MIP/DFI (ex: R$ 86,27)
+    public var baseInstallmentAmount: Double? // Parcela Base Price (Amortização + Juros)
+    public var financingDetails: FinancingModel?
+
     public init(
         id: UUID = UUID(),
         kind: CreditContractKind,
@@ -917,7 +925,13 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         settledDate: Date? = nil,
         settledAccountId: UUID? = nil,
         notes: String = "",
-        createdAt: Date = Date()
+        createdAt: Date = Date(),
+        annualNominalInterestRate: Double? = nil,
+        indexationRate: FinancingIndexation? = nil,
+        adminFee: Double? = nil,
+        insuranceFee: Double? = nil,
+        baseInstallmentAmount: Double? = nil,
+        financingDetails: FinancingModel? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -944,6 +958,94 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.settledAccountId = settledAccountId
         self.notes = notes
         self.createdAt = createdAt
+
+        self.annualNominalInterestRate = annualNominalInterestRate
+        self.indexationRate = indexationRate
+        self.adminFee = adminFee
+        self.insuranceFee = insuranceFee
+        self.baseInstallmentAmount = baseInstallmentAmount
+        self.financingDetails = financingDetails
+
+        if kind == .financing && self.financingDetails == nil {
+            let effAnnual = annualNominalInterestRate ?? (monthlyInterestRate > 0 ? monthlyInterestRate * 12.0 : 8.51)
+            let effAdmin = adminFee ?? 25.0
+            let effInsurance = insuranceFee ?? 0.0
+            let remaining = max(totalInstallments - pastInstallmentsElapsedAtCreation, 0)
+            self.financingDetails = FinancingModel(
+                id: id,
+                balance: outstandingBalance ?? totalContractedAmount,
+                annualNominalInterestRate: effAnnual,
+                amortizationSystem: amortizationSystem,
+                indexationRate: indexationRate ?? .tr,
+                adminFee: effAdmin,
+                insuranceFee: effInsurance,
+                totalInstallments: totalInstallments,
+                remainingInstallments: remaining,
+                totalInstallmentAmount: installmentAmount,
+                lastBillingDate: startDate
+            )
+        }
+    }
+
+    /// Taxa de Juros Nominal Anual efetiva (% a.a.)
+    public var effectiveAnnualNominalRate: Double {
+        if let annual = annualNominalInterestRate, annual > 0 {
+            return annual
+        }
+        if let fin = financingDetails, fin.annualNominalInterestRate > 0 {
+            return fin.annualNominalInterestRate
+        }
+        return monthlyInterestRate * 12.0
+    }
+
+    /// Taxa de juros mensal nominal em decimal calculada dinamicamente: annualRate / 12 / 100
+    public var effectiveMonthlyNominalRateDecimal: Double {
+        (effectiveAnnualNominalRate / 12.0) / 100.0
+    }
+
+    /// Taxa de administração mensal efetiva
+    public var effectiveAdminFee: Double {
+        adminFee ?? financingDetails?.adminFee ?? (kind == .financing ? 25.0 : 0.0)
+    }
+
+    /// Valor dos seguros mensais MIP/DFI efetivos
+    public var effectiveInsuranceFee: Double {
+        insuranceFee ?? financingDetails?.insuranceFee ?? 0.0
+    }
+
+    /// Parcela Base Price (Amortização + Juros)
+    /// Base Price = Parcela Total - Seguros - Taxas
+    public var effectiveBaseInstallmentPrice: Double {
+        if let base = baseInstallmentAmount, base > 0 {
+            return base
+        }
+        if let fin = financingDetails, fin.baseInstallmentPrice > 0 {
+            return fin.baseInstallmentPrice
+        }
+        if kind == .financing {
+            return max(0.0, installmentAmount - effectiveInsuranceFee - effectiveAdminFee)
+        }
+        return installmentAmount
+    }
+
+    /// Retorna ou gera o modelo especializado de financiamento
+    public var effectiveFinancingModel: FinancingModel? {
+        if let fin = financingDetails { return fin }
+        guard kind == .financing else { return nil }
+        let remaining = max(totalInstallments - pastInstallmentsElapsedAtCreation, 0)
+        return FinancingModel(
+            id: id,
+            balance: outstandingBalance ?? totalContractedAmount,
+            annualNominalInterestRate: effectiveAnnualNominalRate,
+            amortizationSystem: amortizationSystem,
+            indexationRate: indexationRate ?? .tr,
+            adminFee: effectiveAdminFee,
+            insuranceFee: effectiveInsuranceFee,
+            totalInstallments: totalInstallments,
+            remainingInstallments: remaining,
+            totalInstallmentAmount: installmentAmount,
+            lastBillingDate: startDate
+        )
     }
 
     enum CodingKeys: String, CodingKey {
@@ -952,6 +1054,8 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         case totalInstallments, monthlyInterestRate, startDate, accountId, categoryId
         case pastInstallmentsElapsedAtCreation, extraAmortizedTotal, amortizationHistory
         case isSettled, settledAmount, settledDate, settledAccountId, notes, createdAt
+        case annualNominalInterestRate, indexationRate, adminFee, insuranceFee
+        case baseInstallmentAmount, financingDetails
     }
 
     public init(from decoder: Decoder) throws {
@@ -1002,6 +1106,19 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
         self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
             ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+
+        self.annualNominalInterestRate = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("annualNominalInterestRate")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("annual_nominal_interest_rate")))
+        self.indexationRate = (try? c.decodeIfPresent(FinancingIndexation.self, forKey: AnyKey("indexationRate")))
+            ?? (try? c.decodeIfPresent(FinancingIndexation.self, forKey: AnyKey("indexation_rate")))
+        self.adminFee = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("adminFee")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("admin_fee")))
+        self.insuranceFee = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("insuranceFee")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("insurance_fee")))
+        self.baseInstallmentAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("baseInstallmentAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("base_installment_amount")))
+        self.financingDetails = (try? c.decodeIfPresent(FinancingModel.self, forKey: AnyKey("financingDetails")))
+            ?? (try? c.decodeIfPresent(FinancingModel.self, forKey: AnyKey("financing_details")))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1031,6 +1148,12 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(settledAccountId, forKey: .settledAccountId)
         try c.encode(notes, forKey: .notes)
         try c.encode(createdAt, forKey: .createdAt)
+        try c.encodeIfPresent(annualNominalInterestRate, forKey: .annualNominalInterestRate)
+        try c.encodeIfPresent(indexationRate, forKey: .indexationRate)
+        try c.encodeIfPresent(adminFee, forKey: .adminFee)
+        try c.encodeIfPresent(insuranceFee, forKey: .insuranceFee)
+        try c.encodeIfPresent(baseInstallmentAmount, forKey: .baseInstallmentAmount)
+        try c.encodeIfPresent(financingDetails, forKey: .financingDetails)
     }
 
     public var subtypeDisplayName: String {

@@ -226,27 +226,65 @@ public struct LoansAndFinancingsView: View {
                 .help("Excluir contrato e todas as suas transações vinculadas")
             }
 
-            // Contract Details Grid (Incluindo o campo "Saldo devedor" no card!)
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
-                detailCell(
-                    label: "Saldo Devedor",
-                    value: BRLFormatters.currency(outstandingBalance),
-                    valueColor: Color(hex: "#EF4444")
-                )
-                detailCell(label: "Valor Total Contratado", value: BRLFormatters.currency(contract.totalContractedAmount))
-                detailCell(label: "Valor da Parcela", value: BRLFormatters.currency(contract.installmentAmount))
-                detailCell(label: "Taxa de Juros", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
-                detailCell(label: "Parcelas Totais", value: "\(contract.totalInstallments)x (\(remainingCount)x futuras)")
-                detailCell(
-                    label: "Data em que foi feito",
-                    value: contract.startDate.map { BRLFormatters.shortDate($0) } ?? "A partir da criação"
-                )
-                detailCell(label: "Saldo Nominal Futuro", value: BRLFormatters.currency(nominalRemaining))
-                detailCell(label: "Parcelas Pagas", value: "\(paidCount) de \(contract.totalInstallments)")
-                detailCell(label: "Vencimento Mensal", value: "Todo dia \(contract.billingDay)")
+            // Contract Details Grid
+            if contract.kind == .financing {
+                let finModel = contract.effectiveFinancingModel
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+                    detailCell(
+                        label: "Saldo Devedor Teórico",
+                        value: BRLFormatters.currency(outstandingBalance),
+                        valueColor: Color(hex: "#EF4444")
+                    )
+                    detailCell(label: "Valor Total Contratado", value: BRLFormatters.currency(contract.totalContractedAmount))
+                    detailCell(label: "Parcela Total Devida", value: BRLFormatters.currency(contract.installmentAmount))
+
+                    detailCell(label: "Parcela Base Price", value: BRLFormatters.currency(contract.effectiveBaseInstallmentPrice))
+                    detailCell(label: "Seguros MIP/DFI", value: BRLFormatters.currency(contract.effectiveInsuranceFee))
+                    detailCell(label: "Taxa de Administração", value: BRLFormatters.currency(contract.effectiveAdminFee))
+
+                    detailCell(
+                        label: "Taxa Nominal Anual",
+                        value: String(format: "%.2f%% a.a. (%.4f%% a.m.)", contract.effectiveAnnualNominalRate, contract.effectiveMonthlyNominalRateDecimal * 100.0)
+                    )
+                    detailCell(
+                        label: "Amortização Real no Mês",
+                        value: BRLFormatters.currency(finModel?.currentMonthlyAmortization ?? 0.0),
+                        valueColor: Color(hex: "#10B981")
+                    )
+                    detailCell(
+                        label: "Juros no Mês",
+                        value: BRLFormatters.currency(finModel?.currentMonthlyInterest ?? 0.0),
+                        valueColor: Color(hex: "#EF4444")
+                    )
+
+                    detailCell(label: "Indexador", value: contract.indexationRate?.rawValue ?? "TR")
+                    detailCell(label: "Parcelas Totais", value: "\(contract.totalInstallments)x (\(remainingCount)x futuras)")
+                    detailCell(label: "Soma Nominal Futura", value: BRLFormatters.currency(nominalRemaining))
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+                    detailCell(
+                        label: "Saldo Devedor",
+                        value: BRLFormatters.currency(outstandingBalance),
+                        valueColor: Color(hex: "#EF4444")
+                    )
+                    detailCell(label: "Valor Total Contratado", value: BRLFormatters.currency(contract.totalContractedAmount))
+                    detailCell(label: "Valor da Parcela", value: BRLFormatters.currency(contract.installmentAmount))
+                    detailCell(label: "Taxa de Juros", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
+                    detailCell(label: "Parcelas Totais", value: "\(contract.totalInstallments)x (\(remainingCount)x futuras)")
+                    detailCell(
+                        label: "Data em que foi feito",
+                        value: contract.startDate.map { BRLFormatters.shortDate($0) } ?? "A partir da criação"
+                    )
+                    detailCell(label: "Saldo Nominal Futuro", value: BRLFormatters.currency(nominalRemaining))
+                    detailCell(label: "Parcelas Pagas", value: "\(paidCount) de \(contract.totalInstallments)")
+                    detailCell(label: "Vencimento Mensal", value: "Todo dia \(contract.billingDay)")
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
             }
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
 
             // Progress Bar
             VStack(alignment: .leading, spacing: 4) {
@@ -381,6 +419,10 @@ public struct CreateCreditContractSheet: View {
     @State private var billingDay: Int = 10
     @State private var totalInstallments: Int = 48
     @State private var interestRateText: String = "1,65"
+    @State private var annualNominalRateText: String = "8,51"
+    @State private var indexationRate: FinancingIndexation = .tr
+    @State private var adminFeeText: String = "25,00"
+    @State private var insuranceFeeText: String = "86,27"
     @State private var hasStartDate: Bool = false
     @State private var startDate: Date = Date()
     @State private var accountId: UUID = UUID()
@@ -465,6 +507,14 @@ public struct CreateCreditContractSheet: View {
                             Text(sys.rawValue).tag(sys)
                         }
                     }
+
+                    if kind == .financing {
+                        Picker("Indexador / Correção Monetária", selection: $indexationRate) {
+                            ForEach(FinancingIndexation.allCases) { idx in
+                                Text(idx.rawValue).tag(idx)
+                            }
+                        }
+                    }
                 }
 
                 Section("Valores (R$), Saldo Devedor, Parcelas e Juros") {
@@ -501,14 +551,62 @@ public struct CreateCreditContractSheet: View {
                         )
                     }
 
-                    HStack(spacing: 14) {
-                        BorderedTextField(
-                            label: "Taxa de Juros Mensal (% a.m.)",
-                            placeholder: "Ex: 2,0087",
-                            text: $interestRateText,
-                            suffix: "% a.m."
-                        )
-                        .frame(width: 220)
+                    if kind == .loan {
+                        HStack(spacing: 14) {
+                            BorderedTextField(
+                                label: "Taxa de Juros Mensal (% a.m.)",
+                                placeholder: "Ex: 2,0087",
+                                text: $interestRateText,
+                                suffix: "% a.m."
+                            )
+                            .frame(width: 220)
+
+                            if store.accounts.isEmpty {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Conta Bancária")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    HStack {
+                                        Text("Nenhuma conta cadastrada.")
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                        Button("Ir para Contas") {
+                                            dismiss()
+                                            store.selectedDestination = .settings
+                                            store.selectedSettingsSection = .accounts
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
+                                    }
+                                }
+                            } else {
+                                Picker("Conta Padrão", selection: $accountId) {
+                                    ForEach(store.accounts) { acc in
+                                        Text(acc.name).tag(acc.id)
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Financiamento: Seguros MIP/DFI, Taxa de Adm, Taxa Nominal Anual
+                        HStack(spacing: 12) {
+                            BorderedTextField(
+                                label: "Taxa Nominal Anual (% a.a.)",
+                                placeholder: "Ex: 8,51",
+                                text: $annualNominalRateText,
+                                suffix: "% a.a."
+                            )
+
+                            BRLCurrencyTextField(
+                                label: "Seguros MIP/DFI (R$)",
+                                text: $insuranceFeeText
+                            )
+
+                            BRLCurrencyTextField(
+                                label: "Taxa Adm Fixa (R$)",
+                                text: $adminFeeText
+                            )
+                        }
 
                         if store.accounts.isEmpty {
                             VStack(alignment: .leading, spacing: 4) {
@@ -529,12 +627,57 @@ public struct CreateCreditContractSheet: View {
                                 }
                             }
                         } else {
-                            Picker("Conta Padrão", selection: $accountId) {
+                            Picker("Conta Padrão para Cobrança", selection: $accountId) {
                                 ForEach(store.accounts) { acc in
                                     Text(acc.name).tag(acc.id)
                                 }
                             }
                         }
+
+                        // Live Preview da Decomposição da Parcela Caixa (Tabela Price)
+                        let instVal = BRLFormatters.parseAmount(installmentAmountText) ?? 0.0
+                        let insVal = BRLFormatters.parseAmount(insuranceFeeText) ?? 0.0
+                        let admVal = BRLFormatters.parseAmount(adminFeeText) ?? 0.0
+                        let basePrice = max(instVal - insVal - admVal, 0.0)
+                        let outBal = BRLFormatters.parseAmount(outstandingBalanceText) ?? (BRLFormatters.parseAmount(totalContractedText) ?? 0.0)
+                        let annRate = BRLFormatters.parseAmount(annualNominalRateText) ?? 8.51
+                        let monthlyRateDec = (annRate / 12.0) / 100.0
+                        let monthInterest = outBal * monthlyRateDec
+                        let realAmort = max(basePrice - monthInterest, 0.0)
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Image(systemName: "building.columns.fill")
+                                    .foregroundStyle(Color(hex: "#8B5CF6"))
+                                Text("Composição CAIXA da Parcela (Tabela Price):")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(Color(hex: "#8B5CF6"))
+                                Spacer()
+                                Text(String(format: "Taxa mensal calculada: %.4f%% a.m.", monthlyRateDec * 100.0))
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 16) {
+                                Text("Base Price (Amort+Juros): \(BRLFormatters.currency(basePrice))")
+                                    .font(.caption.weight(.semibold))
+                                Text("Seguros: \(BRLFormatters.currency(insVal))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("Taxa Adm: \(BRLFormatters.currency(admVal))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 16) {
+                                Text("Juros Mês Atual: \(BRLFormatters.currency(monthInterest))")
+                                    .font(.caption)
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                Text("Amortização Real no Saldo: \(BRLFormatters.currency(realAmort))")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                            }
+                        }
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#8B5CF6").opacity(0.08)))
                     }
 
                     BorderedTextField(
@@ -600,6 +743,13 @@ public struct CreateCreditContractSheet: View {
                     let rateVal = BRLFormatters.parseAmount(interestRateText) ?? 0.0
                     let cleanContractNo = contractNumber.trimmingCharacters(in: .whitespacesAndNewlines)
 
+                    let annNominal = kind == .financing ? (BRLFormatters.parseAmount(annualNominalRateText) ?? 8.51) : nil
+                    let idxRate = kind == .financing ? indexationRate : nil
+                    let admFee = kind == .financing ? (BRLFormatters.parseAmount(adminFeeText) ?? 25.0) : nil
+                    let insFee = kind == .financing ? (BRLFormatters.parseAmount(insuranceFeeText) ?? 86.27) : nil
+                    let basePriceAmt = kind == .financing ? max(instVal - (admFee ?? 0.0) - (insFee ?? 0.0), 0.0) : nil
+                    let effMonthlyRate = kind == .financing ? ((annNominal ?? 8.51) / 12.0) : rateVal
+
                     store.createCreditContract(
                         kind: kind,
                         name: cleanName,
@@ -612,10 +762,15 @@ public struct CreateCreditContractSheet: View {
                         installmentAmount: instVal,
                         billingDay: billingDay,
                         totalInstallments: totalInstallments,
-                        monthlyInterestRate: rateVal,
+                        monthlyInterestRate: effMonthlyRate,
                         startDate: hasStartDate ? startDate : nil,
                         accountId: accountId,
-                        notes: notes
+                        notes: notes,
+                        annualNominalInterestRate: annNominal,
+                        indexationRate: idxRate,
+                        adminFee: admFee,
+                        insuranceFee: insFee,
+                        baseInstallmentAmount: basePriceAmt
                     )
                     dismiss()
                 }
@@ -624,7 +779,7 @@ public struct CreateCreditContractSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 680, height: 670)
+        .frame(width: 680, height: 720)
         .onAppear {
             accountId = store.accounts.first?.id ?? UUID()
         }
@@ -669,6 +824,11 @@ public struct ImportCreditContractDocumentSheet: View {
     @State private var totalInstallments: Int = 36
     @State private var paidInstallmentsCount: Int = 10
     @State private var interestRateText: String = "2,0087"
+    @State private var annualNominalRateText: String = "8,51"
+    @State private var indexationRate: FinancingIndexation = .tr
+    @State private var adminFeeText: String = "25,00"
+    @State private var insuranceFeeText: String = "86,27"
+    @State private var baseInstallmentAmountText: String = ""
     @State private var startDate: Date = Date()
     @State private var firstFutureBillingDate: Date = Date()
     @State private var selectedAccountId: UUID = UUID()
@@ -889,17 +1049,53 @@ public struct ImportCreditContractDocumentSheet: View {
                         }
 
                         HStack(spacing: 14) {
-                            BorderedTextField(
-                                label: "Taxa de Juros (% a.m.)",
-                                placeholder: "Ex: 2,0087",
-                                text: $interestRateText,
-                                suffix: "% a.m."
-                            )
-                            .frame(width: 180)
+                            if kind == .financing {
+                                BorderedTextField(
+                                    label: "Taxa Nominal Anual (% a.a.)",
+                                    placeholder: "Ex: 8,51",
+                                    text: $annualNominalRateText,
+                                    suffix: "% a.a."
+                                )
+                                .frame(width: 180)
+
+                                Picker("Indexador", selection: $indexationRate) {
+                                    ForEach(FinancingIndexation.allCases) { idx in
+                                        Text(idx.rawValue).tag(idx)
+                                    }
+                                }
+                                .frame(width: 140)
+                            } else {
+                                BorderedTextField(
+                                    label: "Taxa de Juros (% a.m.)",
+                                    placeholder: "Ex: 2,0087",
+                                    text: $interestRateText,
+                                    suffix: "% a.m."
+                                )
+                                .frame(width: 180)
+                            }
 
                             DatePicker("Data em que foi feito", selection: $startDate, displayedComponents: [.date])
 
                             DatePicker("Próximo Vencimento Futuro", selection: $firstFutureBillingDate, displayedComponents: [.date])
+                        }
+
+                        if kind == .financing {
+                            HStack(spacing: 12) {
+                                BRLCurrencyTextField(
+                                    label: "Parcela Base Price (Amort+Juros)",
+                                    text: $baseInstallmentAmountText
+                                )
+
+                                BRLCurrencyTextField(
+                                    label: "Seguros MIP/DFI (R$)",
+                                    text: $insuranceFeeText
+                                )
+
+                                BRLCurrencyTextField(
+                                    label: "Taxa Adm Fixa (R$)",
+                                    text: $adminFeeText
+                                )
+                            }
                         }
 
                         HStack(spacing: 14) {
@@ -989,6 +1185,21 @@ public struct ImportCreditContractDocumentSheet: View {
         totalInstallments = doc.totalInstallments
         paidInstallmentsCount = doc.paidInstallmentsCount
         interestRateText = String(format: "%.4f", doc.monthlyInterestRate).replacingOccurrences(of: ".", with: ",")
+        if let ann = doc.annualNominalInterestRate {
+            annualNominalRateText = String(format: "%.2f", ann).replacingOccurrences(of: ".", with: ",")
+        }
+        if let idx = doc.indexationRate {
+            indexationRate = idx
+        }
+        if let adm = doc.adminFee {
+            adminFeeText = BRLFormatters.currency(adm)
+        }
+        if let ins = doc.insuranceFee {
+            insuranceFeeText = BRLFormatters.currency(ins)
+        }
+        if let bp = doc.baseInstallmentAmount {
+            baseInstallmentAmountText = BRLFormatters.currency(bp)
+        }
         startDate = doc.startDate
         firstFutureBillingDate = doc.firstFutureBillingDate
         notes = doc.extractedNotes
@@ -1016,6 +1227,13 @@ public struct ImportCreditContractDocumentSheet: View {
         let outBal = BRLFormatters.parseAmount(outstandingBalanceText) ?? totalVal
         let rateVal = BRLFormatters.parseAmount(interestRateText) ?? 0.0
 
+        let annNominal = kind == .financing ? (BRLFormatters.parseAmount(annualNominalRateText) ?? 8.51) : nil
+        let idxRate = kind == .financing ? indexationRate : nil
+        let admFee = kind == .financing ? (BRLFormatters.parseAmount(adminFeeText) ?? 25.0) : nil
+        let insFee = kind == .financing ? (BRLFormatters.parseAmount(insuranceFeeText) ?? 86.27) : nil
+        let basePriceAmt = kind == .financing ? (BRLFormatters.parseAmount(baseInstallmentAmountText) ?? max(instVal - (admFee ?? 0.0) - (insFee ?? 0.0), 0.0)) : nil
+        let effMonthlyRate = kind == .financing ? ((annNominal ?? 8.51) / 12.0) : rateVal
+
         store.createCreditContract(
             kind: kind,
             name: cleanName,
@@ -1028,12 +1246,17 @@ public struct ImportCreditContractDocumentSheet: View {
             installmentAmount: instVal,
             billingDay: billingDay,
             totalInstallments: totalInstallments,
-            monthlyInterestRate: rateVal,
+            monthlyInterestRate: effMonthlyRate,
             startDate: startDate,
             accountId: selectedAccountId,
             notes: notes,
             overridePastInstallmentsCount: paidInstallmentsCount,
-            overrideFirstFutureBillingDate: firstFutureBillingDate
+            overrideFirstFutureBillingDate: firstFutureBillingDate,
+            annualNominalInterestRate: annNominal,
+            indexationRate: idxRate,
+            adminFee: admFee,
+            insuranceFee: insFee,
+            baseInstallmentAmount: basePriceAmt
         )
         onCompleteImport?()
         dismiss()
@@ -1049,6 +1272,7 @@ public struct AmortizeContractSheet: View {
     public let contract: CreditContract
 
     @State private var amountPaidText: String = ""
+    @State private var proRataInterestText: String = ""
     @State private var selectedAccountId: UUID = UUID()
     @State private var date: Date = Date()
     @State private var mode: AmortizationRecalculationMode = .reduceTerm
@@ -1056,6 +1280,7 @@ public struct AmortizeContractSheet: View {
     @State private var newRemainingInstallments: Int = 1
     @State private var notes: String = ""
     @State private var errorMsg: String? = nil
+    @State private var simulationResult: ExtraAmortizationSimulationResult? = nil
 
     public init(store: FinancialDataStore, contract: CreditContract) {
         self.store = store
@@ -1107,6 +1332,16 @@ public struct AmortizeContractSheet: View {
                         recalculatePreview()
                     }
 
+                    BorderedTextField(
+                        label: "Juros diários (Mora / Encargo pró-rata)",
+                        placeholder: "Ex: 0,00 ou conforme simulação da CAIXA",
+                        text: $proRataInterestText,
+                        suffix: "R$"
+                    )
+                    .onChange(of: proRataInterestText) { _, _ in
+                        recalculatePreview()
+                    }
+
                     Picker("Conta de onde saiu o pagamento", selection: $selectedAccountId) {
                         ForEach(store.accounts) { acc in
                             let bal = store.currentBalance(forAccount: acc.id)
@@ -1147,6 +1382,74 @@ public struct AmortizeContractSheet: View {
                         text: $notes
                     )
                 }
+
+                if let sim = simulationResult, (BRLFormatters.parseAmount(amountPaidText) ?? 0) > 0 {
+                    Section("Simulação Matemática (Padrão CAIXA / Tabela Price)") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Valor Pago Bruto:")
+                                Spacer()
+                                Text(BRLFormatters.currency(sim.grossPayment))
+                                    .monospacedDigit()
+                            }
+                            if sim.proRataInterest > 0 {
+                                HStack {
+                                    Text("(-) Juros pró-rata deduzidos:")
+                                        .foregroundStyle(Color(hex: "#EF4444"))
+                                    Spacer()
+                                    Text("- " + BRLFormatters.currency(sim.proRataInterest))
+                                        .foregroundStyle(Color(hex: "#EF4444"))
+                                        .monospacedDigit()
+                                }
+                            }
+                            HStack {
+                                Text("(=) Amortização Efetiva no Saldo:")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                                Text(BRLFormatters.currency(sim.effectiveAmortization))
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                                    .monospacedDigit()
+                            }
+                            Divider()
+                            HStack {
+                                Text("Novo Saldo Devedor:")
+                                Spacer()
+                                Text(BRLFormatters.currency(sim.newBalance))
+                                    .fontWeight(.bold)
+                                    .monospacedDigit()
+                            }
+                            if mode == .reduceTerm {
+                                HStack {
+                                    Text("Novo Prazo:")
+                                    Spacer()
+                                    Text("\(sim.newRemainingInstallments) parcelas (eliminou \(sim.eliminatedInstallmentsCount) parcelas!)")
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(Color(hex: "#10B981"))
+                                }
+                            } else {
+                                HStack {
+                                    Text("Nova Parcela:")
+                                    Spacer()
+                                    Text(BRLFormatters.currency(sim.newInstallmentAmount))
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(Color(hex: "#10B981"))
+                                }
+                            }
+                            HStack {
+                                Text("Economia Estimada de Juros:")
+                                Spacer()
+                                Text(BRLFormatters.currency(sim.estimatedTotalInterestSaved))
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(Color(hex: "#3B82F6"))
+                                    .monospacedDigit()
+                            }
+                        }
+                        .font(.caption)
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.03)))
+                    }
+                }
             }
             .formStyle(.grouped)
 
@@ -1164,6 +1467,7 @@ public struct AmortizeContractSheet: View {
                         errorMsg = "Informe um valor amortizado válido maior que zero."
                         return
                     }
+                    let proRata = BRLFormatters.parseAmount(proRataInterestText) ?? 0.0
                     let customInst = BRLFormatters.parseAmount(newInstallmentAmountText)
                     store.amortizeContract(
                         contractId: contract.id,
@@ -1171,6 +1475,7 @@ public struct AmortizeContractSheet: View {
                         accountId: selectedAccountId,
                         date: date,
                         mode: mode,
+                        proRataInterest: proRata,
                         customNewInstallmentAmount: customInst,
                         customNewRemainingInstallments: newRemainingInstallments,
                         notes: notes
@@ -1182,7 +1487,7 @@ public struct AmortizeContractSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 580, height: 590)
+        .frame(width: 580, height: 680)
         .onAppear {
             selectedAccountId = contract.accountId
             newRemainingInstallments = max(store.remainingInstallmentsCount(for: contract), 1)
@@ -1191,39 +1496,29 @@ public struct AmortizeContractSheet: View {
     }
 
     private func recalculatePreview() {
-        guard let paid = BRLFormatters.parseAmount(amountPaidText), paid > 0 else { return }
-        let prevRem = store.remainingInstallmentsCount(for: contract)
-        let prevInst = contract.installmentAmount
-        let currentPV = max(store.projectedPayoffAmount(for: contract), paid)
-        let newPV = max(currentPV - paid, 0)
-        let i = contract.monthlyInterestRate / 100.0
-
-        if newPV <= 0.01 {
-            newRemainingInstallments = 1
-            newInstallmentAmountText = BRLFormatters.currency(0.0)
+        guard let paid = BRLFormatters.parseAmount(amountPaidText), paid > 0 else {
+            simulationResult = nil
             return
         }
+        let proRata = BRLFormatters.parseAmount(proRataInterestText) ?? 0.0
+        let prevRem = store.remainingInstallmentsCount(for: contract)
+        let currentPV = store.currentOutstandingBalance(for: contract)
 
-        switch mode {
-        case .reduceTerm:
-            if i > 0.0001 && prevInst > newPV * i {
-                let ratio = 1.0 - (newPV * i) / prevInst
-                let calcN = Int(ceil(-log(max(ratio, 0.0001)) / log(1.0 + i)))
-                newRemainingInstallments = max(1, min(calcN, prevRem))
-            } else {
-                newRemainingInstallments = max(1, Int(ceil(newPV / max(prevInst, 1))))
-            }
-            newInstallmentAmountText = BRLFormatters.currency(prevInst)
-        case .reduceInstallment:
-            newRemainingInstallments = max(prevRem, 1)
-            let newInst: Double
-            if i > 0.0001 && prevRem > 0 {
-                newInst = newPV * i / (1.0 - pow(1.0 + i, -Double(prevRem)))
-            } else {
-                newInst = newPV / Double(max(prevRem, 1))
-            }
-            newInstallmentAmountText = BRLFormatters.currency(newInst)
-        }
+        let sim = AmortizationEngine.simulateExtraAmortization(
+            currentBalance: currentPV,
+            annualNominalRate: contract.effectiveAnnualNominalRate,
+            basePriceInstallment: contract.effectiveBaseInstallmentPrice,
+            totalInstallmentAmount: contract.installmentAmount,
+            currentRemainingInstallments: prevRem,
+            extraPayment: paid,
+            proRataInterest: proRata,
+            mode: mode,
+            adminFee: contract.effectiveAdminFee,
+            insuranceFee: contract.effectiveInsuranceFee
+        )
+        simulationResult = sim
+        newRemainingInstallments = sim.newRemainingInstallments
+        newInstallmentAmountText = BRLFormatters.currency(sim.newInstallmentAmount)
     }
 }
 

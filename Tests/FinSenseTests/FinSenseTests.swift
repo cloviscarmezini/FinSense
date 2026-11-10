@@ -3113,4 +3113,208 @@ final class FinSenseTests: XCTestCase {
         let postSummary = store.buildComprehensiveDebtSummary(referenceDate: referenceNow, isAnnual: true)
         XCTAssertEqual(postSummary.loansAmortizedInPeriodTotal, 3500.0, accuracy: 0.01) // 2500 parcelas normais + 1000 amortização
     }
+
+    // MARK: - Financiamento Imobiliário CAIXA (Tabela Price + TR) Tests
+
+    func testFinancingModelCalculationsAndBasePriceExtraction() {
+        // Financiamento CAIXA padrão:
+        // Saldo Devedor Teórico: R$ 324.737,86
+        // Taxa Nominal: 8,51% a.a. -> taxa mensal dinâmica = 8,51 / 12 / 100 = 0,007091666... (0,7092% a.m.)
+        // Parcela Total: R$ 2.658,04
+        // Seguros MIP/DFI: R$ 86,27
+        // Taxa Adm: R$ 25,00
+        // Parcela Base Price: 2.658,04 - 86,27 - 25,00 = R$ 2.546,77
+
+        let model = FinancingModel(
+            balance: 324_737.86,
+            annualNominalInterestRate: 8.51,
+            amortizationSystem: .price,
+            indexationRate: .tr,
+            adminFee: 25.00,
+            insuranceFee: 86.27,
+            totalInstallments: 360,
+            remainingInstallments: 332,
+            totalInstallmentAmount: 2658.04
+        )
+
+        XCTAssertEqual(model.baseInstallmentPrice, 2546.77, accuracy: 0.01)
+        XCTAssertEqual(model.monthlyNominalRateDecimal, 8.51 / 12.0 / 100.0, accuracy: 0.000001)
+        XCTAssertEqual(model.monthlyNominalRatePercentage, 8.51 / 12.0, accuracy: 0.0001)
+
+        // Juros no Mês = 324.737,86 * (8.51 / 12 / 100) = R$ 2.302,93
+        XCTAssertEqual(model.currentMonthlyInterest, 2302.93, accuracy: 0.10)
+
+        // Amortização Real = 2.546,77 - 2.302,93 = R$ 243,84 (~R$ 240/mês!)
+        XCTAssertEqual(model.currentMonthlyAmortization, 243.84, accuracy: 0.10)
+    }
+
+    func testAmortizationEngineCaixaFiveStepEvolution() {
+        // Motor de Competência Mensal CAIXA:
+        // 1. Saldo Atualizado = Saldo Anterior + TR (ou Saldo * (1 + TR))
+        // 2. Juros = Saldo Atualizado * (Taxa Nominal Anual / 12)
+        // 3. Amortização (Price) = Parcela Base Price - Juros
+        // 4. Novo Saldo Devedor = Saldo Atualizado - Amortização
+        // 5. Valor da Parcela a Pagar = Parcela Base Price + Seguros Atualizados + Taxa de Admin
+
+        let initialBalance = 324_737.86
+        let annualRate = 8.51
+        let basePrice = 2546.77
+        let trRate = 0.0008 // Ex: TR de 0,08% no mês
+        let adminFee = 25.00
+        let insuranceFee = 86.27
+
+        let step = AmortizationEngine.calculateNextInstallment(
+            currentBalance: initialBalance,
+            annualNominalRate: annualRate,
+            basePriceInstallment: basePrice,
+            adminFee: adminFee,
+            insuranceFee: insuranceFee,
+            monthlyTR: trRate,
+            trIsPercentageRate: true
+        )
+
+        // 1. Saldo Atualizado com TR
+        let expectedUpdatedBalance = initialBalance * (1.0 + trRate)
+        XCTAssertEqual(step.updatedBalance, expectedUpdatedBalance, accuracy: 0.01)
+
+        // 2. Juros
+        let expectedInterest = expectedUpdatedBalance * (annualRate / 12.0 / 100.0)
+        XCTAssertEqual(step.interestAmount, expectedInterest, accuracy: 0.05)
+
+        // 3. Amortização Real
+        let expectedAmortization = basePrice - expectedInterest
+        XCTAssertEqual(step.amortizationAmount, expectedAmortization, accuracy: 0.05)
+
+        // 4. Novo Saldo
+        let expectedNewBalance = expectedUpdatedBalance - expectedAmortization
+        XCTAssertEqual(step.newBalance, expectedNewBalance, accuracy: 0.05)
+
+        // 5. Parcela Total (com Seguro MIP recalculado proporcionalmente ao novo saldo)
+        let expectedInsurance = insuranceFee * (expectedNewBalance / initialBalance)
+        XCTAssertEqual(step.totalInstallmentDue, basePrice + expectedInsurance + adminFee, accuracy: 0.01)
+    }
+
+    func testAmortizationEngineExtraAmortizationTermReductionWithProRata() {
+        // Teste de amortização extraordinária de R$ 20.000,00 na Tabela Price com encargo pró-rata:
+        let initialBalance = 324_737.86
+        let annualRate = 8.51
+        let basePrice = 2546.77
+        let totalInstallment = 2658.04
+        let remainingInstallments = 332
+        let extraPayment = 20_000.00
+        let proRataInterest = 150.00 // Encargo diário até o dia da amortização
+
+        let result = AmortizationEngine.simulateExtraAmortization(
+            currentBalance: initialBalance,
+            annualNominalRate: annualRate,
+            basePriceInstallment: basePrice,
+            totalInstallmentAmount: totalInstallment,
+            currentRemainingInstallments: remainingInstallments,
+            extraPayment: extraPayment,
+            proRataInterest: proRataInterest,
+            mode: .reduceTerm,
+            adminFee: 25.00,
+            insuranceFee: 86.27
+        )
+
+        // Amortização efetiva no saldo devedor = 20.000 - 150 = 19.850
+        XCTAssertEqual(result.grossPayment, 20_000.00, accuracy: 0.01)
+        XCTAssertEqual(result.proRataInterest, 150.00, accuracy: 0.01)
+        XCTAssertEqual(result.effectiveAmortization, 19_850.00, accuracy: 0.01)
+
+        // Novo saldo devedor = 324.737,86 - 19.850 = 304.887,86
+        XCTAssertEqual(result.newBalance, initialBalance - 19_850.00, accuracy: 0.01)
+
+        // Fórmula Price PV: -ln(1 - (PV * i)/PMT) / ln(1 + i)
+        // Reduz prazo significativamente (ex: de 332 para ~269 parcelas, eliminando ~63 parcelas)
+        XCTAssertLessThan(result.newRemainingInstallments, remainingInstallments)
+        XCTAssertGreaterThan(result.eliminatedInstallmentsCount, 50)
+        XCTAssertGreaterThan(result.estimatedTotalInterestSaved, 100_000.00) // Mais de R$ 100k economizados em juros!
+    }
+
+    func testComprehensiveDebtSummaryDisplaysOutstandingBalanceNot30YearNominal() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Corrente",
+            bankPresetId: "caixa",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#0066B3",
+            initialBalance: 10_000.0
+        )
+        let acc = store.accounts.first!
+
+        // Cria financiamento habitacional padrão CAIXA
+        let contract = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Imóvel",
+            contractNumber: "178770203328-1",
+            financingSubtype: .imovel,
+            amortizationSystem: .price,
+            totalContractedAmount: 350_000.0,
+            outstandingBalance: 324_737.86,
+            installmentAmount: 2658.04,
+            billingDay: 15,
+            totalInstallments: 360,
+            monthlyInterestRate: 8.51 / 12.0,
+            startDate: Date(),
+            accountId: acc.id,
+            annualNominalInterestRate: 8.51,
+            indexationRate: .tr,
+            adminFee: 25.00,
+            insuranceFee: 86.27,
+            baseInstallmentAmount: 2546.77
+        )
+
+        let summary = store.buildComprehensiveDebtSummary(referenceDate: Date(), isAnnual: false)
+
+        // 1. O saldo devedor atual do contrato reflete a Dívida Real (~324.737,86),
+        // e a projeção no resumo reflete o saldo após a competência (~324.494,02),
+        // NUNCA a soma nominal de 30 anos (360 x 2.658,04 = ~956.894,40).
+        XCTAssertEqual(store.currentOutstandingBalance(for: contract), 324_737.86, accuracy: 0.10)
+        XCTAssertEqual(summary.financingsProjectedPayoffTotal, 324_494.02, accuracy: 1.0)
+        XCTAssertGreaterThan(summary.financingsRemainingNominalTotal, 800_000.00)
+        XCTAssertLessThan(summary.grandTotalWithPayoffProjection, summary.grandTotalNominal)
+
+        // 2. Desacoplamento entre Pagamentos Realizados e Amortização Real
+        // Suponha que pagamos a 1ª parcela de R$ 2.658,04
+        if let currentTx = store.transactions.first(where: { $0.linkedContractId == contract.id && $0.installmentIndex == 1 }) {
+            store.toggleTransactionPaid(currentTx.id)
+        }
+
+        let updatedSummary = store.buildComprehensiveDebtSummary(referenceDate: Date(), isAnnual: false)
+        // Pagamento realizado: R$ 2.658,04
+        XCTAssertEqual(updatedSummary.financingsPaidInPeriodTotal, 2658.04, accuracy: 0.01)
+        // Amortização Real: apenas a cota de amortização do principal (~R$ 243 a R$ 246/mês)
+        XCTAssertEqual(updatedSummary.financingsRealAmortizationInPeriodTotal, 245.57, accuracy: 3.0)
+        XCTAssertLessThan(updatedSummary.financingsRealAmortizationInPeriodTotal, updatedSummary.financingsPaidInPeriodTotal)
+    }
+
+    func testStatementImportServiceCaixaHabitacaoParsing() {
+        let sampleCaixaText = """
+        CAIXA ECONÔMICA FEDERAL
+        DEMONSTRATIVO DE EVOLUCAO DO FINANCIAMENTO HABITACIONAL
+        CONTRATO: 178770203328-1
+        SALDO DEVEDOR TEORICO: 324.737,86
+        PRAZO DO FINANCIAMENTO: 360
+        PRAZO REMANESCENTE: 332
+        TAXA DE JUROS NOMINAL: 8,51 % A.A.
+        DESCRICAO DAS ULTIMAS PRESTACOES
+        15/03/2026 AMORT+JUROS 2.546,77 SEGURO 86,27 DEVIDO 2.658,04
+        """
+
+        let parsed = ContractDocumentImportService.parseContractDocumentText(sampleCaixaText, expectedKind: .financing)
+
+        XCTAssertEqual(parsed.contractNumber, "178770203328-1")
+        XCTAssertEqual(parsed.outstandingBalance, 324_737.86, accuracy: 0.01)
+        XCTAssertEqual(parsed.installmentAmount, 2658.04, accuracy: 0.01)
+        XCTAssertEqual(parsed.baseInstallmentAmount ?? 0.0, 2546.77, accuracy: 0.01)
+        XCTAssertEqual(parsed.insuranceFee ?? 0.0, 86.27, accuracy: 0.01)
+        XCTAssertEqual(parsed.adminFee ?? 0.0, 25.00, accuracy: 0.01)
+        XCTAssertEqual(parsed.annualNominalInterestRate ?? 0.0, 8.51, accuracy: 0.01)
+        XCTAssertEqual(parsed.totalInstallments, 360)
+        XCTAssertEqual(parsed.paidInstallmentsCount, 28) // 360 - 332
+        XCTAssertEqual(parsed.billingDay, 15)
+        XCTAssertEqual(parsed.indexationRate, FinancingIndexation.tr)
+    }
 }

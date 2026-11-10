@@ -529,16 +529,16 @@ public struct DashboardView: View {
                         Spacer()
 
                         VStack(alignment: .trailing, spacing: 2) {
-                            Text("Total Acumulado Geral")
-                                .font(.caption)
+                            Text("Total a Quitar (Dívida Real)")
+                                .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            Text(BRLFormatters.currency(debtSummary.grandTotalNominal))
+                            Text(BRLFormatters.currency(debtSummary.grandTotalWithPayoffProjection))
                                 .font(.system(size: 22, weight: .heavy, design: .rounded))
                                 .foregroundStyle(Color(hex: "#EF4444"))
                             if abs(debtSummary.grandTotalNominal - debtSummary.grandTotalWithPayoffProjection) > 0.01 {
-                                Text("Projeção para quitar hoje: \(BRLFormatters.currency(debtSummary.grandTotalWithPayoffProjection))")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(Color(hex: "#10B981"))
+                                Text("Soma nominal futura (com juros): \(BRLFormatters.currency(debtSummary.grandTotalNominal))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -572,18 +572,22 @@ public struct DashboardView: View {
                         debtPillarCard(
                             title: "Empréstimos",
                             subtitle: "\(debtSummary.activeLoans.count) contrato(s) ativo(s)",
-                            amount: debtSummary.loansRemainingNominalTotal,
-                            projected: debtSummary.loansProjectedPayoffTotal,
-                            amortizedInPeriod: debtSummary.loansAmortizedInPeriodTotal,
+                            amount: debtSummary.loansProjectedPayoffTotal,
+                            projected: nil,
+                            nominalAmount: debtSummary.loansRemainingNominalTotal,
+                            paidInPeriod: debtSummary.loansPaidInPeriodTotal,
+                            realAmortizationInPeriod: debtSummary.loansRealAmortizationInPeriodTotal,
                             colorHex: "#D97706",
                             icon: "banknote.fill"
                         )
                         debtPillarCard(
                             title: "Financiamentos",
                             subtitle: "\(debtSummary.activeFinancings.count) contrato(s) (Imóvel/Carro)",
-                            amount: debtSummary.financingsRemainingNominalTotal,
-                            projected: debtSummary.financingsProjectedPayoffTotal,
-                            amortizedInPeriod: debtSummary.financingsAmortizedInPeriodTotal,
+                            amount: debtSummary.financingsProjectedPayoffTotal,
+                            projected: nil,
+                            nominalAmount: debtSummary.financingsRemainingNominalTotal,
+                            paidInPeriod: debtSummary.financingsPaidInPeriodTotal,
+                            realAmortizationInPeriod: debtSummary.financingsRealAmortizationInPeriodTotal,
                             colorHex: "#8B5CF6",
                             icon: "house.and.flag.fill"
                         )
@@ -1090,7 +1094,9 @@ public struct DashboardView: View {
         subtitle: String,
         amount: Double,
         projected: Double?,
-        amortizedInPeriod: Double? = nil,
+        nominalAmount: Double? = nil,
+        paidInPeriod: Double? = nil,
+        realAmortizationInPeriod: Double? = nil,
         colorHex: String,
         icon: String
     ) -> some View {
@@ -1109,24 +1115,40 @@ public struct DashboardView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .monospacedDigit()
-            if let amortizedInPeriod, amortizedInPeriod > 0 {
-                Text("Amortizado no período: \(BRLFormatters.currency(amortizedInPeriod))")
+            if let paidInPeriod, paidInPeriod > 0 {
+                Text("Pagamentos Realizados: \(BRLFormatters.currency(paidInPeriod))")
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .monospacedDigit()
+            }
+            if let realAmortizationInPeriod, realAmortizationInPeriod > 0 {
+                Text("Amortização Real: \(BRLFormatters.currency(realAmortizationInPeriod))")
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
                     .foregroundStyle(Color(hex: "#10B981"))
                     .lineLimit(1)
                     .monospacedDigit()
             }
-            if let projected, abs(amount - projected) > 0.01 {
-                Text("Quitar: \(BRLFormatters.currency(projected))")
-                    .font(.caption2.bold())
-                    .foregroundStyle(Color(hex: "#10B981"))
-                    .lineLimit(1)
-                    .monospacedDigit()
-            } else {
-                Text(subtitle)
-                    .font(.caption2)
+            if let nominalAmount, nominalAmount > amount + 0.01 {
+                Text("Soma nominal: \(BRLFormatters.currency(nominalAmount))")
+                    .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .monospacedDigit()
+            }
+            if (paidInPeriod == nil || paidInPeriod == 0) && (realAmortizationInPeriod == nil || realAmortizationInPeriod == 0) {
+                if let projected, abs(amount - projected) > 0.01 {
+                    Text("Quitar: \(BRLFormatters.currency(projected))")
+                        .font(.caption2.bold())
+                        .foregroundStyle(Color(hex: "#10B981"))
+                        .lineLimit(1)
+                        .monospacedDigit()
+                } else {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(12)
