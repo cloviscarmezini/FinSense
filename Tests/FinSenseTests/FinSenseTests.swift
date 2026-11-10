@@ -3317,4 +3317,138 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(parsed.billingDay, 15)
         XCTAssertEqual(parsed.indexationRate, FinancingIndexation.tr)
     }
+
+    func testMultiStepExtraAmortizationFlowNoDoubleDeductionAndAutoLiquidation() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.addAccount(
+            name: "Conta Corrente",
+            bankPresetId: "caixa",
+            customImagePath: nil,
+            iconSymbol: "building.columns.fill",
+            colorHex: "#0066B3",
+            initialBalance: 500_000.0
+        )
+        let acc = store.accounts.first!
+
+        // Cria financiamento imobiliário CAIXA Tabela Price
+        // Saldo Devedor Inicial: R$ 324.737,86 (332 parcelas restantes de 360)
+        let contract = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Imóvel",
+            contractNumber: "178770203328-1",
+            financingSubtype: .imovel,
+            amortizationSystem: .price,
+            totalContractedAmount: 350_000.0,
+            outstandingBalance: 324_737.86,
+            installmentAmount: 2658.04,
+            billingDay: 15,
+            totalInstallments: 360,
+            monthlyInterestRate: 8.51 / 12.0,
+            startDate: Date(),
+            accountId: acc.id,
+            overridePastInstallmentsCount: 28,
+            annualNominalInterestRate: 8.51,
+            indexationRate: .tr,
+            adminFee: 25.00,
+            insuranceFee: 86.27,
+            baseInstallmentAmount: 2546.77
+        )
+
+        // Verificações iniciais
+        XCTAssertEqual(store.currentOutstandingBalance(for: contract), 324_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: contract), 332)
+
+        // PASSO 1: Amortizou R$ 20.000,00 com redução de prazo
+        // Saldo deve cair EXATAMENTE R$ 20.000 (324.737,86 - 20.000 = 304.737,86), NUNCA R$ 40.000!
+        // Prazo deve cair para 268 parcelas.
+        store.amortizeContract(
+            contractId: contract.id,
+            amountPaid: 20_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        guard let c1 = store.contracts.first(where: { $0.id == contract.id }) else {
+            XCTFail("Contrato não encontrado")
+            return
+        }
+
+        XCTAssertEqual(c1.outstandingBalance ?? 0.0, 304_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: c1), 304_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: c1), 268)
+        XCTAssertFalse(c1.isSettled)
+
+        // PASSO 2: Amortizou +R$ 100.000,00 com redução de prazo
+        // Saldo deve cair EXATAMENTE R$ 100.000 (304.737,86 - 100.000 = 204.737,86)
+        // Prazo cai para 120 parcelas.
+        store.amortizeContract(
+            contractId: contract.id,
+            amountPaid: 100_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        guard let c2 = store.contracts.first(where: { $0.id == contract.id }) else {
+            XCTFail("Contrato não encontrado")
+            return
+        }
+
+        XCTAssertEqual(c2.outstandingBalance ?? 0.0, 204_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: c2), 204_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: c2), 120)
+        XCTAssertFalse(c2.isSettled)
+
+        // PASSO 3: Amortizou +R$ 60.000,00 com redução de prazo
+        // Saldo deve cair EXATAMENTE R$ 60.000 (204.737,86 - 60.000 = 144.737,86)
+        // Prazo cai para 74 parcelas.
+        store.amortizeContract(
+            contractId: contract.id,
+            amountPaid: 60_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        guard let c3 = store.contracts.first(where: { $0.id == contract.id }) else {
+            XCTFail("Contrato não encontrado")
+            return
+        }
+
+        XCTAssertEqual(c3.outstandingBalance ?? 0.0, 144_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: c3), 144_737.86, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: c3), 74)
+        XCTAssertFalse(c3.isSettled)
+
+        // PASSO 4: Amortizou +R$ 180.000,00 (valor superior ao saldo restante de 144.737,86)
+        // O contrato DEVE ser liquidado automaticamente:
+        // - isSettled = true
+        // - outstandingBalance = 0,00
+        // - remainingInstallmentsCount = 0
+        // - remainingNominalAmount = 0,00
+        // - projectedPayoffAmount = 0,00
+        // - zero parcelas futuras residuais / fantasmas
+        store.amortizeContract(
+            contractId: contract.id,
+            amountPaid: 180_000.00,
+            accountId: acc.id,
+            mode: .reduceTerm
+        )
+
+        guard let c4 = store.contracts.first(where: { $0.id == contract.id }) else {
+            XCTFail("Contrato não encontrado")
+            return
+        }
+
+        XCTAssertTrue(c4.isSettled)
+        XCTAssertEqual(c4.outstandingBalance ?? 0.0, 0.0, accuracy: 0.01)
+        XCTAssertEqual(store.currentOutstandingBalance(for: c4), 0.0, accuracy: 0.01)
+        XCTAssertEqual(store.remainingInstallmentsCount(for: c4), 0)
+        XCTAssertEqual(store.remainingNominalAmount(for: c4), 0.0, accuracy: 0.01)
+        XCTAssertEqual(store.projectedPayoffAmount(for: c4), 0.0, accuracy: 0.01)
+
+        // Confirma que não restou nenhuma transação futura pendente
+        let remainingUnpaid = store.unpaidTransactions(forContract: c4.id)
+        XCTAssertEqual(remainingUnpaid.count, 0)
+        XCTAssertEqual(store.activeContracts(for: .financing).count, 0)
+        XCTAssertEqual(store.settledContracts(for: .financing).count, 1)
+    }
 }

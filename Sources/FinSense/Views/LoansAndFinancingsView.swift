@@ -1361,19 +1361,41 @@ public struct AmortizeContractSheet: View {
                     .onChange(of: mode) { _, _ in
                         recalculatePreview()
                     }
+                    .disabled(isSettlingFullDebt)
+
+                    if isSettlingFullDebt {
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.seal.fill")
+                                .font(.title2)
+                                .foregroundStyle(Color(hex: "#10B981"))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Quitação Total do Contrato")
+                                    .font(.subheadline.bold())
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                                Text("O valor amortizado cobre integralmente a dívida. Todas as parcelas futuras serão eliminadas e o contrato será liquidado.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#10B981").opacity(0.12)))
+                    }
 
                     HStack(spacing: 14) {
                         EditableIntegerStepperField(
                             label: "Nova Qtd. de Parcelas Restantes",
                             value: $newRemainingInstallments,
-                            range: 1...max(currentRemaining, 1),
+                            range: 0...max(currentRemaining, 1),
                             unitSuffix: "parcelas"
                         )
+                        .disabled(isSettlingFullDebt)
 
                         BRLCurrencyTextField(
                             label: "Novo Valor da Parcela (R$)",
                             text: $newInstallmentAmountText
                         )
+                        .disabled(isSettlingFullDebt)
                     }
 
                     BorderedTextField(
@@ -1415,17 +1437,24 @@ public struct AmortizeContractSheet: View {
                             HStack {
                                 Text("Novo Saldo Devedor:")
                                 Spacer()
-                                Text(BRLFormatters.currency(sim.newBalance))
+                                Text(sim.newBalance <= 0.01 ? "QUITADO (R$ 0,00)" : BRLFormatters.currency(sim.newBalance))
                                     .fontWeight(.bold)
+                                    .foregroundStyle(sim.newBalance <= 0.01 ? Color(hex: "#10B981") : .primary)
                                     .monospacedDigit()
                             }
                             if mode == .reduceTerm {
                                 HStack {
                                     Text("Novo Prazo:")
                                     Spacer()
-                                    Text("\(sim.newRemainingInstallments) parcelas (eliminou \(sim.eliminatedInstallmentsCount) parcelas!)")
-                                        .fontWeight(.semibold)
-                                        .foregroundStyle(Color(hex: "#10B981"))
+                                    if sim.newRemainingInstallments == 0 {
+                                        Text("0 parcelas (Contrato Quitado!)")
+                                            .fontWeight(.bold)
+                                            .foregroundStyle(Color(hex: "#10B981"))
+                                    } else {
+                                        Text("\(sim.newRemainingInstallments) parcelas (eliminou \(sim.eliminatedInstallmentsCount) parcelas!)")
+                                            .fontWeight(.semibold)
+                                            .foregroundStyle(Color(hex: "#10B981"))
+                                    }
                                 }
                             } else {
                                 HStack {
@@ -1462,13 +1491,14 @@ public struct AmortizeContractSheet: View {
             HStack {
                 Button("Cancelar") { dismiss() }
                 Spacer()
-                Button("Confirmar Amortização e Recalcular") {
+                Button(isSettlingFullDebt ? "Confirmar Quitação Total" : "Confirmar Amortização e Recalcular") {
                     guard let paidVal = BRLFormatters.parseAmount(amountPaidText), paidVal > 0 else {
                         errorMsg = "Informe um valor amortizado válido maior que zero."
                         return
                     }
                     let proRata = BRLFormatters.parseAmount(proRataInterestText) ?? 0.0
-                    let customInst = BRLFormatters.parseAmount(newInstallmentAmountText)
+                    let customInst = isSettlingFullDebt ? 0.0 : BRLFormatters.parseAmount(newInstallmentAmountText)
+                    let customCount = isSettlingFullDebt ? 0 : newRemainingInstallments
                     store.amortizeContract(
                         contractId: contract.id,
                         amountPaid: paidVal,
@@ -1477,13 +1507,13 @@ public struct AmortizeContractSheet: View {
                         mode: mode,
                         proRataInterest: proRata,
                         customNewInstallmentAmount: customInst,
-                        customNewRemainingInstallments: newRemainingInstallments,
+                        customNewRemainingInstallments: customCount,
                         notes: notes
                     )
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#D97706"))
+                .tint(isSettlingFullDebt ? Color(hex: "#10B981") : Color(hex: "#D97706"))
             }
         }
         .padding(22)
@@ -1493,6 +1523,12 @@ public struct AmortizeContractSheet: View {
             newRemainingInstallments = max(store.remainingInstallmentsCount(for: contract), 1)
             newInstallmentAmountText = BRLFormatters.currency(contract.installmentAmount)
         }
+    }
+
+    private var isSettlingFullDebt: Bool {
+        guard let paid = BRLFormatters.parseAmount(amountPaidText), paid > 0 else { return false }
+        let currentPV = store.currentOutstandingBalance(for: contract)
+        return paid >= (currentPV - 0.01) || (simulationResult?.newBalance ?? 1.0) <= 0.01
     }
 
     private func recalculatePreview() {
@@ -1517,8 +1553,13 @@ public struct AmortizeContractSheet: View {
             insuranceFee: contract.effectiveInsuranceFee
         )
         simulationResult = sim
-        newRemainingInstallments = sim.newRemainingInstallments
-        newInstallmentAmountText = BRLFormatters.currency(sim.newInstallmentAmount)
+        if paid >= (currentPV - 0.01) || sim.newBalance <= 0.01 {
+            newRemainingInstallments = 0
+            newInstallmentAmountText = BRLFormatters.currency(0.0)
+        } else {
+            newRemainingInstallments = sim.newRemainingInstallments
+            newInstallmentAmountText = BRLFormatters.currency(sim.newInstallmentAmount)
+        }
     }
 }
 

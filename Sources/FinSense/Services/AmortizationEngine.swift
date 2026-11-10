@@ -220,14 +220,14 @@ public enum AmortizationEngine {
         var newRemaining = currentRemainingInstallments
         var newInstallment = totalInstallmentAmount
 
-        if newBalance <= 0.01 {
+        if newBalance <= 0.01 || effectiveAmortization >= currentBalance {
             newRemaining = 0
             newInstallment = 0.0
             let saved = Double(currentRemainingInstallments) * totalInstallmentAmount - grossPayment
             return ExtraAmortizationSimulationResult(
                 grossPayment: grossPayment,
                 proRataInterest: cleanProRata,
-                effectiveAmortization: effectiveAmortization,
+                effectiveAmortization: min(effectiveAmortization, currentBalance),
                 previousBalance: currentBalance,
                 newBalance: 0.0,
                 previousRemainingInstallments: currentRemainingInstallments,
@@ -248,9 +248,9 @@ public enum AmortizationEngine {
             if i > 0.000001 && basePriceInstallment > newBalance * i {
                 let ratio = 1.0 - (newBalance * i) / basePriceInstallment
                 let calcN = -log(max(ratio, 0.000001)) / log(1.0 + i)
-                newRemaining = max(1, min(Int(ceil(calcN)), currentRemainingInstallments))
+                newRemaining = max(1, min(Int(ceil(calcN - 1e-9)), currentRemainingInstallments))
             } else {
-                newRemaining = max(1, Int(ceil(newBalance / max(basePriceInstallment, 1.0))))
+                newRemaining = max(1, Int(ceil((newBalance / max(basePriceInstallment, 1.0)) - 1e-9)))
             }
             // Na redução de prazo, a parcela permanece a mesma
             newInstallment = totalInstallmentAmount
