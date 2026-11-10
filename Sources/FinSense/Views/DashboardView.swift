@@ -539,7 +539,10 @@ public struct DashboardView: View {
                 }
 
                 // MARK: - Total de Dívidas e Compromissos
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 18) {
+                    let totalCommitments = periodExpense + debtSummary.unpaidDebtsTotal + debtSummary.loansProjectedPayoffTotal + debtSummary.financingsProjectedPayoffTotal
+                    let totalNominalCommitments = periodExpense + debtSummary.unpaidDebtsTotal + debtSummary.loansRemainingNominalTotal + debtSummary.financingsRemainingNominalTotal
+
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack(spacing: 8) {
@@ -548,9 +551,13 @@ public struct DashboardView: View {
                                 Text("Total de Dívidas e Compromissos")
                                     .font(.title3.bold())
                             }
-                            Text("Detalhamento de transações pendentes atuais e futuras, dívidas em aberto (ex: Serasa/Cartões), empréstimos e financiamentos")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text(
+                                isAnnual
+                                    ? "Detalhamento de despesas do ano, dívidas em aberto (ex: Serasa/Cartões), empréstimos e financiamentos frente às receitas anuais"
+                                    : "Detalhamento de despesas do mês, dívidas em aberto (ex: Serasa/Cartões), empréstimos e financiamentos frente às receitas mensais"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                         Spacer()
 
@@ -558,37 +565,29 @@ public struct DashboardView: View {
                             Text("Total a Quitar (Dívida Real)")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            Text(BRLFormatters.currency(debtSummary.grandTotalWithPayoffProjection))
+                            Text(BRLFormatters.currency(totalCommitments))
                                 .font(.system(size: 22, weight: .heavy, design: .rounded))
                                 .foregroundStyle(Color(hex: "#EF4444"))
-                            if abs(debtSummary.grandTotalNominal - debtSummary.grandTotalWithPayoffProjection) > 0.01 {
-                                Text("Soma nominal futura (com juros): \(BRLFormatters.currency(debtSummary.grandTotalNominal))")
+                            if abs(totalNominalCommitments - totalCommitments) > 0.01 {
+                                Text("Soma nominal futura (com juros): \(BRLFormatters.currency(totalNominalCommitments))")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
                         }
                     }
 
-                    // 5 Pillars Breakdown (Equal-Height Grid)
+                    // 4 Pillars Breakdown (Equal-Height Grid)
                     Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                         GridRow {
                             debtPillarCard(
-                                title: isAnnual ? "Pendentes no Ano" : "Transações Atuais",
-                                subtitle: isAnnual ? "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) em \(yearStr)" : "\(debtSummary.currentMonthUnpaidTransactions.count) pendente(s) no mês",
-                                amount: debtSummary.currentMonthUnpaidTotal,
+                                title: isAnnual ? "Despesas do Ano" : "Despesas do Mês",
+                                subtitle: isAnnual
+                                    ? "\(BRLFormatters.currency(periodPaidExpense)) pagas • \(BRLFormatters.currency(periodPendingExpense)) pendentes em \(yearStr)"
+                                    : "\(BRLFormatters.currency(periodPaidExpense)) pagas • \(BRLFormatters.currency(periodPendingExpense)) pendentes",
+                                amount: periodExpense,
                                 projected: nil,
                                 colorHex: "#F59E0B",
                                 icon: "calendar.badge.exclamationmark"
-                            )
-                            .frame(maxWidth: .infinity)
-
-                            debtPillarCard(
-                                title: "Transações Futuras",
-                                subtitle: "\(debtSummary.futureUnpaidRegularTransactions.count) parcela(s)/agendada(s)",
-                                amount: debtSummary.futureRegularExpensesTotal,
-                                projected: nil,
-                                colorHex: "#3B82F6",
-                                icon: "clock.arrow.circlepath"
                             )
                             .frame(maxWidth: .infinity)
 
@@ -629,6 +628,23 @@ public struct DashboardView: View {
                             .frame(maxWidth: .infinity)
                         }
                     }
+
+                    Divider()
+                        .opacity(0.5)
+                        .padding(.vertical, 2)
+
+                    // MARK: - Gráfico Donut de Dívidas e Compromissos vs Receitas
+                    DebtCommitmentsDonutChartView(
+                        periodExpenseTitle: isAnnual ? "Despesas do Ano" : "Despesas do Mês",
+                        periodIncomeTitle: isAnnual ? "Receitas do Ano" : "Receitas do Mês",
+                        periodExpense: periodExpense,
+                        debtsAmount: debtSummary.unpaidDebtsTotal,
+                        loansAmount: debtSummary.loansProjectedPayoffTotal,
+                        financingsAmount: debtSummary.financingsProjectedPayoffTotal,
+                        periodIncome: periodIncome,
+                        isAnnual: isAnnual,
+                        yearStr: yearStr
+                    )
                 }
                 .padding(18)
                 .background(
@@ -2216,5 +2232,360 @@ public struct MonthlyCashFlowChartView: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.primary.opacity(0.07), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - Gráfico Donut: Compromissos e Dívidas vs Receitas
+
+public struct DebtCommitmentsDonutChartView: View {
+    public let periodExpenseTitle: String
+    public let periodIncomeTitle: String
+    public let periodExpense: Double
+    public let debtsAmount: Double
+    public let loansAmount: Double
+    public let financingsAmount: Double
+    public let periodIncome: Double
+    public let isAnnual: Bool
+    public let yearStr: String
+
+    public struct DonutSegment: Identifiable {
+        public let id: String
+        public let name: String
+        public let amount: Double
+        public let color: Color
+        public let icon: String
+        public let isSurplus: Bool
+    }
+
+    public init(
+        periodExpenseTitle: String,
+        periodIncomeTitle: String,
+        periodExpense: Double,
+        debtsAmount: Double,
+        loansAmount: Double,
+        financingsAmount: Double,
+        periodIncome: Double,
+        isAnnual: Bool,
+        yearStr: String
+    ) {
+        self.periodExpenseTitle = periodExpenseTitle
+        self.periodIncomeTitle = periodIncomeTitle
+        self.periodExpense = periodExpense
+        self.debtsAmount = debtsAmount
+        self.loansAmount = loansAmount
+        self.financingsAmount = financingsAmount
+        self.periodIncome = periodIncome
+        self.isAnnual = isAnnual
+        self.yearStr = yearStr
+    }
+
+    private var totalDebtsAndCommitments: Double {
+        periodExpense + debtsAmount + loansAmount + financingsAmount
+    }
+
+    private var surplus: Double {
+        max(0.0, periodIncome - totalDebtsAndCommitments)
+    }
+
+    private var commitmentPercentage: Double {
+        guard periodIncome > 0 else { return totalDebtsAndCommitments > 0 ? 100.0 : 0.0 }
+        return (totalDebtsAndCommitments / periodIncome) * 100.0
+    }
+
+    private var segments: [DonutSegment] {
+        var list: [DonutSegment] = []
+
+        if periodExpense > 0 {
+            list.append(DonutSegment(
+                id: "expense",
+                name: periodExpenseTitle,
+                amount: periodExpense,
+                color: Color(hex: "#F59E0B"),
+                icon: "calendar.badge.exclamationmark",
+                isSurplus: false
+            ))
+        }
+
+        if debtsAmount > 0 {
+            list.append(DonutSegment(
+                id: "debts",
+                name: "Dívidas",
+                amount: debtsAmount,
+                color: Color(hex: "#EF4444"),
+                icon: "exclamationmark.triangle.fill",
+                isSurplus: false
+            ))
+        }
+
+        if loansAmount > 0 {
+            list.append(DonutSegment(
+                id: "loans",
+                name: "Empréstimos",
+                amount: loansAmount,
+                color: Color(hex: "#D97706"),
+                icon: "banknote.fill",
+                isSurplus: false
+            ))
+        }
+
+        if financingsAmount > 0 {
+            list.append(DonutSegment(
+                id: "financings",
+                name: "Financiamentos",
+                amount: financingsAmount,
+                color: Color(hex: "#8B5CF6"),
+                icon: "house.and.flag.fill",
+                isSurplus: false
+            ))
+        }
+
+        // Se a receita for maior que os compromissos, a fatia verde representa a receita livre restante
+        if periodIncome > totalDebtsAndCommitments && surplus > 0.01 {
+            list.append(DonutSegment(
+                id: "surplus",
+                name: isAnnual ? "Receita Livre do Ano" : "Receita Livre do Mês",
+                amount: surplus,
+                color: Color(hex: "#10B981"),
+                icon: "checkmark.shield.fill",
+                isSurplus: true
+            ))
+        }
+
+        return list
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Header interno
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chart.pie.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                        Text("Distribuição de Compromissos vs Receitas")
+                            .font(.subheadline.weight(.bold))
+                    }
+                    Text(
+                        isAnnual
+                            ? "Proporção das despesas do ano, dívidas e empréstimos/financiamentos frente à receita total anual de \(yearStr)"
+                            : "Proporção das despesas do mês, dívidas e empréstimos/financiamentos frente à receita total mensal"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                // Badge de Nível de Comprometimento
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 7, height: 7)
+                    Text(statusText)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(statusColor)
+                }
+                .padding(.horizontal, 9)
+                .padding(.vertical, 4)
+                .background(statusColor.opacity(0.12))
+                .clipShape(Capsule())
+            }
+
+            if segments.isEmpty && periodIncome <= 0 {
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.pie")
+                        .font(.system(size: 32))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                    Text(isAnnual ? "Nenhum compromisso ou receita registrada em \(yearStr)." : "Nenhum compromisso ou receita registrada neste mês.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 160)
+            } else {
+                HStack(alignment: .center, spacing: 24) {
+                    // Donut Chart
+                    ZStack {
+                        Chart(segments) { item in
+                            SectorMark(
+                                angle: .value("Valor", item.amount),
+                                innerRadius: .ratio(0.64),
+                                angularInset: 1.5
+                            )
+                            .cornerRadius(4)
+                            .foregroundStyle(item.color)
+                        }
+                        .frame(width: 190, height: 190)
+
+                        // Center Overlay
+                        VStack(spacing: 2) {
+                            Text(isAnnual ? "Receita Anual" : "Receita Mensal")
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+
+                            Text(BRLFormatters.currency(periodIncome))
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color(hex: "#10B981"))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                                .monospacedDigit()
+
+                            Divider()
+                                .frame(width: 36)
+                                .opacity(0.35)
+                                .padding(.vertical, 1)
+
+                            if totalDebtsAndCommitments == 0 {
+                                Text("0% dívidas")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            } else if periodIncome >= totalDebtsAndCommitments {
+                                Text(String(format: "%.1f%%", commitmentPercentage))
+                                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                    .foregroundStyle(statusColor)
+                                Text("comprometida")
+                                    .font(.system(size: 8, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text(String(format: "%.0f%%", commitmentPercentage))
+                                    .font(.system(size: 11, weight: .heavy, design: .rounded))
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                Text("excede receita")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                            }
+                        }
+                        .padding(6)
+                    }
+                    .frame(width: 190, height: 190)
+
+                    // Right Breakdown Panel
+                    VStack(alignment: .leading, spacing: 10) {
+                        // 3 Mini Cards Comparativos
+                        HStack(spacing: 10) {
+                            miniMetricBox(
+                                title: isAnnual ? "Receita do Ano" : "Receita do Mês",
+                                value: BRLFormatters.currency(periodIncome),
+                                color: Color(hex: "#10B981"),
+                                icon: "arrow.down.left.circle.fill"
+                            )
+
+                            miniMetricBox(
+                                title: "Total Compromissos",
+                                value: BRLFormatters.currency(totalDebtsAndCommitments),
+                                color: Color(hex: "#EF4444"),
+                                icon: "exclamationmark.shield.fill"
+                            )
+
+                            miniMetricBox(
+                                title: surplus > 0 ? "Receita Livre" : "Excesso s/ Receita",
+                                value: BRLFormatters.currency(surplus > 0 ? surplus : (totalDebtsAndCommitments - periodIncome)),
+                                color: surplus > 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
+                                icon: surplus > 0 ? "checkmark.circle.fill" : "xmark.octagon.fill"
+                            )
+                        }
+
+                        // Lista detalhada dos itens do gráfico
+                        VStack(spacing: 6) {
+                            ForEach(segments) { item in
+                                HStack(spacing: 8) {
+                                    Circle()
+                                        .fill(item.color)
+                                        .frame(width: 8, height: 8)
+
+                                    Image(systemName: item.icon)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(item.color)
+                                        .frame(width: 14)
+
+                                    Text(item.name)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .lineLimit(1)
+
+                                    Spacer()
+
+                                    // Badge de proporção sobre a Receita
+                                    if periodIncome > 0 {
+                                        let pctOfIncome = (item.amount / periodIncome) * 100.0
+                                        Text(String(format: "%.1f%% da receita", pctOfIncome))
+                                            .font(.system(size: 10, weight: .medium))
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.primary.opacity(0.04))
+                                            .clipShape(Capsule())
+                                    }
+
+                                    Text(BRLFormatters.currency(item.amount))
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(item.color)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(item.color.opacity(0.04))
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(0.02))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func miniMetricBox(title: String, value: String, color: Color, icon: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                    .foregroundStyle(color)
+                Text(title)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Text(value)
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var statusColor: Color {
+        if commitmentPercentage <= 70 {
+            return Color(hex: "#10B981")
+        } else if commitmentPercentage <= 100 {
+            return Color(hex: "#F59E0B")
+        } else {
+            return Color(hex: "#EF4444")
+        }
+    }
+
+    private var statusText: String {
+        if commitmentPercentage <= 70 {
+            return "Comprometimento Saudável (\(String(format: "%.0f%%", commitmentPercentage)))"
+        } else if commitmentPercentage <= 100 {
+            return "Comprometimento Elevado (\(String(format: "%.0f%%", commitmentPercentage)))"
+        } else {
+            return "Comprometimento Crítico (\(String(format: "%.0f%%", commitmentPercentage)))"
+        }
     }
 }
