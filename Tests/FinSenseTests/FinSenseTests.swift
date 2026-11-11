@@ -4306,4 +4306,656 @@ final class FinSenseTests: XCTestCase {
         )
         XCTAssertGreaterThan(metricsAmortized.savedYears * 12 + metricsAmortized.savedRemainingMonths, 0)
     }
+
+    // MARK: - Refatoração dos Cards Financeiros (Cenários A a G + 6 Contextos Temporais)
+
+    /// Cenário A — Saldo bancário elevado, mas planejamento comprometido
+    /// Saldo inicial: R$ 50.000.
+    /// Receitas previstas: R$ 5.000.
+    /// Despesas lançadas: R$ 10.000.
+    /// Orçamentos restantes: R$ 2.000.
+    /// Resultados esperados:
+    /// - Sobra após planejamento: -R$ 7.000.
+    /// - Saldo previsto na conta: R$ 45.000 (considerando saída futura de 10k e saldo inicial de 50k).
+    /// - Saldo se utilizar todos os orçamentos: R$ 43.000.
+    /// - Destaque no Dashboard: sobra negativa (-R$ 7.000), mesmo com saldo bancário positivo (R$ 45.000).
+    func testScenarioA_HighAccountBalanceWithNegativePlanningSurplus() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente", initialBalance: 50_000.0)
+        let catIncome = CategoryItem(name: "Receitas Diversas", type: .income, iconSymbol: "arrow.down.left", colorHex: "#10B981")
+        let catExpense = CategoryItem(name: "Despesas Diversas", type: .expense, iconSymbol: "arrow.up.right", colorHex: "#EF4444")
+        let catBudget = CategoryItem(name: "Alimentação & Lazer", type: .expense, iconSymbol: "cart.fill", colorHex: "#3B82F6")
+        store.accounts = [acc]
+        store.categories = [catIncome, catExpense, catBudget]
+
+        let cal = Calendar.current
+        let targetMonth = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+
+        // Receita prevista de R$ 5.000 (registrada como entrada futura)
+        let incTx = FinancialTransaction(
+            name: "Receita Prevista do Mês",
+            amount: 5_000.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 20))!,
+            type: .income,
+            isPaid: false,
+            categoryId: catIncome.id,
+            accountId: acc.id,
+            ignoreInConsolidated: false
+        )
+
+        // Despesa lançada de R$ 10.000 (registrada como saída futura em aberto)
+        let expTx = FinancialTransaction(
+            name: "Despesa Futura Agendada",
+            amount: 10_000.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 25))!,
+            type: .expense,
+            isPaid: false,
+            categoryId: catExpense.id,
+            accountId: acc.id,
+            ignoreInConsolidated: false
+        )
+
+        // Orçamento restante de R$ 2.000 (teto de categoria)
+        store.setCategoryProvision(
+            categoryId: catBudget.id,
+            estimatedAmount: 2_000.0,
+            for: targetMonth,
+            repeatForFutureMonths: false
+        )
+
+        store.transactions = [incTx, expTx]
+
+        let summary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: targetMonth,
+            isAnnual: false,
+            referenceNow: refNow
+        )
+
+        // 1. Receitas previstas: R$ 5.000
+        XCTAssertEqual(summary.projectedIncome, 5_000.0, accuracy: 0.01)
+
+        // 2. Despesas lançadas: R$ 10.000
+        XCTAssertEqual(summary.recordedExpense, 10_000.0, accuracy: 0.01)
+
+        // 3. Orçamentos restantes: R$ 2.000
+        XCTAssertEqual(summary.remainingBudgetsAndQuotas, 2_000.0, accuracy: 0.01)
+
+        // 4. Total de gastos planejados: 10.000 + 2.000 = 12.000
+        XCTAssertEqual(summary.totalPlannedExpenses, 12_000.0, accuracy: 0.01)
+
+        // 5. Sobra após planejamento: 5.000 - 12.000 = -7.000 (Déficit em vermelho no Dashboard)
+        XCTAssertEqual(summary.surplusAfterPlanning, -7_000.0, accuracy: 0.01)
+        XCTAssertLessThan(summary.surplusAfterPlanning, 0)
+
+        // 6. Saldo previsto na conta: 50.000 + 5.000 - 10.000 = 45.000
+        XCTAssertEqual(summary.projectedAccountBalance, 45_000.0, accuracy: 0.01)
+
+        // 7. Saldo consolidado se utilizar todos os orçamentos: 45.000 - 2.000 = 43.000
+        XCTAssertEqual(summary.balanceIfAllBudgetsConsumed, 43_000.0, accuracy: 0.01)
+    }
+
+    /// Cenário B — Evitar duplicidade de orçamento
+    /// Dados:
+    /// - Orçamento: R$ 1.000.
+    /// - Despesas pagas: R$ 300.
+    /// - Despesas pendentes: R$ 200.
+    /// Resultados esperados:
+    /// - Despesas lançadas: R$ 500.
+    /// - Orçamento restante: R$ 500.
+    /// - Total de gastos planejados: R$ 1.000.
+    /// Os R$ 200 pendentes não podem ser contabilizados duas vezes.
+    func testScenarioB_BudgetDeduplicationWithPendingExpenses() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente", initialBalance: 10_000.0)
+        let catBudget = CategoryItem(name: "Supermercado", type: .expense, iconSymbol: "cart.fill", colorHex: "#3B82F6")
+        store.accounts = [acc]
+        store.categories = [catBudget]
+
+        let cal = Calendar.current
+        let targetMonth = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 10))!
+
+        // Orçamento da categoria: R$ 1.000
+        store.setCategoryProvision(
+            categoryId: catBudget.id,
+            estimatedAmount: 1_000.0,
+            for: targetMonth,
+            repeatForFutureMonths: false
+        )
+
+        // Despesa paga: R$ 300
+        let paidTx = FinancialTransaction(
+            name: "Supermercado Pago",
+            amount: 300.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 5))!,
+            type: .expense,
+            isPaid: true,
+            categoryId: catBudget.id,
+            accountId: acc.id
+        )
+
+        // Despesa pendente: R$ 200
+        let pendingTx = FinancialTransaction(
+            name: "Supermercado Agendado",
+            amount: 200.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 20))!,
+            type: .expense,
+            isPaid: false,
+            categoryId: catBudget.id,
+            accountId: acc.id
+        )
+
+        store.transactions = [paidTx, pendingTx]
+
+        let summary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: targetMonth,
+            isAnnual: false,
+            referenceNow: refNow
+        )
+
+        // Despesas lançadas: 300 + 200 = 500
+        XCTAssertEqual(summary.recordedExpense, 500.0, accuracy: 0.01)
+        XCTAssertEqual(summary.paidExpense, 300.0, accuracy: 0.01)
+        XCTAssertEqual(summary.pendingExpense, 200.0, accuracy: 0.01)
+
+        // Orçamento restante: 1.000 - 500 = 500 (o pendente já consumiu o orçamento, sem duplicar)
+        XCTAssertEqual(summary.remainingBudgetsAndQuotas, 500.0, accuracy: 0.01)
+
+        // Total de gastos planejados: 500 lançadas + 500 orçados = 1.000
+        XCTAssertEqual(summary.totalPlannedExpenses, 1_000.0, accuracy: 0.01)
+    }
+
+    /// Cenário C — Transferência interna
+    /// Transferência entre contas próprias: R$ 5.000.
+    /// Resultados esperados:
+    /// - Entradas consolidadas: R$ 0.
+    /// - Saídas consolidadas: R$ 0.
+    /// - Resultado das movimentações: R$ 0.
+    func testScenarioC_InternalTransfersIgnoredInConsolidatedTotals() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let accA = BankAccount(name: "Conta A", initialBalance: 10_000.0)
+        let accB = BankAccount(name: "Conta B", initialBalance: 2_000.0)
+        let catTransf = CategoryItem(name: "Transferências", type: .expense, iconSymbol: "arrow.left.arrow.right", colorHex: "#64748B")
+        store.accounts = [accA, accB]
+        store.categories = [catTransf]
+
+        let cal = Calendar.current
+        let targetMonth = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 10))!
+
+        // Transferência de R$ 5.000 marcada com ignoreInConsolidated = true e .internalTransfer
+        let txOut = FinancialTransaction(
+            name: "Transferência para Conta B",
+            amount: 5_000.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 12))!,
+            type: .expense,
+            isPaid: true,
+            categoryId: catTransf.id,
+            accountId: accA.id,
+            ignoreInConsolidated: true,
+            transactionOrigin: .internalTransfer
+        )
+
+        let txIn = FinancialTransaction(
+            name: "Transferência recebida da Conta A",
+            amount: 5_000.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 12))!,
+            type: .income,
+            isPaid: true,
+            categoryId: catTransf.id,
+            accountId: accB.id,
+            ignoreInConsolidated: true,
+            transactionOrigin: .internalTransfer
+        )
+
+        store.transactions = [txOut, txIn]
+
+        let summary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: targetMonth,
+            isAnnual: false,
+            referenceNow: refNow
+        )
+
+        // Entradas e saídas consolidadas devem ser zero
+        XCTAssertEqual(summary.consolidatedEntries, 0.0, accuracy: 0.01)
+        XCTAssertEqual(summary.consolidatedExits, 0.0, accuracy: 0.01)
+        XCTAssertEqual(summary.transactionsNetBalance, 0.0, accuracy: 0.01)
+        XCTAssertEqual(summary.projectedIncome, 0.0, accuracy: 0.01)
+        XCTAssertEqual(summary.recordedExpense, 0.0, accuracy: 0.01)
+    }
+
+    /// Cenário D — 13º salário e receitas extraordinárias
+    /// Renda habitual: R$ 17.000.
+    /// 13º salário: R$ 17.000.
+    /// Resultados esperados:
+    /// - Receita total do mês: R$ 34.000.
+    /// - Receita habitual: R$ 17.000.
+    /// - Receita extraordinária: R$ 17.000.
+    func testScenarioD_ThirteenthSalaryAndExtraordinaryIncomeDistinction() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Salário", initialBalance: 5_000.0)
+        let catSalary = CategoryItem(name: "Salário & Remuneração", type: .income, iconSymbol: "banknote.fill", colorHex: "#10B981")
+        store.accounts = [acc]
+        store.categories = [catSalary]
+
+        let cal = Calendar.current
+        let targetMonth = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 10))!
+
+        let salaryTx = FinancialTransaction(
+            name: "Salário Mensal",
+            amount: 17_000.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 5))!,
+            type: .income,
+            isPaid: true,
+            categoryId: catSalary.id,
+            accountId: acc.id
+        )
+
+        let thirteenthTx = FinancialTransaction(
+            name: "13º Salário - Primeira Parcela",
+            amount: 17_000.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 28))!,
+            type: .income,
+            isPaid: false,
+            categoryId: catSalary.id,
+            accountId: acc.id
+        )
+
+        store.transactions = [salaryTx, thirteenthTx]
+
+        let summary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: targetMonth,
+            isAnnual: false,
+            referenceNow: refNow
+        )
+
+        XCTAssertEqual(summary.projectedIncome, 34_000.0, accuracy: 0.01)
+        XCTAssertEqual(summary.habitualIncome, 17_000.0, accuracy: 0.01)
+        XCTAssertEqual(summary.extraordinaryIncome, 17_000.0, accuracy: 0.01)
+        XCTAssertEqual(summary.receivedIncome, 17_000.0, accuracy: 0.01)
+        XCTAssertEqual(summary.pendingIncome, 17_000.0, accuracy: 0.01)
+    }
+
+    /// Cenário E — Consolidação do Ano Atual (Meses fechados + Mês atual + Meses futuros)
+    func testScenarioE_CurrentYearConsolidationAcrossClosedCurrentAndFutureMonths() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente", initialBalance: 10_000.0)
+        let catInc = CategoryItem(name: "Receitas", type: .income, iconSymbol: "arrow.down.left", colorHex: "#10B981")
+        let catExp = CategoryItem(name: "Despesas", type: .expense, iconSymbol: "arrow.up.right", colorHex: "#EF4444")
+        store.accounts = [acc]
+        store.categories = [catInc, catExp]
+
+        let cal = Calendar.current
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 6, day: 15))! // 15 de Junho de 2026
+
+        var txs: [FinancialTransaction] = []
+
+        // Meses 1 a 5 (Fechados): Receita 10.000 paga em cada mês (50k total) e Despesa 6.000 paga em cada mês (30k total)
+        for m in 1...5 {
+            let mDate = cal.date(from: DateComponents(year: 2026, month: m, day: 5))!
+            txs.append(FinancialTransaction(name: "Receita Mês \(m)", amount: 10_000.0, date: mDate, type: .income, isPaid: true, categoryId: catInc.id, accountId: acc.id))
+            txs.append(FinancialTransaction(name: "Despesa Mês \(m)", amount: 6_000.0, date: mDate, type: .expense, isPaid: true, categoryId: catExp.id, accountId: acc.id))
+        }
+
+        // Mês 6 (Atual): Receita 10.000 paga, Despesa 7.000 pendente
+        let curIncDate = cal.date(from: DateComponents(year: 2026, month: 6, day: 5))!
+        let curExpDate = cal.date(from: DateComponents(year: 2026, month: 6, day: 25))!
+        txs.append(FinancialTransaction(name: "Receita Mês 6", amount: 10_000.0, date: curIncDate, type: .income, isPaid: true, categoryId: catInc.id, accountId: acc.id))
+        txs.append(FinancialTransaction(name: "Despesa Mês 6", amount: 7_000.0, date: curExpDate, type: .expense, isPaid: false, categoryId: catExp.id, accountId: acc.id))
+
+        // Meses 7 a 12 (Futuros): Receita 10.000 agendada em cada mês (60k total) e Despesa 5.000 agendada em cada mês (30k total)
+        for m in 7...12 {
+            let mDate = cal.date(from: DateComponents(year: 2026, month: m, day: 10))!
+            txs.append(FinancialTransaction(name: "Receita Futura Mês \(m)", amount: 10_000.0, date: mDate, type: .income, isPaid: false, categoryId: catInc.id, accountId: acc.id))
+            txs.append(FinancialTransaction(name: "Despesa Futura Mês \(m)", amount: 5_000.0, date: mDate, type: .expense, isPaid: false, categoryId: catExp.id, accountId: acc.id))
+        }
+
+        store.transactions = txs
+
+        let summary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: refNow,
+            isAnnual: true,
+            referenceNow: refNow
+        )
+
+        XCTAssertEqual(summary.temporalContext, .currentYear)
+
+        // Receitas do ano: 50k (fechados) + 10k (atual) + 60k (futuros) = 120.000
+        XCTAssertEqual(summary.projectedIncome, 120_000.0, accuracy: 0.01)
+
+        // Despesas do ano: 30k (fechados) + 7k (atual) + 30k (futuros) = 67.000
+        XCTAssertEqual(summary.recordedExpense, 67_000.0, accuracy: 0.01)
+
+        // Sem duplicidade entre períodos
+        XCTAssertEqual(summary.operationalNetBalance, 120_000.0 - 67_000.0, accuracy: 0.01)
+    }
+
+    /// Cenário F — Orçamento excedido e detecção de estouro
+    /// Orçamento: R$ 500.
+    /// Consumo: R$ 650.
+    /// Resultado esperado:
+    /// - Orçamento restante: R$ 0.
+    /// - Excedente: R$ 150.
+    /// - Destaque visual explícito do estouro.
+    func testScenarioF_BudgetExceededAndOverrunDetection() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente", initialBalance: 5_000.0)
+        let catBudget = CategoryItem(name: "Lazer", type: .expense, iconSymbol: "gamecontroller.fill", colorHex: "#EC4899")
+        store.accounts = [acc]
+        store.categories = [catBudget]
+
+        let cal = Calendar.current
+        let targetMonth = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))!
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 10))!
+
+        // Teto de R$ 500
+        store.setCategoryProvision(
+            categoryId: catBudget.id,
+            estimatedAmount: 500.0,
+            for: targetMonth,
+            repeatForFutureMonths: false
+        )
+
+        // Gasto real de R$ 650
+        let expTx = FinancialTransaction(
+            name: "Show e Restaurante",
+            amount: 650.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 8))!,
+            type: .expense,
+            isPaid: true,
+            categoryId: catBudget.id,
+            accountId: acc.id
+        )
+        store.transactions = [expTx]
+
+        let summary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: targetMonth,
+            isAnnual: false,
+            referenceNow: refNow
+        )
+
+        // Orçamento restante deve ser zerado (não pode ser negativo)
+        XCTAssertEqual(summary.remainingBudgetsAndQuotas, 0.0, accuracy: 0.01)
+
+        // Excedente de R$ 150
+        XCTAssertEqual(summary.totalBudgetsOverrun, 150.0, accuracy: 0.01)
+        XCTAssertTrue(summary.hasBudgetOverrun)
+
+        // Gastos planejados devem ser as despesas lançadas (650) + 0 restante = 650
+        XCTAssertEqual(summary.totalPlannedExpenses, 650.0, accuracy: 0.01)
+    }
+
+    /// Cenário G — Receita vencida e não recebida
+    /// Receita registrada: R$ 1.000.
+    /// Vencimento anterior à data atual.
+    /// Status ainda não recebida.
+    /// Resultado esperado:
+    /// - A receber: R$ 1.000.
+    /// - Em atraso: R$ 1.000.
+    /// - Destaque visual vermelho.
+    func testScenarioG_OverdueIncomeAndExpenseIdentification() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let acc = BankAccount(name: "Conta Corrente", initialBalance: 2_000.0)
+        let catInc = CategoryItem(name: "Serviços Prestados", type: .income, iconSymbol: "briefcase.fill", colorHex: "#10B981")
+        let catExp = CategoryItem(name: "Contas de Consumo", type: .expense, iconSymbol: "bolt.fill", colorHex: "#EF4444")
+        store.accounts = [acc]
+        store.categories = [catInc, catExp]
+
+        let cal = Calendar.current
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 15))! // Hoje é dia 15
+        let targetMonth = refNow
+
+        // Receita vencida no dia 05/11/2026 (não recebida)
+        let overdueIncTx = FinancialTransaction(
+            name: "Consultoria Vencida",
+            amount: 1_000.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 5))!,
+            type: .income,
+            isPaid: false,
+            categoryId: catInc.id,
+            accountId: acc.id
+        )
+
+        // Receita no prazo no dia 25/11/2026 (não recebida)
+        let onTimeIncTx = FinancialTransaction(
+            name: "Freelance No Prazo",
+            amount: 2_500.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 25))!,
+            type: .income,
+            isPaid: false,
+            categoryId: catInc.id,
+            accountId: acc.id
+        )
+
+        // Despesa vencida no dia 03/11/2026 (não paga)
+        let overdueExpTx = FinancialTransaction(
+            name: "Energia Elétrica Vencida",
+            amount: 350.0,
+            date: cal.date(from: DateComponents(year: 2026, month: 11, day: 3))!,
+            type: .expense,
+            isPaid: false,
+            categoryId: catExp.id,
+            accountId: acc.id
+        )
+
+        store.transactions = [overdueIncTx, onTimeIncTx, overdueExpTx]
+
+        let summary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: targetMonth,
+            isAnnual: false,
+            referenceNow: refNow
+        )
+
+        // A receber total: 1.000 + 2.500 = 3.500
+        XCTAssertEqual(summary.pendingIncome, 3_500.0, accuracy: 0.01)
+
+        // Em atraso: R$ 1.000
+        XCTAssertEqual(summary.pendingIncomeOverdue, 1_000.0, accuracy: 0.01)
+
+        // No prazo: R$ 2.500
+        XCTAssertEqual(summary.pendingIncomeOnTime, 2_500.0, accuracy: 0.01)
+
+        // Despesa em atraso: R$ 350
+        XCTAssertEqual(summary.overdueExpenses, 350.0, accuracy: 0.01)
+    }
+
+    /// Validação dos Seis Contextos Temporais em Todas as Telas
+    func testSixTemporalContextsValidationAcrossAllFourScreens() {
+        let store = makeIsolatedStore(seedStatement: false)
+        store.resetSelectedData(Set(ResetDataTarget.allCases))
+
+        let cal = Calendar.current
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 6, day: 15))! // Junho/2026
+
+        // 1. Mês Passado (Maio/2026)
+        let pastMonth = cal.date(from: DateComponents(year: 2026, month: 5, day: 10))!
+        let summaryPastMonth = store.buildUnifiedFinancialKPISummary(referenceDate: pastMonth, isAnnual: false, referenceNow: refNow)
+        XCTAssertEqual(summaryPastMonth.temporalContext, .pastMonth)
+        XCTAssertTrue(summaryPastMonth.temporalContext.isClosed)
+        XCTAssertFalse(summaryPastMonth.temporalContext.isAnnual)
+        XCTAssertEqual(summaryPastMonth.remainingBudgetsAndQuotas, 0.0, "Período fechado ignora provisões não consumidas")
+
+        // 2. Mês Atual (Junho/2026)
+        let currentMonth = cal.date(from: DateComponents(year: 2026, month: 6, day: 10))!
+        let summaryCurrentMonth = store.buildUnifiedFinancialKPISummary(referenceDate: currentMonth, isAnnual: false, referenceNow: refNow)
+        XCTAssertEqual(summaryCurrentMonth.temporalContext, .currentMonth)
+        XCTAssertTrue(summaryCurrentMonth.temporalContext.isCurrent)
+        XCTAssertFalse(summaryCurrentMonth.temporalContext.isClosed)
+
+        // 3. Mês Futuro (Julho/2026)
+        let futureMonth = cal.date(from: DateComponents(year: 2026, month: 7, day: 10))!
+        let summaryFutureMonth = store.buildUnifiedFinancialKPISummary(referenceDate: futureMonth, isAnnual: false, referenceNow: refNow)
+        XCTAssertEqual(summaryFutureMonth.temporalContext, .futureMonth)
+        XCTAssertTrue(summaryFutureMonth.temporalContext.isFuture)
+        XCTAssertEqual(summaryFutureMonth.overdueExpenses, 0.0, "Mês futuro não tem despesas vencidas")
+        XCTAssertEqual(summaryFutureMonth.pendingIncomeOverdue, 0.0, "Mês futuro não tem receitas vencidas")
+
+        // 4. Ano Passado (2025)
+        let pastYear = cal.date(from: DateComponents(year: 2025, month: 1, day: 1))!
+        let summaryPastYear = store.buildUnifiedFinancialKPISummary(referenceDate: pastYear, isAnnual: true, referenceNow: refNow)
+        XCTAssertEqual(summaryPastYear.temporalContext, .pastYear)
+        XCTAssertTrue(summaryPastYear.temporalContext.isClosed)
+        XCTAssertTrue(summaryPastYear.temporalContext.isAnnual)
+
+        // 5. Ano Atual (2026)
+        let currentYear = cal.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+        let summaryCurrentYear = store.buildUnifiedFinancialKPISummary(referenceDate: currentYear, isAnnual: true, referenceNow: refNow)
+        XCTAssertEqual(summaryCurrentYear.temporalContext, .currentYear)
+        XCTAssertTrue(summaryCurrentYear.temporalContext.isCurrent)
+        XCTAssertTrue(summaryCurrentYear.temporalContext.isAnnual)
+
+        // 6. Ano Futuro (2027)
+        let futureYear = cal.date(from: DateComponents(year: 2027, month: 1, day: 1))!
+        let summaryFutureYear = store.buildUnifiedFinancialKPISummary(referenceDate: futureYear, isAnnual: true, referenceNow: refNow)
+        XCTAssertEqual(summaryFutureYear.temporalContext, .futureYear)
+        XCTAssertTrue(summaryFutureYear.temporalContext.isFuture)
+        XCTAssertTrue(summaryFutureYear.temporalContext.isAnnual)
+    }
+
+    func testDeleteScopeFromThisMonthOnwardForCategoryProvisionAndQuota() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let store = FinancialDataStore(customDirectory: tempDir)
+
+        let cal = Calendar(identifier: .gregorian)
+        let jan2026 = cal.date(from: DateComponents(year: 2026, month: 1, day: 15))!
+        let feb2026 = cal.date(from: DateComponents(year: 2026, month: 2, day: 15))!
+        let mar2026 = cal.date(from: DateComponents(year: 2026, month: 3, day: 15))!
+
+        let cat = CategoryItem(id: UUID(), name: "Alimentação", type: .expense, iconSymbol: "cart", colorHex: "#FF5500")
+        store.categories = [cat]
+
+        // --- TESTE 1: Teto por Categoria (CategoryProvision) ---
+        store.setCategoryProvision(
+            categoryId: cat.id,
+            estimatedAmount: 1500.0,
+            for: jan2026,
+            repeatForFutureMonths: true,
+            editScope: .thisAndFutureMonths
+        )
+
+        // Verifica que propaga para Jan, Fev e Mar
+        XCTAssertNotNil(store.effectiveProvision(forCategory: cat.id, in: jan2026))
+        XCTAssertNotNil(store.effectiveProvision(forCategory: cat.id, in: feb2026))
+        XCTAssertNotNil(store.effectiveProvision(forCategory: cat.id, in: mar2026))
+
+        // Exclui deste mês (Fevereiro) em diante
+        store.deleteCategoryProvision(categoryId: cat.id, for: feb2026, scope: .fromThisMonthOnward)
+
+        // Jan continua existindo (histórico preservado)
+        XCTAssertNotNil(store.effectiveProvision(forCategory: cat.id, in: jan2026), "Janeiro deve manter a provisão histórica")
+        XCTAssertEqual(store.effectiveProvision(forCategory: cat.id, in: jan2026)?.provision.estimatedAmount, 1500.0)
+
+        // Fev e Mar foram encerrados
+        XCTAssertNil(store.effectiveProvision(forCategory: cat.id, in: feb2026), "Fevereiro não deve ter provisão ativa")
+        XCTAssertNil(store.effectiveProvision(forCategory: cat.id, in: mar2026), "Março não deve ter provisão herdada após exclusão em diante")
+
+        // --- TESTE 2: Cota Específica (CategoryQuotaRule) ---
+        let quotaSeriesId = UUID()
+        store.saveCategoryQuota(
+            seriesId: quotaSeriesId,
+            categoryId: cat.id,
+            name: "Supermercado Mensal",
+            iconSymbol: "cart.fill",
+            plannedQuantity: 4,
+            estimatedUnitPrice: 300.0,
+            for: jan2026,
+            repeatForFutureMonths: true,
+            editScope: .thisAndFutureMonths
+        )
+
+        // Verifica que envelopes existem em Jan, Fev e Mar
+        XCTAssertEqual(store.quotaEnvelopes(forCategory: cat.id, in: jan2026).count, 1)
+        XCTAssertEqual(store.quotaEnvelopes(forCategory: cat.id, in: feb2026).count, 1)
+        XCTAssertEqual(store.quotaEnvelopes(forCategory: cat.id, in: mar2026).count, 1)
+
+        // Exclui cota deste mês (Fevereiro) em diante
+        store.deleteCategoryQuota(seriesId: quotaSeriesId, for: feb2026, scope: .fromThisMonthOnward)
+
+        // Jan continua com a cota ativa
+        XCTAssertEqual(store.quotaEnvelopes(forCategory: cat.id, in: jan2026).count, 1, "Janeiro deve preservar a cota histórica")
+
+        // Fev e Mar não têm cota ativa
+        XCTAssertEqual(store.quotaEnvelopes(forCategory: cat.id, in: feb2026).count, 0, "Fevereiro não deve ter cota após exclusão em diante")
+        XCTAssertEqual(store.quotaEnvelopes(forCategory: cat.id, in: mar2026).count, 0, "Março não deve herdar cota após exclusão em diante")
+
+        try? FileManager.default.removeItem(at: tempDir)
+    }
+
+    func testDespesasLancadasSubtitleFormatting() {
+        let (textCurrent, _) = MetricCardView.despesasLancadasSubtitle(
+            paidExpense: 2500.0,
+            pendingExpense: 1100.0,
+            isPast: false,
+            isAnnual: false
+        )
+        XCTAssertTrue(textCurrent.contains("pendentes"))
+        XCTAssertTrue(textCurrent.contains("pagas"))
+        XCTAssertTrue(textCurrent.contains("2.500,00"))
+        XCTAssertTrue(textCurrent.contains("1.100,00"))
+
+        let (textPast, _) = MetricCardView.despesasLancadasSubtitle(
+            paidExpense: 2500.0,
+            pendingExpense: 0.0,
+            isPast: true,
+            isAnnual: false
+        )
+        XCTAssertTrue(textPast.contains("pagas no período"))
+
+        let (textAnnual, _) = MetricCardView.despesasLancadasSubtitle(
+            paidExpense: 30000.0,
+            pendingExpense: 5000.0,
+            isPast: false,
+            isAnnual: true
+        )
+        XCTAssertTrue(textAnnual.contains("no ano"))
+    }
+
+    @MainActor
+    func testPerennialAuthSessionRetentionAndResilience() async {
+        let auth = AuthService.shared
+        let userId = UUID()
+        let sampleUser = UserSummary(id: userId, email: "perene@finsense.com", fullName: "Usuário Perene")
+        let authRes = AuthResponse(
+            accessToken: "test_access_token_123",
+            refreshToken: "test_refresh_token_456",
+            tokenType: "Bearer",
+            expiresIn: 3600,
+            user: sampleUser
+        )
+
+        // Salva sessão perene
+        auth.saveSession(authRes)
+        XCTAssertTrue(auth.isAuthenticated)
+        XCTAssertEqual(auth.accessToken, "test_access_token_123")
+        XCTAssertEqual(auth.refreshToken, "test_refresh_token_456")
+        XCTAssertEqual(auth.currentUser?.email, "perene@finsense.com")
+
+        // Simula recarregamento/reinício de sessão
+        auth.restoreSession()
+        XCTAssertTrue(auth.isAuthenticated, "Sessão deve persistir perenemente após restoreSession")
+        XCTAssertEqual(auth.currentUser?.email, "perene@finsense.com")
+
+        // Simula tentativa de renovação com backend offline (porta/URL inexistente)
+        let renewed = await auth.renewTokens(baseURL: "http://127.0.0.1:59999/invalid")
+        XCTAssertFalse(renewed, "Renovação offline deve falhar graciosamente")
+        XCTAssertTrue(auth.isAuthenticated, "Falha de rede NÃO deve deslogar o usuário nem derrubar a autenticação perene")
+        XCTAssertNotNil(auth.refreshToken, "Refresh token deve continuar preservado para novas tentativas futuras")
+    }
 }

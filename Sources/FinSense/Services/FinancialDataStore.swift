@@ -2523,7 +2523,7 @@ public final class FinancialDataStore: ObservableObject {
                 revertContractAmortizationOrSettlement(contractIndex: idx, tx: tx)
             }
 
-        case .standard, .quotaAllocation:
+        case .standard, .quotaAllocation, .internalTransfer:
             break
         }
     }
@@ -4142,6 +4142,7 @@ public final class FinancialDataStore: ObservableObject {
 
     /// Exclui a Verba Livre de uma categoria respeitando o escopo temporal:
     /// - `.onlyThisMonth`: remove apenas do mês corrente (a regra recorrente continua nos meses anteriores e reaparece nos futuros).
+    /// - `.fromThisMonthOnward`: remove do mês informado em diante, mantendo o histórico dos meses passados.
     /// - `.allOccurrences`: remove o registro e interrompe a recorrência definitivamente para frente e para trás.
     public func deleteCategoryProvision(
         categoryId: UUID,
@@ -4176,6 +4177,9 @@ public final class FinancialDataStore: ObservableObject {
                     provisions.remove(at: idx)
                 }
             }
+        case .fromThisMonthOnward:
+            removeCategoryProvision(categoryId: categoryId, for: monthReference)
+            return
         }
 
         save()
@@ -4386,6 +4390,7 @@ public final class FinancialDataStore: ObservableObject {
 
     /// Exclui uma Cota de Item Específico respeitando o escopo temporal:
     /// - `.onlyThisMonth`: remove do mês corrente; continua nos meses anteriores e reaparece nos futuros.
+    /// - `.fromThisMonthOnward`: encerra a cota daquele mês em diante, preservando o histórico dos meses anteriores.
     /// - `.allOccurrences`: remove o registro e interrompe a recorrência definitivamente para frente e para trás.
     public func deleteCategoryQuota(
         seriesId: UUID,
@@ -4419,6 +4424,52 @@ public final class FinancialDataStore: ObservableObject {
                 } else if categoryQuotas[idx].yearMonthKey == targetKey {
                     categoryQuotas.remove(at: idx)
                 }
+            }
+        case .fromThisMonthOnward:
+            categoryQuotas.removeAll { $0.seriesId == seriesId && $0.yearMonthKey > targetKey }
+            for idx in categoryQuotas.indices where categoryQuotas[idx].seriesId == seriesId {
+                if var overrides = categoryQuotas[idx].monthlyOverrides {
+                    overrides = overrides.filter { $0.key < targetKey }
+                    categoryQuotas[idx].monthlyOverrides = overrides.isEmpty ? nil : overrides
+                }
+                if var excluded = categoryQuotas[idx].excludedYearMonthKeys {
+                    excluded = excluded.filter { $0 < targetKey }
+                    categoryQuotas[idx].excludedYearMonthKeys = excluded.isEmpty ? nil : excluded
+                }
+            }
+
+            let hasPriorRecurring = categoryQuotas.contains {
+                $0.seriesId == seriesId &&
+                $0.yearMonthKey < targetKey &&
+                $0.repeatForFutureMonths &&
+                $0.plannedQuantity > 0 &&
+                $0.estimatedUnitPrice > 0
+            }
+
+            if let exactIdx = categoryQuotas.firstIndex(where: {
+                $0.seriesId == seriesId && $0.year == year && $0.month == month
+            }) {
+                if hasPriorRecurring {
+                    categoryQuotas[exactIdx].plannedQuantity = 0
+                    categoryQuotas[exactIdx].estimatedUnitPrice = 0
+                    categoryQuotas[exactIdx].repeatForFutureMonths = true
+                } else {
+                    categoryQuotas.remove(at: exactIdx)
+                }
+            } else if hasPriorRecurring {
+                let template = categoryQuotas.first(where: { $0.seriesId == seriesId })
+                let stopper = CategoryQuotaRule(
+                    seriesId: seriesId,
+                    categoryId: template?.categoryId ?? UUID(),
+                    name: template?.name ?? "Cota Encerrada",
+                    iconSymbol: template?.iconSymbol ?? "xmark.circle",
+                    year: year,
+                    month: month,
+                    plannedQuantity: 0,
+                    estimatedUnitPrice: 0,
+                    repeatForFutureMonths: true
+                )
+                categoryQuotas.append(stopper)
             }
         }
 
@@ -4654,8 +4705,8 @@ public final class FinancialDataStore: ObservableObject {
 
     /// Soma dos Tetos de Categoria Restantes ($\sum \text{Tetos de Categoria Restantes}$).
     /// Para meses anteriores ao atual (mês já fechado), retorna 0.0 pois as cotas/previsões passadas não afetam o saldo projetado futuro.
-    public func totalCategoryProvisionsRemaining(for monthReference: Date) -> Double {
-        if isMonthPriorToCurrent(monthReference) {
+    public func totalCategoryProvisionsRemaining(for monthReference: Date, referenceNow: Date? = nil) -> Double {
+        if isMonthPriorToCurrent(monthReference, referenceNow: referenceNow) {
             return 0.0
         }
         return provisionEnvelopes(for: monthReference)
@@ -4664,8 +4715,8 @@ public final class FinancialDataStore: ObservableObject {
 
     /// Soma das Cotas Específicas Restantes ($\sum \text{Cotas Restantes}$).
     /// Para meses anteriores ao atual (mês já fechado), retorna 0.0 pois as cotas/previsões passadas não afetam o saldo projetado futuro.
-    public func totalQuotasRemaining(for monthReference: Date) -> Double {
-        if isMonthPriorToCurrent(monthReference) {
+    public func totalQuotasRemaining(for monthReference: Date, referenceNow: Date? = nil) -> Double {
+        if isMonthPriorToCurrent(monthReference, referenceNow: referenceNow) {
             return 0.0
         }
         return allQuotaEnvelopes(for: monthReference)
@@ -5383,6 +5434,282 @@ public final class FinancialDataStore: ObservableObject {
             totalCommitmentRatio: commitmentRatio,
             isAnnual: isAnnual,
             yearStr: String(yearNumber)
+        )
+    }
+
+    // MARK: - Centralized Unified Financial KPI Engine
+
+    /// Constrói e retorna o sumário analítico financeiro unificado (KPIs) para o período e granularidade especificados.
+    /// Esta é a ÚNICA FONTE DE VERDADE para os cards analíticos das 4 telas:
+    /// Dashboard, Transações, Despesas e Receitas.
+    public func buildUnifiedFinancialKPISummary(
+        referenceDate: Date,
+        isAnnual: Bool,
+        referenceNow: Date? = nil
+    ) -> UnifiedFinancialKPISummary {
+        let now = referenceNow ?? effectiveCurrentDate
+        let nowYear = calendar.component(.year, from: now)
+        let nowMonth = calendar.component(.month, from: now)
+        let refYear = calendar.component(.year, from: referenceDate)
+        let refMonth = calendar.component(.month, from: referenceDate)
+
+        // 1. Identificação estrita do contexto temporal (6 modalidades)
+        let temporalContext: FinancialTemporalContext = {
+            if isAnnual {
+                if refYear < nowYear { return .pastYear }
+                if refYear == nowYear { return .currentYear }
+                return .futureYear
+            } else {
+                if refYear < nowYear || (refYear == nowYear && refMonth < nowMonth) {
+                    return .pastMonth
+                } else if refYear == nowYear && refMonth == nowMonth {
+                    return .currentMonth
+                } else {
+                    return .futureMonth
+                }
+            }
+        }()
+
+        let isClosed = temporalContext.isClosed
+
+        // 2. Extração de transações do período
+        let rawPeriodTxs = isAnnual ? transactionsForYear(referenceDate) : transactionsForMonth(referenceDate)
+        // Filtra apenas transações ativas consolidadas (ignora transferências internas e canceladas)
+        let periodTxs = rawPeriodTxs.filter { tx in
+            !tx.ignoreInConsolidated &&
+            tx.transactionOrigin != .internalTransfer &&
+            tx.isCanceledRecurringSeries != true
+        }
+
+        let incomeTxs = periodTxs.filter { $0.type == .income }
+        let expenseTxs = periodTxs.filter { $0.type == .expense }
+
+        // 3. Receitas: Recebidas, Pendentes (no prazo vs em atraso), Extraordinárias vs Habituais
+        let receivedIncome = incomeTxs.filter(\.isPaid).reduce(0.0) { $0 + $1.amount }
+        let pendingIncomeTxs = incomeTxs.filter { !$0.isPaid }
+        let pendingIncome = pendingIncomeTxs.reduce(0.0) { $0 + $1.amount }
+
+        let todayStart = calendar.startOfDay(for: now)
+        let pendingIncomeOverdue = pendingIncomeTxs.filter { calendar.startOfDay(for: $0.date) < todayStart }.reduce(0.0) { $0 + $1.amount }
+        let pendingIncomeOnTime = pendingIncomeTxs.filter { calendar.startOfDay(for: $0.date) >= todayStart }.reduce(0.0) { $0 + $1.amount }
+
+        // Receitas esperadas sem lançamento cadastrado (atualmente 0,00 documentado formalmente como limitação de modelo)
+        let unrecordedExpectedIncome = 0.0
+
+        let projectedIncome: Double = {
+            if isClosed {
+                // Período fechado: considera estritamente o histórico realizado
+                return receivedIncome
+            } else if temporalContext == .currentYear {
+                // Ano em andamento: consolida realizados dos meses passados + (realizados + pendentes) do mês atual e futuros
+                var sum = 0.0
+                for m in 1...12 {
+                    if let mDate = calendar.date(from: DateComponents(year: refYear, month: m, day: 1)) {
+                        if m < nowMonth {
+                            sum += monthlyIncome(for: mDate, onlyPaid: true)
+                        } else {
+                            sum += monthlyIncome(for: mDate, onlyPaid: false)
+                        }
+                    }
+                }
+                return sum + unrecordedExpectedIncome
+            } else {
+                return receivedIncome + pendingIncome + unrecordedExpectedIncome
+            }
+        }()
+
+        let habitualIncome = incomeTxs.filter { !$0.isExtraordinaryIncome && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + $1.amount }
+        let extraordinaryIncome = incomeTxs.filter { $0.isExtraordinaryIncome && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + $1.amount }
+
+        // Principal fonte de receita
+        var incomeByCategory: [UUID: Double] = [:]
+        for tx in incomeTxs where (isClosed ? tx.isPaid : true) {
+            incomeByCategory[tx.categoryId, default: 0.0] += tx.amount
+        }
+        let topCategoryEntry = incomeByCategory.max(by: { $0.value < $1.value })
+        let topIncomeSourceName = topCategoryEntry.flatMap { category(for: $0.key)?.name }
+        let topIncomeSourceAmount = topCategoryEntry?.value ?? 0.0
+        let effectiveIncomeForRatio = isClosed ? receivedIncome : (receivedIncome + pendingIncome)
+        let topIncomeSourcePercentage = effectiveIncomeForRatio > 0 ? (topIncomeSourceAmount / effectiveIncomeForRatio) * 100.0 : 0.0
+
+        // 4. Despesas: Pagas, Pendentes (no prazo vs vencidas em atraso), Fixas vs Variáveis
+        let paidExpense = expenseTxs.filter(\.isPaid).reduce(0.0) { $0 + $1.amount }
+        let pendingExpenseTxs = expenseTxs.filter { !$0.isPaid }
+        let pendingExpense = pendingExpenseTxs.reduce(0.0) { $0 + $1.amount }
+
+        let overdueExpenses = pendingExpenseTxs.filter { calendar.startOfDay(for: $0.date) < todayStart }.reduce(0.0) { $0 + $1.amount }
+        let onTimePendingExpenses = pendingExpenseTxs.filter { calendar.startOfDay(for: $0.date) >= todayStart }.reduce(0.0) { $0 + $1.amount }
+
+        let recordedExpense: Double = {
+            if isClosed {
+                return paidExpense
+            } else if temporalContext == .currentYear {
+                var sum = 0.0
+                for m in 1...12 {
+                    if let mDate = calendar.date(from: DateComponents(year: refYear, month: m, day: 1)) {
+                        if m < nowMonth {
+                            sum += monthlyExpense(for: mDate, onlyPaid: true)
+                        } else {
+                            sum += monthlyExpense(for: mDate, onlyPaid: false)
+                        }
+                    }
+                }
+                return sum
+            } else {
+                return paidExpense + pendingExpense
+            }
+        }()
+
+        let fixedExpenses = expenseTxs.filter { $0.isFixedExpense && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + $1.amount }
+        let variableExpenses = expenseTxs.filter { $0.isVariableExpense && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + $1.amount }
+        let totalClassifiedExp = fixedExpenses + variableExpenses
+        let fixedExpensesPercentage = totalClassifiedExp > 0 ? (fixedExpenses / totalClassifiedExp) * 100.0 : 0.0
+        let variableExpensesPercentage = totalClassifiedExp > 0 ? (variableExpenses / totalClassifiedExp) * 100.0 : 0.0
+
+        // 5. Orçamentos e Cotas Restantes & Excedentes
+        let categoryCeilingsRemaining: Double
+        let specificQuotasRemaining: Double
+        let remainingBudgetsAndQuotas: Double
+        let totalBudgetsOverrun: Double
+
+        if isClosed {
+            categoryCeilingsRemaining = 0.0
+            specificQuotasRemaining = 0.0
+            remainingBudgetsAndQuotas = 0.0
+            totalBudgetsOverrun = provisionEnvelopes(for: referenceDate).reduce(0.0) { $0 + $1.exceededAmount }
+        } else if isAnnual {
+            if temporalContext == .currentYear {
+                var catRem = 0.0
+                var quotRem = 0.0
+                var overrun = 0.0
+                for m in nowMonth...12 {
+                    if let mDate = calendar.date(from: DateComponents(year: refYear, month: m, day: 1)) {
+                        catRem += totalCategoryProvisionsRemaining(for: mDate, referenceNow: now)
+                        quotRem += totalQuotasRemaining(for: mDate)
+                        overrun += provisionEnvelopes(for: mDate).reduce(0.0) { $0 + $1.exceededAmount }
+                    }
+                }
+                categoryCeilingsRemaining = catRem
+                specificQuotasRemaining = quotRem
+                remainingBudgetsAndQuotas = catRem + quotRem
+                totalBudgetsOverrun = overrun
+            } else {
+                // Ano futuro (12 meses projetados)
+                var catRem = 0.0
+                var quotRem = 0.0
+                var overrun = 0.0
+                for m in 1...12 {
+                    if let mDate = calendar.date(from: DateComponents(year: refYear, month: m, day: 1)) {
+                        catRem += totalCategoryProvisionsRemaining(for: mDate, referenceNow: now)
+                        quotRem += totalQuotasRemaining(for: mDate)
+                        overrun += provisionEnvelopes(for: mDate).reduce(0.0) { $0 + $1.exceededAmount }
+                    }
+                }
+                categoryCeilingsRemaining = catRem
+                specificQuotasRemaining = quotRem
+                remainingBudgetsAndQuotas = catRem + quotRem
+                totalBudgetsOverrun = overrun
+            }
+        } else {
+            categoryCeilingsRemaining = totalCategoryProvisionsRemaining(for: referenceDate, referenceNow: now)
+            specificQuotasRemaining = totalQuotasRemaining(for: referenceDate)
+            remainingBudgetsAndQuotas = totalRemainingProvision(for: referenceDate, referenceNow: now)
+            totalBudgetsOverrun = provisionEnvelopes(for: referenceDate).reduce(0.0) { $0 + $1.exceededAmount }
+        }
+
+        let hasBudgetOverrun = totalBudgetsOverrun > 0.001
+
+        // 6. Gastos Planejados e Sobra Após Planejamento
+        let totalPlannedExpenses = recordedExpense + remainingBudgetsAndQuotas
+        let surplusAfterPlanning = projectedIncome - totalPlannedExpenses
+        let operationalNetBalance = projectedIncome - recordedExpense
+
+        // 7. Saldo Bancário em Contas e Saldo se Utilizar Todo o Orçamento
+        let currentAccountBalanceNow = totalCheckingBalanceNow
+
+        let cutoffDate: Date = isAnnual ? endOfYear(for: referenceDate) : endOfMonth(for: referenceDate)
+        let initialAccountsSum = accounts.reduce(0.0) { $0 + $1.initialBalance }
+        let transactionsDelta = transactions
+            .filter { tx in
+                guard !tx.ignoreInConsolidated else { return false }
+                guard tx.date <= cutoffDate else { return false }
+                return isClosed ? tx.isPaid : true
+            }
+            .reduce(0.0) { $0 + $1.signedAmount }
+        let consolidatedInvestmentsSum = investments
+            .filter(\.showInConsolidated)
+            .reduce(0.0) { $0 + $1.balance }
+
+        let projectedAccountBalance = initialAccountsSum + transactionsDelta + consolidatedInvestmentsSum
+        let balanceIfAllBudgetsConsumed = isClosed
+            ? projectedAccountBalance
+            : (projectedAccountBalance - (isAnnual ? remainingBudgetsAndQuotas : accumulatedRemainingProvisions(throughMonth: referenceDate, referenceNow: now)))
+
+        let projectedAccountBalanceTitle: String = {
+            if isAnnual {
+                return isClosed
+                    ? "Resultado Consolidado"
+                    : "Saldo Previsto para 31/12/\(BRLFormatters.yearString(referenceDate))"
+            } else {
+                return isClosed
+                    ? "Saldo Final Realizado"
+                    : monthEndBalanceCardTitle(for: referenceDate)
+            }
+        }()
+
+        // 8. Estatísticas Operacionais da Tela de Transações
+        let consolidatedEntries: Double = isClosed ? receivedIncome : (receivedIncome + pendingIncome)
+        let consolidatedExits: Double = isClosed ? paidExpense : (paidExpense + pendingExpense)
+        let transactionsNetBalance = consolidatedEntries - consolidatedExits
+        let totalPendingVolume = pendingIncome + pendingExpense
+        let paidTransactionsCount = periodTxs.filter(\.isPaid).count
+        let pendingTransactionsCount = periodTxs.filter { !$0.isPaid }.count
+        let validTransactionsCount = periodTxs.count
+
+        return UnifiedFinancialKPISummary(
+            referenceDate: referenceDate,
+            referenceNow: now,
+            isAnnual: isAnnual,
+            temporalContext: temporalContext,
+            receivedIncome: receivedIncome,
+            pendingIncome: pendingIncome,
+            pendingIncomeOverdue: pendingIncomeOverdue,
+            pendingIncomeOnTime: pendingIncomeOnTime,
+            unrecordedExpectedIncome: unrecordedExpectedIncome,
+            projectedIncome: projectedIncome,
+            habitualIncome: habitualIncome,
+            extraordinaryIncome: extraordinaryIncome,
+            topIncomeSourceName: topIncomeSourceName,
+            topIncomeSourceAmount: topIncomeSourceAmount,
+            topIncomeSourcePercentage: topIncomeSourcePercentage,
+            paidExpense: paidExpense,
+            pendingExpense: pendingExpense,
+            recordedExpense: recordedExpense,
+            overdueExpenses: overdueExpenses,
+            onTimePendingExpenses: onTimePendingExpenses,
+            fixedExpenses: fixedExpenses,
+            fixedExpensesPercentage: fixedExpensesPercentage,
+            variableExpenses: variableExpenses,
+            variableExpensesPercentage: variableExpensesPercentage,
+            categoryCeilingsRemaining: categoryCeilingsRemaining,
+            specificQuotasRemaining: specificQuotasRemaining,
+            remainingBudgetsAndQuotas: remainingBudgetsAndQuotas,
+            totalBudgetsOverrun: totalBudgetsOverrun,
+            hasBudgetOverrun: hasBudgetOverrun,
+            totalPlannedExpenses: totalPlannedExpenses,
+            surplusAfterPlanning: surplusAfterPlanning,
+            operationalNetBalance: operationalNetBalance,
+            currentAccountBalanceNow: currentAccountBalanceNow,
+            projectedAccountBalance: projectedAccountBalance,
+            balanceIfAllBudgetsConsumed: balanceIfAllBudgetsConsumed,
+            projectedAccountBalanceTitle: projectedAccountBalanceTitle,
+            consolidatedEntries: consolidatedEntries,
+            consolidatedExits: consolidatedExits,
+            transactionsNetBalance: transactionsNetBalance,
+            totalPendingVolume: totalPendingVolume,
+            paidTransactionsCount: paidTransactionsCount,
+            pendingTransactionsCount: pendingTransactionsCount,
+            validTransactionsCount: validTransactionsCount
         )
     }
 }

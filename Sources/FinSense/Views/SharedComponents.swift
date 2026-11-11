@@ -342,11 +342,12 @@ public struct DashboardPeriodNavigatorBar: View {
 // MARK: - Modern KPI Summary Card
 
 public struct MetricCardView: View {
-    public static let standardCardHeight: CGFloat = 116
+    public static let standardCardHeight: CGFloat = 120
 
     public let title: String
     public let value: String
     public let subtitle: String
+    public var customSubtitle: Text? = nil
     public let icon: String
     public let tint: Color
     public var footnote: String?
@@ -360,7 +361,8 @@ public struct MetricCardView: View {
     public init(
         title: String,
         value: String,
-        subtitle: String,
+        subtitle: String = "",
+        customSubtitle: Text? = nil,
         icon: String,
         tint: Color,
         footnote: String? = nil,
@@ -374,6 +376,7 @@ public struct MetricCardView: View {
         self.title = title
         self.value = value
         self.subtitle = subtitle
+        self.customSubtitle = customSubtitle
         self.icon = icon
         self.tint = tint
         self.footnote = footnote
@@ -383,6 +386,25 @@ public struct MetricCardView: View {
         self.actionIcon = actionIcon
         self.subtitleHelp = subtitleHelp
         self.cardHeight = cardHeight
+    }
+
+    public static func despesasLancadasSubtitle(
+        paidExpense: Double,
+        pendingExpense: Double,
+        isPast: Bool,
+        isAnnual: Bool = false
+    ) -> (text: String, styled: Text) {
+        if isPast {
+            let text = "\(BRLFormatters.currency(paidExpense)) pagas no período"
+            return (text, Text(text).foregroundColor(.secondary))
+        }
+        let suffix = isAnnual ? " no ano" : ""
+        let paidPart = "\(BRLFormatters.currency(paidExpense)) pagas • "
+        let pendingPart = "\(BRLFormatters.currency(pendingExpense)) pendentes\(suffix)"
+        let text = paidPart + pendingPart
+        let styled = Text(paidPart).foregroundColor(.secondary)
+            + Text(pendingPart).foregroundColor(Color(hex: "#EF4444"))
+        return (text, styled)
     }
 
     public var body: some View {
@@ -442,7 +464,20 @@ public struct MetricCardView: View {
 
             // 3. Linha de Subtítulo / Metadados (Base) - sem abismo vazio, espaçamento imediato
             VStack(alignment: .leading, spacing: 2) {
-                if let subtitleHelp {
+                if let customSubtitle {
+                    if let subtitleHelp {
+                        customSubtitle
+                            .font(.system(size: 11, weight: .regular))
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.82)
+                            .help(subtitleHelp)
+                    } else {
+                        customSubtitle
+                            .font(.system(size: 11, weight: .regular))
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.82)
+                    }
+                } else if let subtitleHelp {
                     Text(subtitle)
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(.secondary)

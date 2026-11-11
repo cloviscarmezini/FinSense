@@ -27,6 +27,10 @@ public struct TransactionsView: View {
         self.llmService = llmService
     }
 
+    private var isAnnual: Bool {
+        store.dashboardPeriodMode == .annual
+    }
+
     private var enforcedTypeFromSubmenu: TransactionType? {
         switch store.selectedTransactionsSubmenu {
         case .all:
@@ -39,7 +43,10 @@ public struct TransactionsView: View {
     }
 
     private var filteredMonthTransactions: [FinancialTransaction] {
-        let filtered = store.transactionsForMonth(store.selectedMonth).filter { tx in
+        let baseTxs = isAnnual
+            ? store.transactionsForYear(store.selectedMonth)
+            : store.transactionsForMonth(store.selectedMonth)
+        let filtered = baseTxs.filter { tx in
             if let typeFilter = enforcedTypeFromSubmenu, tx.type != typeFilter {
                 return false
             }
@@ -81,40 +88,36 @@ public struct TransactionsView: View {
     private var headerTitle: String {
         switch store.selectedTransactionsSubmenu {
         case .all:
-            return "Transações por Mês"
+            return isAnnual ? "Transações por Ano" : "Transações por Mês"
         case .expenses:
-            return "Despesas por Mês"
+            return isAnnual ? "Despesas por Ano" : "Despesas por Mês"
         case .incomes:
-            return "Receitas por Mês"
+            return isAnnual ? "Receitas por Ano" : "Receitas por Mês"
         }
     }
 
     private var headerSubtitle: String {
         switch store.selectedTransactionsSubmenu {
         case .all:
-            return "Gerencie despesas, receitas, parcelamentos, recorrências e importação via IA Local"
+            return isAnnual
+                ? "Visão consolidada anual de movimentações financeiras, parcelas e conciliação"
+                : "Gerencie despesas, receitas, parcelamentos, recorrências e importação via IA Local"
         case .expenses:
-            return "Visão mensal de despesas únicas, parceladas, repetidas e recorrentes (assinaturas/contas)"
+            return isAnnual
+                ? "Visão anual consolidada de despesas, fixas vs variáveis, tetos e compromissos"
+                : "Visão mensal de despesas únicas, parceladas, repetidas e recorrentes (assinaturas/contas)"
         case .incomes:
-            return "Visão mensal de receitas únicas, repetidas e recebimentos recorrentes"
+            return isAnnual
+                ? "Visão anual consolidada de receitas habituais, extraordinárias e concentração por fonte"
+                : "Visão mensal de receitas únicas, repetidas e recebimentos recorrentes"
         }
     }
 
     public var body: some View {
-        let monthIncome = store.monthlyIncome(for: store.selectedMonth)
-        let monthReceivedIncome = store.monthlyReceivedIncome(for: store.selectedMonth)
-        let monthPendingIncome = store.monthlyPendingIncome(for: store.selectedMonth)
-
-        let monthExpense = store.monthlyExpense(for: store.selectedMonth)
-        let monthPaidExpense = store.monthlyPaidExpense(for: store.selectedMonth)
-        let monthPendingExpense = store.monthlyPendingExpense(for: store.selectedMonth)
-
-        let monthBalance = monthIncome - monthExpense
-        let savingsRate: Double? = monthIncome > 0 ? ((monthBalance / monthIncome) * 100.0) : nil
-        let accumulatedBalance = store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
-        let isPastMonth = store.isMonthPriorToCurrent(store.selectedMonth)
-        let monthRemainingProvisions = store.totalRemainingProvision(for: store.selectedMonth)
-        let monthEstimatedProvisions = store.totalEstimatedProvision(for: store.selectedMonth)
+        let kpiSummary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: store.selectedMonth,
+            isAnnual: isAnnual
+        )
 
         VStack(alignment: .leading, spacing: 18) {
             // MARK: - Header & Month Navigation
@@ -129,94 +132,92 @@ public struct TransactionsView: View {
 
                 Spacer()
 
-                MonthNavigatorBar(store: store)
+                DashboardPeriodNavigatorBar(store: store)
             }
 
-            // MARK: - Monthly Summary Cards (Equal-Height Grid Adaptado por Submenu)
+            // MARK: - Summary Cards (Equal-Height Grid Adaptado por Submenu: 5 Cards)
             switch store.selectedTransactionsSubmenu {
             case .all:
                 Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                     GridRow {
-                        // 1: Receitas (Total) com subtotal de pendentes
+                        // Card 1 — Total de Entradas
                         MetricCardView(
-                            title: "Receitas (Total)",
-                            value: BRLFormatters.currency(monthIncome),
-                            subtitle: "\(BRLFormatters.currency(monthReceivedIncome)) recebidos • \(BRLFormatters.currency(monthPendingIncome)) a receber",
+                            title: isAnnual ? "Total de Entradas (Ano)" : "Total de Entradas",
+                            value: BRLFormatters.currency(kpiSummary.consolidatedEntries),
+                            subtitle: kpiSummary.isPast
+                                ? "\(BRLFormatters.currency(kpiSummary.receivedIncome)) efetivadas"
+                                : "\(BRLFormatters.currency(kpiSummary.receivedIncome)) efetivadas • \(BRLFormatters.currency(kpiSummary.pendingIncome)) pendentes",
                             icon: "arrow.down.left.circle.fill",
                             tint: Color(hex: "#10B981")
                         )
                         .frame(maxWidth: .infinity)
 
-                        // 2: Despesas (Total) estritamente transacionadas (sem previsões)
+                        // Card 2 — Total de Saídas
+                        let saídasSub = MetricCardView.despesasLancadasSubtitle(
+                            paidExpense: kpiSummary.paidExpense,
+                            pendingExpense: kpiSummary.pendingExpense,
+                            isPast: kpiSummary.isPast,
+                            isAnnual: isAnnual
+                        )
                         MetricCardView(
-                            title: "Despesas (Total)",
-                            value: BRLFormatters.currency(monthExpense),
-                            subtitle: "\(BRLFormatters.currency(monthPaidExpense)) pagas • \(BRLFormatters.currency(monthPendingExpense)) pendentes",
+                            title: isAnnual ? "Total de Saídas (Ano)" : "Total de Saídas",
+                            value: BRLFormatters.currency(kpiSummary.consolidatedExits),
+                            subtitle: saídasSub.text,
+                            customSubtitle: saídasSub.styled,
                             icon: "arrow.up.right.circle.fill",
                             tint: Color(hex: "#EF4444")
                         )
                         .frame(maxWidth: .infinity)
 
-                        // 3: Balanço do Mês (Real)
-                        let operationalSubtitle: String = {
-                            if let rate = savingsRate {
-                                return rate >= 0
-                                    ? String(format: "%.1f%% sobre a Receita", rate)
-                                    : String(format: "Déficit: %.1f%% sobre a Receita", abs(rate))
+                        // Card 3 — Saldo das Movimentações (Destaque visual da tela)
+                        let movNetSubtitle: String = {
+                            if kpiSummary.transactionsNetBalance > 0 {
+                                return "Superávit de movimentações registradas"
+                            } else if kpiSummary.transactionsNetBalance < 0 {
+                                return "Déficit: saídas superam entradas"
                             } else {
-                                return monthBalance >= 0 ? "Superávit operacional" : "Déficit operacional"
+                                return "Movimentações equilibradas (R$ 0)"
                             }
                         }()
 
+                        let movNetTint: Color = {
+                            if kpiSummary.transactionsNetBalance > 0 { return Color(hex: "#10B981") }
+                            if kpiSummary.transactionsNetBalance < 0 { return Color(hex: "#EF4444") }
+                            return Color(hex: "#64748B")
+                        }()
+
                         MetricCardView(
-                            title: "Balanço do Mês (Real)",
-                            value: BRLFormatters.currency(monthBalance),
-                            subtitle: operationalSubtitle,
+                            title: isAnnual ? "Saldo das Movimentações (Ano)" : "Saldo das Movimentações",
+                            value: BRLFormatters.currency(kpiSummary.transactionsNetBalance),
+                            subtitle: movNetSubtitle,
                             icon: "equal.circle.fill",
-                            tint: monthBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                            tint: movNetTint,
+                            footnote: "Exclusivo de transações registradas",
+                            footnoteColor: movNetTint
                         )
                         .frame(maxWidth: .infinity)
 
-                        // 4: Previsões & Tetos Restantes com botão integrado
+                        // Card 4 — Transações Pendentes
                         MetricCardView(
-                            title: "Previsões & Tetos Restantes",
-                            value: BRLFormatters.currency(isPastMonth ? 0.0 : monthRemainingProvisions),
-                            subtitle: isPastMonth
-                                ? "Mês já encerrado"
-                                : (monthRemainingProvisions > 0 ? "Orçamento não consumido" : "Nenhuma provisão ativa"),
-                            icon: "tray.full.fill",
-                            tint: Color(hex: "#6366F1"),
-                            footnote: (!isPastMonth && monthEstimatedProvisions > 0)
-                                ? "Total orçado: \(BRLFormatters.currency(monthEstimatedProvisions))"
-                                : nil,
-                            footnoteColor: .secondary,
-                            action: {
-                                showProvisionsSheet = true
-                            },
-                            actionLabel: "Editar",
-                            actionIcon: "pencil"
+                            title: isAnnual ? "Transações Pendentes (Ano)" : "Transações Pendentes",
+                            value: BRLFormatters.currency(kpiSummary.totalPendingVolume),
+                            subtitle: "A receber: \(BRLFormatters.currency(kpiSummary.pendingIncome)) • A pagar: \(BRLFormatters.currency(kpiSummary.pendingExpense))",
+                            icon: "clock.badge.exclamationmark",
+                            tint: kpiSummary.totalPendingVolume > 0 ? Color(hex: "#F59E0B") : Color(hex: "#64748B"),
+                            footnote: (kpiSummary.overdueExpenses > 0 || kpiSummary.pendingIncomeOverdue > 0) ? "Possui pendências em atraso" : nil,
+                            footnoteColor: Color(hex: "#EF4444")
                         )
                         .frame(maxWidth: .infinity)
 
-                        // 5: Saldo Previsto para [DD/MM] ou Resultado Consolidado
-                        let transFinalSubtitle = store.deductionSubtitleForProjectedBalance(
-                            periodMode: .monthly,
-                            selectedMonth: store.selectedMonth
-                        )
-                        let transFinalTooltip = store.deductionBreakdownTooltipForProjectedBalance(
-                            periodMode: .monthly,
-                            selectedMonth: store.selectedMonth
-                        )
-
+                        // Card 5 — Quantidade de Transações
                         MetricCardView(
-                            title: store.monthEndBalanceCardTitle(for: store.selectedMonth),
-                            value: BRLFormatters.currency(accumulatedBalance),
-                            subtitle: transFinalSubtitle,
-                            icon: isPastMonth ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis.circle.fill",
-                            tint: accumulatedBalance >= 0 ? Color(hex: "#3B82F6") : Color(hex: "#EF4444"),
-                            footnote: (!isPastMonth && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
-                            footnoteColor: Color(hex: "#EF4444"),
-                            subtitleHelp: transFinalTooltip
+                            title: isAnnual ? "Volume de Lançamentos (Ano)" : "Volume de Lançamentos",
+                            value: "\(kpiSummary.validTransactionsCount) transações",
+                            subtitle: "\(kpiSummary.paidTransactionsCount) efetivadas • \(kpiSummary.pendingTransactionsCount) pendentes",
+                            icon: "list.bullet.rectangle",
+                            tint: Color(hex: "#64748B"),
+                            footnote: "Sem canceladas ou transferências",
+                            footnoteColor: .secondary
                         )
                         .frame(maxWidth: .infinity)
                     }
@@ -225,38 +226,98 @@ public struct TransactionsView: View {
             case .expenses:
                 Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                     GridRow {
+                        // Card 1 — Despesas Lançadas
+                        let expSub = MetricCardView.despesasLancadasSubtitle(
+                            paidExpense: kpiSummary.paidExpense,
+                            pendingExpense: kpiSummary.pendingExpense,
+                            isPast: kpiSummary.isPast,
+                            isAnnual: isAnnual
+                        )
                         MetricCardView(
-                            title: "Total de Despesas",
-                            value: BRLFormatters.currency(monthExpense),
-                            subtitle: "\(BRLFormatters.currency(monthPaidExpense)) pagas • \(BRLFormatters.currency(monthPendingExpense)) pendentes",
+                            title: isAnnual ? "Despesas Lançadas (Ano)" : "Despesas Lançadas",
+                            value: BRLFormatters.currency(kpiSummary.recordedExpense),
+                            subtitle: expSub.text,
+                            customSubtitle: expSub.styled,
                             icon: "arrow.up.right.circle.fill",
                             tint: Color(hex: "#EF4444")
                         )
                         .frame(maxWidth: .infinity)
 
-                        MetricCardView(
-                            title: "Total Pendente",
-                            value: BRLFormatters.currency(monthPendingExpense),
-                            subtitle: "Despesas ainda não pagas em \(BRLFormatters.monthYear(store.selectedMonth))",
-                            icon: "clock.badge.exclamationmark",
-                            tint: Color(hex: "#F59E0B")
-                        )
-                        .frame(maxWidth: .infinity)
+                        // Card 2 — Orçamentos Restantes
+                        let expBudgetSubtitle: String = {
+                            if kpiSummary.isPast {
+                                return "Mês já encerrado"
+                            }
+                            if kpiSummary.hasBudgetOverrun {
+                                return "Estouro de orçamento: \(BRLFormatters.currency(kpiSummary.totalBudgetsOverrun)) excedente"
+                            }
+                            return "Tetos: \(BRLFormatters.currency(kpiSummary.categoryCeilingsRemaining)) • Cotas: \(BRLFormatters.currency(kpiSummary.specificQuotasRemaining))"
+                        }()
 
-                        let remainingForExpenses = isPastMonth ? 0.0 : monthRemainingProvisions
-                        let totalCommitted = monthExpense + remainingForExpenses
-
                         MetricCardView(
-                            title: "Orçamento Restante (Tetos & Cotas)",
-                            value: BRLFormatters.currency(remainingForExpenses),
-                            subtitle: "Comprometimento Total Previsto: \(BRLFormatters.currency(totalCommitted))",
+                            title: isAnnual ? "Orçamentos Restantes (Ano)" : "Orçamentos Restantes",
+                            value: BRLFormatters.currency(kpiSummary.remainingBudgetsAndQuotas),
+                            subtitle: expBudgetSubtitle,
                             icon: "tray.full.fill",
-                            tint: Color(hex: "#6366F1"),
+                            tint: kpiSummary.hasBudgetOverrun ? Color(hex: "#EF4444") : Color(hex: "#3B82F6"),
+                            footnote: kpiSummary.hasBudgetOverrun ? "Excedente acima do limite orçado" : "Valores reservados para gastar",
+                            footnoteColor: kpiSummary.hasBudgetOverrun ? Color(hex: "#EF4444") : .secondary,
                             action: {
                                 showProvisionsSheet = true
                             },
                             actionLabel: "Editar",
                             actionIcon: "pencil"
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        // Card 3 — Total de Gastos Planejados (Destaque visual da tela de Despesas)
+                        MetricCardView(
+                            title: isAnnual ? "Gastos Planejados (Ano)" : "Total de Gastos Planejados",
+                            value: BRLFormatters.currency(kpiSummary.totalPlannedExpenses),
+                            subtitle: kpiSummary.isPast
+                                ? "Gastos consolidados do período"
+                                : "Teto máximo: despesas lançadas + orçado",
+                            icon: "chart.bar.doc.horizontal.fill",
+                            tint: Color(hex: "#3B82F6"),
+                            footnote: kpiSummary.isPast ? nil : "Pior cenário de consumo do período",
+                            footnoteColor: .secondary
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        // Card 4 — Contas em Atraso
+                        let overdueSubtitle: String = {
+                            if kpiSummary.overdueExpenses > 0 {
+                                return "\(BRLFormatters.currency(kpiSummary.overdueExpenses)) vencidas • \(BRLFormatters.currency(kpiSummary.onTimePendingExpenses)) no prazo"
+                            } else {
+                                return "Nenhuma conta vencida • \(BRLFormatters.currency(kpiSummary.onTimePendingExpenses)) no prazo"
+                            }
+                        }()
+
+                        MetricCardView(
+                            title: isAnnual ? "Contas em Atraso (Ano)" : "Contas em Atraso",
+                            value: BRLFormatters.currency(kpiSummary.overdueExpenses),
+                            subtitle: overdueSubtitle,
+                            icon: kpiSummary.overdueExpenses > 0 ? "exclamationmark.circle.fill" : "checkmark.seal.fill",
+                            tint: kpiSummary.overdueExpenses > 0 ? Color(hex: "#EF4444") : Color(hex: "#10B981"),
+                            footnote: kpiSummary.overdueExpenses > 0 ? "Ação necessária: regularize pagamentos" : "Contas em dia",
+                            footnoteColor: kpiSummary.overdueExpenses > 0 ? Color(hex: "#EF4444") : Color(hex: "#10B981")
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        // Card 5 — Divisão dos Gastos
+                        let fixedFormatted = BRLFormatters.currency(kpiSummary.fixedExpenses)
+                        let varFormatted = BRLFormatters.currency(kpiSummary.variableExpenses)
+                        let fixedPctStr = String(format: "%.0f%%", kpiSummary.fixedExpensesPercentage)
+                        let varPctStr = String(format: "%.0f%%", kpiSummary.variableExpensesPercentage)
+
+                        MetricCardView(
+                            title: isAnnual ? "Divisão dos Gastos (Ano)" : "Divisão dos Gastos",
+                            value: "\(fixedFormatted) fixas (\(fixedPctStr))",
+                            subtitle: "Variáveis: \(varFormatted) (\(varPctStr))",
+                            icon: "chart.pie.fill",
+                            tint: Color(hex: "#6366F1"),
+                            footnote: "Classificação por recorrência e contratos",
+                            footnoteColor: .secondary
                         )
                         .frame(maxWidth: .infinity)
                     }
@@ -265,21 +326,93 @@ public struct TransactionsView: View {
             case .incomes:
                 Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                     GridRow {
+                        // Card 1 — Receitas Previstas (Destaque visual da tela de Receitas)
                         MetricCardView(
-                            title: "Total Recebido",
-                            value: BRLFormatters.currency(monthReceivedIncome),
-                            subtitle: "Receitas efetivadas em \(BRLFormatters.monthYear(store.selectedMonth))",
-                            icon: "checkmark.circle.fill",
-                            tint: Color(hex: "#10B981")
+                            title: isAnnual ? "Receitas Previstas (Ano)" : "Receitas Previstas",
+                            value: BRLFormatters.currency(kpiSummary.projectedIncome),
+                            subtitle: kpiSummary.isPast
+                                ? "\(BRLFormatters.currency(kpiSummary.receivedIncome)) recebidos"
+                                : "\(BRLFormatters.currency(kpiSummary.receivedIncome)) recebidos • \(BRLFormatters.currency(kpiSummary.pendingIncome)) a receber",
+                            icon: "arrow.down.left.circle.fill",
+                            tint: Color(hex: "#10B981"),
+                            footnote: kpiSummary.extraordinaryIncome > 0
+                                ? "Habitual: \(BRLFormatters.currency(kpiSummary.habitualIncome)) • Extra: \(BRLFormatters.currency(kpiSummary.extraordinaryIncome))"
+                                : nil,
+                            footnoteColor: Color(hex: "#8B5CF6")
                         )
                         .frame(maxWidth: .infinity)
 
+                        // Card 2 — Total Recebido
                         MetricCardView(
-                            title: "À Receber",
-                            value: BRLFormatters.currency(monthPendingIncome),
-                            subtitle: "Receitas pendentes/previstas em \(BRLFormatters.monthYear(store.selectedMonth))",
+                            title: isAnnual ? "Total Recebido (Ano)" : "Total Recebido",
+                            value: BRLFormatters.currency(kpiSummary.receivedIncome),
+                            subtitle: "Dinheiro efetivamente recebido em conta",
+                            icon: "checkmark.circle.fill",
+                            tint: Color(hex: "#10B981"),
+                            footnote: "Valores já liquidados",
+                            footnoteColor: .secondary
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        // Card 3 — A Receber
+                        let receivableSubtitle: String = {
+                            if kpiSummary.pendingIncomeOverdue > 0 {
+                                return "\(BRLFormatters.currency(kpiSummary.pendingIncomeOnTime)) no prazo • \(BRLFormatters.currency(kpiSummary.pendingIncomeOverdue)) em atraso"
+                            } else {
+                                return "\(BRLFormatters.currency(kpiSummary.pendingIncomeOnTime)) no prazo • Nenhuma em atraso"
+                            }
+                        }()
+
+                        MetricCardView(
+                            title: isAnnual ? "A Receber (Ano)" : "A Receber",
+                            value: BRLFormatters.currency(kpiSummary.pendingIncome),
+                            subtitle: receivableSubtitle,
                             icon: "clock.arrow.circlepath",
-                            tint: Color(hex: "#3B82F6")
+                            tint: kpiSummary.pendingIncomeOverdue > 0 ? Color(hex: "#EF4444") : Color(hex: "#3B82F6"),
+                            footnote: kpiSummary.pendingIncomeOverdue > 0 ? "Alerta: receitas vencidas pendentes" : "Valores pendentes cadastrados",
+                            footnoteColor: kpiSummary.pendingIncomeOverdue > 0 ? Color(hex: "#EF4444") : .secondary
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        // Card 4 — Receitas Ainda Não Lançadas
+                        MetricCardView(
+                            title: isAnnual ? "Receitas Não Lançadas (Ano)" : "Receitas Não Lançadas",
+                            value: BRLFormatters.currency(kpiSummary.unrecordedExpectedIncome),
+                            subtitle: "Todas as receitas previstas estão registradas",
+                            icon: "calendar.badge.clock",
+                            tint: Color(hex: "#3B82F6"),
+                            footnote: "Sem previsões sem lançamento",
+                            footnoteColor: .secondary
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        // Card 5 — De Onde Vem Meu Dinheiro?
+                        let sourceValue: String = {
+                            if let topSource = kpiSummary.topIncomeSourceName {
+                                return "\(topSource) (\(String(format: "%.0f%%", kpiSummary.topIncomeSourcePercentage)))"
+                            } else {
+                                return "Sem receitas registradas"
+                            }
+                        }()
+
+                        let sourceSubtitle: String = {
+                            if kpiSummary.extraordinaryIncome > 0 {
+                                return "Habitual: \(BRLFormatters.currency(kpiSummary.habitualIncome)) • Extra: \(BRLFormatters.currency(kpiSummary.extraordinaryIncome))"
+                            } else if let _ = kpiSummary.topIncomeSourceName {
+                                return "Principal fonte: \(BRLFormatters.currency(kpiSummary.topIncomeSourceAmount))"
+                            } else {
+                                return "Nenhuma receita no período"
+                            }
+                        }()
+
+                        MetricCardView(
+                            title: "De Onde Vem Meu Dinheiro?",
+                            value: sourceValue,
+                            subtitle: sourceSubtitle,
+                            icon: "chart.pie.fill",
+                            tint: Color(hex: "#8B5CF6"),
+                            footnote: "Concentração por categoria de receita",
+                            footnoteColor: .secondary
                         )
                         .frame(maxWidth: .infinity)
                     }

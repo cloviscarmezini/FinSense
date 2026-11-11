@@ -25,6 +25,10 @@ public struct DashboardView: View {
 
     public var body: some View {
         let isAnnual = store.dashboardPeriodMode == .annual
+        let kpiSummary = store.buildUnifiedFinancialKPISummary(
+            referenceDate: store.selectedMonth,
+            isAnnual: isAnnual
+        )
         let yearStr = BRLFormatters.yearString(store.selectedMonth)
         let periodFullLabel = isAnnual
             ? "31/12/\(yearStr)"
@@ -34,32 +38,8 @@ public struct DashboardView: View {
             ? (store.calendar.component(.year, from: store.selectedMonth) < store.calendar.component(.year, from: store.effectiveCurrentDate))
             : store.isMonthPriorToCurrent(store.selectedMonth)
 
-        let periodIncome = isAnnual
-            ? store.annualIncome(for: store.selectedMonth)
-            : store.monthlyIncome(for: store.selectedMonth)
-        let periodReceivedIncome = isAnnual
-            ? store.annualReceivedIncome(for: store.selectedMonth)
-            : store.monthlyReceivedIncome(for: store.selectedMonth)
-        let periodPendingIncome = isAnnual
-            ? store.annualPendingIncome(for: store.selectedMonth)
-            : store.monthlyPendingIncome(for: store.selectedMonth)
+        let periodExpense = kpiSummary.recordedExpense
 
-        let periodExpense = isAnnual
-            ? store.annualExpense(for: store.selectedMonth)
-            : store.monthlyExpense(for: store.selectedMonth)
-        let periodPaidExpense = isAnnual
-            ? store.annualPaidExpense(for: store.selectedMonth)
-            : store.monthlyPaidExpense(for: store.selectedMonth)
-        let periodPendingExpense = isAnnual
-            ? store.annualPendingExpense(for: store.selectedMonth)
-            : store.monthlyPendingExpense(for: store.selectedMonth)
-
-        let periodNet = periodIncome - periodExpense
-        let savingsRate: Double? = periodIncome > 0 ? ((periodNet / periodIncome) * 100.0) : nil
-
-        let accumulatedBalance = isAnnual
-            ? store.accumulatedConsolidatedBalanceThroughYear(store.selectedMonth)
-            : store.accumulatedConsolidatedBalance(throughMonth: store.selectedMonth)
         let expenseByCategory = isAnnual
             ? store.annualCategoryBreakdown(for: store.selectedMonth, type: .expense)
             : store.categoryBreakdown(for: store.selectedMonth, type: .expense)
@@ -183,82 +163,12 @@ public struct DashboardView: View {
                     }
                 }
 
-                // MARK: - Top KPI Cards (4 Sequential Lifecycle Cards - Equal Height Grid)
-                Grid(horizontalSpacing: 14, verticalSpacing: 14) {
-                    GridRow {
-                        // Card 1 — Receitas do Mês / Ano
-                        MetricCardView(
-                            title: isAnnual ? "Receitas do Ano" : "Receitas do Mês",
-                            value: BRLFormatters.currency(periodIncome),
-                            subtitle: "\(BRLFormatters.currency(periodReceivedIncome)) recebidos • \(BRLFormatters.currency(periodPendingIncome)) a receber",
-                            icon: "arrow.down.left.circle.fill",
-                            tint: Color(hex: "#10B981")
-                        )
-                        .frame(maxWidth: .infinity)
-
-                        // Card 2 — Despesas do Mês / Ano (Estritamente compromissos/transações lançadas, NUNCA somar tetos/cotas)
-                        MetricCardView(
-                            title: isAnnual ? "Despesas do Ano" : "Despesas do Mês",
-                            value: BRLFormatters.currency(periodExpense),
-                            subtitle: "\(BRLFormatters.currency(periodPaidExpense)) pagas • \(BRLFormatters.currency(periodPendingExpense)) pendentes",
-                            icon: "arrow.up.right.circle.fill",
-                            tint: Color(hex: "#EF4444")
-                        )
-                        .frame(maxWidth: .infinity)
-
-                        // Card 3 — Balanço Operacional (Receitas - Despesas com Taxa de Poupança / Margem Líquida)
-                        let operationalSubtitle: String = {
-                            if let rate = savingsRate {
-                                return rate >= 0
-                                    ? String(format: "%.1f%% sobre a Receita", rate)
-                                    : String(format: "Déficit operacional (%.1f%%)", abs(rate))
-                            } else {
-                                return periodNet >= 0 ? "Superávit operacional" : "Déficit operacional"
-                            }
-                        }()
-
-                        MetricCardView(
-                            title: "Balanço Operacional",
-                            value: BRLFormatters.currency(periodNet),
-                            subtitle: operationalSubtitle,
-                            icon: "equal.circle.fill",
-                            tint: periodNet >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
-                        )
-                        .frame(maxWidth: .infinity)
-
-                        // Card 4 — Saldo Projetado / Resultado Final
-                        let finalTitle: String = {
-                            if isAnnual {
-                                return isPastPeriod
-                                    ? "Resultado Consolidado"
-                                    : "Saldo Previsto para 31/12/\(yearStr)"
-                            } else {
-                                return store.monthEndBalanceCardTitle(for: store.selectedMonth)
-                            }
-                        }()
-
-                        let finalSubtitle = store.deductionSubtitleForProjectedBalance(
-                            periodMode: store.dashboardPeriodMode,
-                            selectedMonth: store.selectedMonth
-                        )
-                        let finalTooltip = store.deductionBreakdownTooltipForProjectedBalance(
-                            periodMode: store.dashboardPeriodMode,
-                            selectedMonth: store.selectedMonth
-                        )
-
-                        MetricCardView(
-                            title: finalTitle,
-                            value: BRLFormatters.currency(accumulatedBalance),
-                            subtitle: finalSubtitle,
-                            icon: isPastPeriod ? "checkmark.seal.fill" : "chart.line.uptrend.xyaxis",
-                            tint: accumulatedBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
-                            footnote: (!isPastPeriod && accumulatedBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
-                            footnoteColor: Color(hex: "#EF4444"),
-                            subtitleHelp: finalTooltip
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
-                }
+                // MARK: - Top KPI Cards (6 Sequential Lifecycle Cards - Equal Height Grid)
+                DashboardTopKPICardsView(
+                    summary: kpiSummary,
+                    isAnnual: isAnnual,
+                    onEditProvisions: { showProvisionsSheet = true }
+                )
 
                 // MARK: - Previsões & Tetos do Mês (Divisão Visual em Dois Blocos Claros)
                 if !isAnnual {
@@ -831,6 +741,14 @@ public struct DashboardView: View {
                         )
                         pendingDeleteQuotaEnvelope = nil
                     }
+                    Button("Excluir deste mês em diante") {
+                        store.deleteCategoryQuota(
+                            seriesId: q.seriesId,
+                            for: store.selectedMonth,
+                            scope: .fromThisMonthOnward
+                        )
+                        pendingDeleteQuotaEnvelope = nil
+                    }
                     Button("Excluir todas as ocorrências", role: .destructive) {
                         store.deleteCategoryQuota(
                             seriesId: q.seriesId,
@@ -855,7 +773,7 @@ public struct DashboardView: View {
             }
         } message: {
             if pendingDeleteQuotaEnvelope?.repeatForFutureMonths == true {
-                Text("Esta cota possui recorrência ativa. Deseja removê-la apenas deste mês (mantendo nos meses anteriores e futuros) ou excluir todas as ocorrências definitivamente?")
+                Text("Esta cota possui recorrência ativa. Deseja removê-la somente deste mês, deste mês em diante (preservando o histórico anterior) ou excluir todas as ocorrências definitivamente?")
             } else {
                 Text("Deseja remover esta cota específica do mês selecionado?")
             }
@@ -874,6 +792,14 @@ public struct DashboardView: View {
                             categoryId: env.category.id,
                             for: store.selectedMonth,
                             scope: .onlyThisMonth
+                        )
+                        pendingDeleteFreeBudgetEnvelope = nil
+                    }
+                    Button("Excluir deste mês em diante") {
+                        store.deleteCategoryProvision(
+                            categoryId: env.category.id,
+                            for: store.selectedMonth,
+                            scope: .fromThisMonthOnward
                         )
                         pendingDeleteFreeBudgetEnvelope = nil
                     }
@@ -901,7 +827,7 @@ public struct DashboardView: View {
             }
         } message: {
             if pendingDeleteFreeBudgetEnvelope?.provision.repeatForFutureMonths == true {
-                Text("A verba livre desta categoria é recorrente. Deseja removê-la somente deste mês (mantendo nos meses anteriores e futuros) ou excluir todas as ocorrências?")
+                Text("A verba livre desta categoria é recorrente. Deseja removê-la somente deste mês, deste mês em diante (preservando o histórico anterior) ou excluir todas as ocorrências?")
             } else {
                 Text("Deseja remover a verba livre desta categoria no mês atual?")
             }
@@ -2680,6 +2606,149 @@ public struct DebtCommitmentsDonutChartView: View {
             return breakdown.isAnnual
                 ? "DTI Crítico (\(String(format: "%.1f%%", breakdown.debtToIncomeRatio)) a.a.)"
                 : "DTI Crítico (\(String(format: "%.1f%%", breakdown.debtToIncomeRatio)) da renda)"
+        }
+    }
+}
+
+// MARK: - Dashboard Top 6 KPI Cards View
+
+public struct DashboardTopKPICardsView: View {
+    public let summary: UnifiedFinancialKPISummary
+    public let isAnnual: Bool
+    public var onEditProvisions: () -> Void
+
+    public init(
+        summary: UnifiedFinancialKPISummary,
+        isAnnual: Bool,
+        onEditProvisions: @escaping () -> Void
+    ) {
+        self.summary = summary
+        self.isAnnual = isAnnual
+        self.onEditProvisions = onEditProvisions
+    }
+
+    public var body: some View {
+        Grid(horizontalSpacing: 12, verticalSpacing: 12) {
+            GridRow {
+                // Card 1 — Receitas Previstas
+                MetricCardView(
+                    title: isAnnual ? "Receitas Previstas (Ano)" : "Receitas Previstas",
+                    value: BRLFormatters.currency(summary.projectedIncome),
+                    subtitle: summary.isPast
+                        ? "\(BRLFormatters.currency(summary.receivedIncome)) recebidos"
+                        : "\(BRLFormatters.currency(summary.receivedIncome)) recebidos • \(BRLFormatters.currency(summary.pendingIncome)) a receber",
+                    icon: "arrow.down.left.circle.fill",
+                    tint: Color(hex: "#10B981"),
+                    footnote: summary.extraordinaryIncome > 0
+                        ? "Habitual: \(BRLFormatters.currency(summary.habitualIncome)) • Extra: \(BRLFormatters.currency(summary.extraordinaryIncome))"
+                        : nil,
+                    footnoteColor: Color(hex: "#8B5CF6")
+                )
+                .frame(maxWidth: .infinity)
+
+                // Card 2 — Despesas Lançadas (Estritamente despesas registradas, NUNCA somar tetos/cotas)
+                let despesasSub = MetricCardView.despesasLancadasSubtitle(
+                    paidExpense: summary.paidExpense,
+                    pendingExpense: summary.pendingExpense,
+                    isPast: summary.isPast,
+                    isAnnual: isAnnual
+                )
+                MetricCardView(
+                    title: isAnnual ? "Despesas Lançadas (Ano)" : "Despesas Lançadas",
+                    value: BRLFormatters.currency(summary.recordedExpense),
+                    subtitle: despesasSub.text,
+                    customSubtitle: despesasSub.styled,
+                    icon: "arrow.up.right.circle.fill",
+                    tint: Color(hex: "#EF4444")
+                )
+                .frame(maxWidth: .infinity)
+
+                // Card 3 — Orçamentos e Cotas Restantes
+                let budgetSubtitle: String = {
+                    if summary.isPast {
+                        return "Período fechado (sem orçamentos ativos)"
+                    }
+                    if summary.hasBudgetOverrun {
+                        return "Estouro de teto: \(BRLFormatters.currency(summary.totalBudgetsOverrun)) excedente"
+                    }
+                    return "Tetos: \(BRLFormatters.currency(summary.categoryCeilingsRemaining)) • Cotas: \(BRLFormatters.currency(summary.specificQuotasRemaining))"
+                }()
+
+                MetricCardView(
+                    title: isAnnual ? "Orçamentos Restantes (Ano)" : "Orçamentos e Cotas Restantes",
+                    value: BRLFormatters.currency(summary.remainingBudgetsAndQuotas),
+                    subtitle: budgetSubtitle,
+                    icon: "tray.full.fill",
+                    tint: summary.hasBudgetOverrun ? Color(hex: "#EF4444") : Color(hex: "#3B82F6"),
+                    footnote: summary.isPast ? nil : (summary.hasBudgetOverrun ? "Alerta de orçamento ultrapassado" : "Valores reservados para consumo"),
+                    footnoteColor: summary.hasBudgetOverrun ? Color(hex: "#EF4444") : .secondary,
+                    action: onEditProvisions,
+                    actionLabel: "Ver",
+                    actionIcon: "pencil"
+                )
+                .frame(maxWidth: .infinity)
+
+                // Card 4 — Total de Gastos Planejados
+                MetricCardView(
+                    title: isAnnual ? "Gastos Planejados (Ano)" : "Total de Gastos Planejados",
+                    value: BRLFormatters.currency(summary.totalPlannedExpenses),
+                    subtitle: summary.isPast
+                        ? "Gastos consolidados realizados"
+                        : "\(BRLFormatters.currency(summary.recordedExpense)) despesas + \(BRLFormatters.currency(summary.remainingBudgetsAndQuotas)) orçados",
+                    icon: "chart.bar.doc.horizontal.fill",
+                    tint: Color(hex: "#3B82F6"),
+                    footnote: summary.isPast ? nil : "Teto máximo planejado",
+                    footnoteColor: .secondary
+                )
+                .frame(maxWidth: .infinity)
+
+                // Card 5 — Sobra Após Planejamento (Destaque visual máximo)
+                let surplusSubtitle: String = {
+                    if summary.surplusAfterPlanning > 0 {
+                        return "Superávit após todas despesas e tetos"
+                    } else if summary.surplusAfterPlanning < 0 {
+                        return "Déficit: gastos superam receitas em \(BRLFormatters.currency(abs(summary.surplusAfterPlanning)))"
+                    } else {
+                        return "Equilíbrio orçamentário exato (R$ 0)"
+                    }
+                }()
+
+                let surplusTint: Color = {
+                    if summary.surplusAfterPlanning > 0 { return Color(hex: "#10B981") }
+                    if summary.surplusAfterPlanning < 0 { return Color(hex: "#EF4444") }
+                    return Color(hex: "#64748B")
+                }()
+
+                MetricCardView(
+                    title: isAnnual ? "Sobra Após Planejamento (Ano)" : "Sobra Após Planejamento",
+                    value: BRLFormatters.currency(summary.surplusAfterPlanning),
+                    subtitle: surplusSubtitle,
+                    icon: summary.surplusAfterPlanning >= 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                    tint: surplusTint,
+                    footnote: summary.surplusAfterPlanning >= 0 ? "Planejamento sustentável" : "Déficit no planejamento",
+                    footnoteColor: surplusTint
+                )
+                .frame(maxWidth: .infinity)
+
+                // Card 6 — Saldo Previsto na Conta
+                let accountSubtitle: String = {
+                    if summary.isPast {
+                        return "Saldo final histórico conciliado"
+                    }
+                    return "Se usar orçamentos: \(BRLFormatters.currency(summary.balanceIfAllBudgetsConsumed))"
+                }()
+
+                MetricCardView(
+                    title: summary.projectedAccountBalanceTitle,
+                    value: BRLFormatters.currency(summary.projectedAccountBalance),
+                    subtitle: accountSubtitle,
+                    icon: summary.isPast ? "checkmark.seal.fill" : "building.columns.fill",
+                    tint: summary.projectedAccountBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
+                    footnote: (!summary.isPast && summary.projectedAccountBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
+                    footnoteColor: Color(hex: "#EF4444")
+                )
+                .frame(maxWidth: .infinity)
+            }
         }
     }
 }

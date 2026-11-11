@@ -481,6 +481,7 @@ public enum TransactionOrigin: String, Codable, CaseIterable, Identifiable, Hash
     case investmentRedemption
     case debtPayment
     case quotaAllocation
+    case internalTransfer
 
     public var id: String { rawValue }
 }
@@ -618,6 +619,36 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
 
     public var isPartOfSeries: Bool {
         seriesGroupId != nil || recurrenceMode != .single
+    }
+
+    /// Identifica se a receita possui natureza extraordinária (ex: 13º salário, bônus, PLR, restituição de IR, rescisão).
+    public var isExtraordinaryIncome: Bool {
+        guard type == .income else { return false }
+        let text = "\(name) \(details) \(rawStatementLine ?? "")"
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let keywords = [
+            "13", "decimo terceiro", "bonus", "plr",
+            "participacao nos lucros", "restituicao", "rescisao",
+            "extraordinari", "heranca", "premio", "premiacao"
+        ]
+        return keywords.contains { text.contains($0) }
+    }
+
+    /// Identifica se a despesa é de natureza fixa / recorrente (assinaturas, financiamento, aluguel, condomínio, etc.)
+    public var isFixedExpense: Bool {
+        guard type == .expense else { return false }
+        if recurrenceMode == .recurring { return true }
+        if linkedContractId != nil { return true }
+        let text = "\(name) \(details)"
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let keywords = ["fixa", "fixo", "recorrente", "assinatura", "aluguel", "condominio", "plano", "mensalidade", "prestacao", "parcela"]
+        return keywords.contains { text.contains($0) }
+    }
+
+    /// Despesas de consumo variável / avulsas
+    public var isVariableExpense: Bool {
+        guard type == .expense else { return false }
+        return !isFixedExpense
     }
 }
 
@@ -1612,6 +1643,7 @@ public enum ProvisionEditScope: String, Codable, CaseIterable, Identifiable, Has
 
 public enum ProvisionDeleteScope: String, Codable, CaseIterable, Identifiable, Hashable {
     case onlyThisMonth
+    case fromThisMonthOnward
     case allOccurrences
 
     public var id: String { rawValue }
@@ -1620,6 +1652,8 @@ public enum ProvisionDeleteScope: String, Codable, CaseIterable, Identifiable, H
         switch self {
         case .onlyThisMonth:
             return "Excluir somente deste mês"
+        case .fromThisMonthOnward:
+            return "Excluir deste mês em diante"
         case .allOccurrences:
             return "Excluir todas as ocorrências"
         }
@@ -2008,5 +2042,199 @@ public struct ImportableExpenseDraft: Identifiable, Hashable {
         self.accountId = accountId
         self.isDuplicate = isDuplicate
         self.isSelected = isSelected
+    }
+}
+
+// MARK: - Unified Financial KPI Architecture
+
+/// Os seis contextos temporais padronizados da aplicação (mensais e anuais).
+public enum FinancialTemporalContext: String, Codable, CaseIterable, Identifiable, Hashable {
+    case pastMonth       // 1. Mês passado: mês fechado
+    case currentMonth    // 2. Mês atual: mês em andamento
+    case futureMonth     // 3. Mês futuro: mês projetado
+    case pastYear        // 4. Ano passado: ano fechado
+    case currentYear     // 5. Ano atual: ano em andamento
+    case futureYear      // 6. Ano futuro: ano projetado
+
+    public var id: String { rawValue }
+
+    public var isClosed: Bool {
+        self == .pastMonth || self == .pastYear
+    }
+
+    public var isCurrent: Bool {
+        self == .currentMonth || self == .currentYear
+    }
+
+    public var isFuture: Bool {
+        self == .futureMonth || self == .futureYear
+    }
+
+    public var isAnnual: Bool {
+        self == .pastYear || self == .currentYear || self == .futureYear
+    }
+
+    public var title: String {
+        switch self {
+        case .pastMonth: return "Mês Passado (Fechado)"
+        case .currentMonth: return "Mês Atual (Em Andamento)"
+        case .futureMonth: return "Mês Futuro (Projetado)"
+        case .pastYear: return "Ano Passado (Fechado)"
+        case .currentYear: return "Ano Atual (Em Andamento)"
+        case .futureYear: return "Ano Futuro (Projetado)"
+        }
+    }
+}
+
+/// Modelo canônico e centralizado contendo todos os indicadores de resumo (KPIs)
+/// calculados estritamente pelo FinancialDataStore para as 4 telas:
+/// Dashboard, Transações, Despesas e Receitas.
+public struct UnifiedFinancialKPISummary: Hashable {
+    public let referenceDate: Date
+    public let referenceNow: Date
+    public let isAnnual: Bool
+    public let temporalContext: FinancialTemporalContext
+
+    // 1. Receitas
+    public let receivedIncome: Double             // Receitas efetivamente recebidas (isPaid == true)
+    public let pendingIncome: Double              // Receitas pendentes cadastradas (isPaid == false)
+    public let pendingIncomeOverdue: Double       // Receitas pendentes em atraso (date < today)
+    public let pendingIncomeOnTime: Double        // Receitas pendentes no prazo (date >= today)
+    public let unrecordedExpectedIncome: Double   // Receitas previstas sem lançamento cadastrado (R$ 0,00 documentado)
+    public let projectedIncome: Double            // receivedIncome + pendingIncome + unrecordedExpectedIncome
+    public let habitualIncome: Double             // Receitas habituais
+    public let extraordinaryIncome: Double         // Receitas extraordinárias (13º salário, bônus, PLR, etc.)
+    public let topIncomeSourceName: String?       // Categoria/fonte principal
+    public let topIncomeSourceAmount: Double      // Valor da principal fonte
+    public let topIncomeSourcePercentage: Double  // % da principal fonte
+
+    // 2. Despesas
+    public let paidExpense: Double                // Despesas pagas (isPaid == true)
+    public let pendingExpense: Double             // Despesas pendentes cadastradas (isPaid == false)
+    public let recordedExpense: Double            // Despesas lançadas = paidExpense + pendingExpense
+    public let overdueExpenses: Double            // Despesas vencidas (isPaid == false && date < today)
+    public let onTimePendingExpenses: Double      // Despesas pendentes no prazo (isPaid == false && date >= today)
+    public let fixedExpenses: Double              // Despesas fixas / recorrentes
+    public let fixedExpensesPercentage: Double    // % de despesas fixas
+    public let variableExpenses: Double           // Despesas variáveis / avulsas
+    public let variableExpensesPercentage: Double // % de despesas variáveis
+
+    // 3. Orçamentos e Cotas
+    public let categoryCeilingsRemaining: Double  // Tetos restantes por categoria
+    public let specificQuotasRemaining: Double    // Cotas específicas restantes
+    public let remainingBudgetsAndQuotas: Double  // categoryCeilingsRemaining + specificQuotasRemaining
+    public let totalBudgetsOverrun: Double        // Excedente de orçamento (estouro de teto)
+    public let hasBudgetOverrun: Bool             // totalBudgetsOverrun > 0.001
+
+    // 4. Gastos Planejados e Sobra
+    public let totalPlannedExpenses: Double       // recordedExpense + remainingBudgetsAndQuotas
+    public let surplusAfterPlanning: Double       // projectedIncome - totalPlannedExpenses
+    public let operationalNetBalance: Double      // projectedIncome - recordedExpense
+
+    // 5. Saldo Bancário e Caixa
+    public let currentAccountBalanceNow: Double   // Saldo atual consolidado das contas hoje
+    public let projectedAccountBalance: Double    // Saldo inicial + movimentações futuras registradas
+    public let balanceIfAllBudgetsConsumed: Double // projectedAccountBalance - remainingBudgetsAndQuotas
+    public let projectedAccountBalanceTitle: String
+
+    // 6. Estatísticas Operacionais (Transações)
+    public let consolidatedEntries: Double        // Entradas consolidadas (ignora transferências internas e canceladas)
+    public let consolidatedExits: Double          // Saídas consolidadas (ignora transferências internas e canceladas)
+    public let transactionsNetBalance: Double     // consolidatedEntries - consolidatedExits
+    public let totalPendingVolume: Double         // pendingIncome + pendingExpense
+    public let paidTransactionsCount: Int         // Quantidade de transações efetivadas
+    public let pendingTransactionsCount: Int      // Quantidade de transações pendentes
+    public let validTransactionsCount: Int        // Quantidade total de transações válidas
+
+    public var isPast: Bool { temporalContext.isClosed }
+
+    public init(
+        referenceDate: Date,
+        referenceNow: Date,
+        isAnnual: Bool,
+        temporalContext: FinancialTemporalContext,
+        receivedIncome: Double,
+        pendingIncome: Double,
+        pendingIncomeOverdue: Double,
+        pendingIncomeOnTime: Double,
+        unrecordedExpectedIncome: Double,
+        projectedIncome: Double,
+        habitualIncome: Double,
+        extraordinaryIncome: Double,
+        topIncomeSourceName: String?,
+        topIncomeSourceAmount: Double,
+        topIncomeSourcePercentage: Double,
+        paidExpense: Double,
+        pendingExpense: Double,
+        recordedExpense: Double,
+        overdueExpenses: Double,
+        onTimePendingExpenses: Double,
+        fixedExpenses: Double,
+        fixedExpensesPercentage: Double,
+        variableExpenses: Double,
+        variableExpensesPercentage: Double,
+        categoryCeilingsRemaining: Double,
+        specificQuotasRemaining: Double,
+        remainingBudgetsAndQuotas: Double,
+        totalBudgetsOverrun: Double,
+        hasBudgetOverrun: Bool,
+        totalPlannedExpenses: Double,
+        surplusAfterPlanning: Double,
+        operationalNetBalance: Double,
+        currentAccountBalanceNow: Double,
+        projectedAccountBalance: Double,
+        balanceIfAllBudgetsConsumed: Double,
+        projectedAccountBalanceTitle: String,
+        consolidatedEntries: Double,
+        consolidatedExits: Double,
+        transactionsNetBalance: Double,
+        totalPendingVolume: Double,
+        paidTransactionsCount: Int,
+        pendingTransactionsCount: Int,
+        validTransactionsCount: Int
+    ) {
+        self.referenceDate = referenceDate
+        self.referenceNow = referenceNow
+        self.isAnnual = isAnnual
+        self.temporalContext = temporalContext
+        self.receivedIncome = receivedIncome
+        self.pendingIncome = pendingIncome
+        self.pendingIncomeOverdue = pendingIncomeOverdue
+        self.pendingIncomeOnTime = pendingIncomeOnTime
+        self.unrecordedExpectedIncome = unrecordedExpectedIncome
+        self.projectedIncome = projectedIncome
+        self.habitualIncome = habitualIncome
+        self.extraordinaryIncome = extraordinaryIncome
+        self.topIncomeSourceName = topIncomeSourceName
+        self.topIncomeSourceAmount = topIncomeSourceAmount
+        self.topIncomeSourcePercentage = topIncomeSourcePercentage
+        self.paidExpense = paidExpense
+        self.pendingExpense = pendingExpense
+        self.recordedExpense = recordedExpense
+        self.overdueExpenses = overdueExpenses
+        self.onTimePendingExpenses = onTimePendingExpenses
+        self.fixedExpenses = fixedExpenses
+        self.fixedExpensesPercentage = fixedExpensesPercentage
+        self.variableExpenses = variableExpenses
+        self.variableExpensesPercentage = variableExpensesPercentage
+        self.categoryCeilingsRemaining = categoryCeilingsRemaining
+        self.specificQuotasRemaining = specificQuotasRemaining
+        self.remainingBudgetsAndQuotas = remainingBudgetsAndQuotas
+        self.totalBudgetsOverrun = totalBudgetsOverrun
+        self.hasBudgetOverrun = hasBudgetOverrun
+        self.totalPlannedExpenses = totalPlannedExpenses
+        self.surplusAfterPlanning = surplusAfterPlanning
+        self.operationalNetBalance = operationalNetBalance
+        self.currentAccountBalanceNow = currentAccountBalanceNow
+        self.projectedAccountBalance = projectedAccountBalance
+        self.balanceIfAllBudgetsConsumed = balanceIfAllBudgetsConsumed
+        self.projectedAccountBalanceTitle = projectedAccountBalanceTitle
+        self.consolidatedEntries = consolidatedEntries
+        self.consolidatedExits = consolidatedExits
+        self.transactionsNetBalance = transactionsNetBalance
+        self.totalPendingVolume = totalPendingVolume
+        self.paidTransactionsCount = paidTransactionsCount
+        self.pendingTransactionsCount = pendingTransactionsCount
+        self.validTransactionsCount = validTransactionsCount
     }
 }
