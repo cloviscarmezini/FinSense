@@ -4952,8 +4952,8 @@ final class FinSenseTests: XCTestCase {
         XCTAssertTrue(auth.isAuthenticated, "Sessão deve persistir perenemente após restoreSession")
         XCTAssertEqual(auth.currentUser?.email, "perene@finsense.com")
 
-        // Simula tentativa de renovação com backend offline (porta/URL inexistente)
-        let renewed = await auth.renewTokens(baseURL: "http://127.0.0.1:59999/invalid")
+        // Simula tentativa de renovação com backend offline (porta/URL inexistente com recusa imediata de conexão)
+        let renewed = await auth.renewTokens(baseURL: "http://127.0.0.1:1/invalid")
         XCTAssertFalse(renewed, "Renovação offline deve falhar graciosamente")
         XCTAssertTrue(auth.isAuthenticated, "Falha de rede NÃO deve deslogar o usuário nem derrubar a autenticação perene")
         XCTAssertNotNil(auth.refreshToken, "Refresh token deve continuar preservado para novas tentativas futuras")

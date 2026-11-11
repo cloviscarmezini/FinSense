@@ -2731,29 +2731,54 @@ public struct DashboardTopKPICardsView: View {
                 .frame(maxWidth: .infinity)
 
                 // Card 6 — Saldo Previsto na Conta
-                let accountSubtitle: String = {
-                    if summary.isPast {
-                        return "Saldo final histórico conciliado"
-                    }
-                    return "Se não usar orçamento: \(BRLFormatters.currency(summary.projectedAccountBalance))"
-                }()
-
                 let projectedBalanceValue = summary.isPast
                     ? summary.projectedAccountBalance
                     : summary.balanceIfAllBudgetsConsumed
 
                 let projectedBalanceTint = projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
-                let projectedValueColor = projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+
+                let accountSubtitleText: String = {
+                    if summary.isPast {
+                        return "Saldo final histórico conciliado"
+                    }
+                    return "Se não usar o orçamento: \(BRLFormatters.currency(summary.projectedAccountBalance))"
+                }()
+
+                let accountCustomSubtitle: Text? = {
+                    if summary.isPast {
+                        return Text("Saldo final histórico conciliado").foregroundColor(.secondary)
+                    }
+                    let prefix = "Se não usar o orçamento: "
+                    let valueStr = BRLFormatters.currency(summary.projectedAccountBalance)
+                    let amountColor = summary.projectedAccountBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                    return Text(prefix).foregroundColor(.secondary) + Text(valueStr).foregroundColor(amountColor)
+                }()
+
+                let accountFootnote: String? = {
+                    if summary.isPast {
+                        return "Resultado final registrado"
+                    }
+                    if projectedBalanceValue < 0 {
+                        return "Alerta: Risco de caixa negativo"
+                    }
+                    return "Saldo projetado em conta"
+                }()
+
+                let accountFootnoteColor: Color = {
+                    if summary.isPast { return .secondary }
+                    return projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                }()
 
                 MetricCardView(
                     title: summary.projectedAccountBalanceTitle,
                     value: BRLFormatters.currency(projectedBalanceValue),
-                    valueColor: projectedValueColor,
-                    subtitle: accountSubtitle,
+                    valueColor: nil,
+                    subtitle: accountSubtitleText,
+                    customSubtitle: accountCustomSubtitle,
                     icon: summary.isPast ? "checkmark.seal.fill" : "building.columns.fill",
                     tint: projectedBalanceTint,
-                    footnote: (!summary.isPast && projectedBalanceValue < 0) ? "Alerta: Risco de caixa negativo" : nil,
-                    footnoteColor: Color(hex: "#EF4444")
+                    footnote: accountFootnote,
+                    footnoteColor: accountFootnoteColor
                 )
                 .frame(maxWidth: .infinity)
             }

@@ -412,8 +412,8 @@ public struct MetricCardView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // 1. Linha de Cabeçalho (Topo)
-            HStack(alignment: .center, spacing: 6) {
+            // 1. Linha de Cabeçalho (Topo) - altura padronizada para manter alinhamento perfeito entre cards de 1 ou 2 linhas
+            HStack(alignment: .top, spacing: 6) {
                 Text(title)
                     .font(.subheadline)
                     .fontWeight(.medium)
@@ -455,7 +455,7 @@ public struct MetricCardView: View {
                         .foregroundStyle(tint)
                 }
             }
-            .frame(minHeight: 28)
+            .frame(height: 34, alignment: .top)
 
             // 2. Linha do Valor Principal (Centro) - posicionado imediatamente abaixo do cabeçalho
             Text(value)
@@ -508,7 +508,7 @@ public struct MetricCardView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: cardHeight)
+        .frame(height: cardHeight, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
