@@ -2735,16 +2735,24 @@ public struct DashboardTopKPICardsView: View {
                     if summary.isPast {
                         return "Saldo final histórico conciliado"
                     }
-                    return "Se usar orçamentos: \(BRLFormatters.currency(summary.balanceIfAllBudgetsConsumed))"
+                    return "Se não usar orçamento: \(BRLFormatters.currency(summary.projectedAccountBalance))"
                 }()
+
+                let projectedBalanceValue = summary.isPast
+                    ? summary.projectedAccountBalance
+                    : summary.balanceIfAllBudgetsConsumed
+
+                let projectedBalanceTint = projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                let projectedValueColor = projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
 
                 MetricCardView(
                     title: summary.projectedAccountBalanceTitle,
-                    value: BRLFormatters.currency(summary.projectedAccountBalance),
+                    value: BRLFormatters.currency(projectedBalanceValue),
+                    valueColor: projectedValueColor,
                     subtitle: accountSubtitle,
                     icon: summary.isPast ? "checkmark.seal.fill" : "building.columns.fill",
-                    tint: summary.projectedAccountBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"),
-                    footnote: (!summary.isPast && summary.projectedAccountBalance < 0) ? "Alerta: Risco de caixa negativo" : nil,
+                    tint: projectedBalanceTint,
+                    footnote: (!summary.isPast && projectedBalanceValue < 0) ? "Alerta: Risco de caixa negativo" : nil,
                     footnoteColor: Color(hex: "#EF4444")
                 )
                 .frame(maxWidth: .infinity)

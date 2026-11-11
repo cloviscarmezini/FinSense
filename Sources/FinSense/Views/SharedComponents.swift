@@ -346,6 +346,7 @@ public struct MetricCardView: View {
 
     public let title: String
     public let value: String
+    public var valueColor: Color? = nil
     public let subtitle: String
     public var customSubtitle: Text? = nil
     public let icon: String
@@ -361,6 +362,7 @@ public struct MetricCardView: View {
     public init(
         title: String,
         value: String,
+        valueColor: Color? = nil,
         subtitle: String = "",
         customSubtitle: Text? = nil,
         icon: String,
@@ -375,6 +377,7 @@ public struct MetricCardView: View {
     ) {
         self.title = title
         self.value = value
+        self.valueColor = valueColor
         self.subtitle = subtitle
         self.customSubtitle = customSubtitle
         self.icon = icon
@@ -457,7 +460,7 @@ public struct MetricCardView: View {
             // 2. Linha do Valor Principal (Centro) - posicionado imediatamente abaixo do cabeçalho
             Text(value)
                 .font(.system(size: 20, weight: .bold, design: .rounded))
-                .foregroundStyle(.primary)
+                .foregroundStyle(valueColor ?? .primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .monospacedDigit()
