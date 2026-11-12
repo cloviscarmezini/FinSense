@@ -1736,6 +1736,26 @@ public struct CategoryQuotaMonthlyOverride: Codable, Hashable {
         self.plannedQuantity = max(0, plannedQuantity)
         self.estimatedUnitPrice = max(0, estimatedUnitPrice)
     }
+
+    enum CodingKeys: String, CodingKey {
+        case name, plannedQuantity, estimatedUnitPrice
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.name = try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))
+        self.plannedQuantity = max(0, (try? c.decodeIfPresent(Int.self, forKey: AnyKey("plannedQuantity")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("planned_quantity"))) ?? 0)
+        self.estimatedUnitPrice = max(0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("estimatedUnitPrice")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("estimated_unit_price"))) ?? 0.0)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(name, forKey: .name)
+        try c.encode(plannedQuantity, forKey: .plannedQuantity)
+        try c.encode(estimatedUnitPrice, forKey: .estimatedUnitPrice)
+    }
 }
 
 public enum QuotaType: String, Codable, CaseIterable, Identifiable, Hashable {

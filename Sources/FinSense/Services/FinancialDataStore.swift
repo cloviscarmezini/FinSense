@@ -4215,7 +4215,11 @@ public final class FinancialDataStore: ObservableObject {
 
         switch scope {
         case .allOccurrences:
+            let toDelete = provisions.filter { $0.categoryId == categoryId }
             provisions.removeAll { $0.categoryId == categoryId }
+            for p in toDelete {
+                cloudSyncService?.recordLocalMutation(entityName: "category_provisions", entityId: p.id, operation: .delete)
+            }
         case .onlyThisMonth:
             let candidates = provisions
                 .enumerated()
@@ -4233,8 +4237,12 @@ public final class FinancialDataStore: ObservableObject {
                     excluded.insert(targetKey)
                     provisions[idx].excludedYearMonthKeys = excluded
                     provisions[idx].monthlyOverrides?.removeValue(forKey: targetKey)
+                    let prov = provisions[idx]
+                    cloudSyncService?.recordLocalMutation(entityName: "category_provisions", entityId: prov.id, operation: .upsert, entity: prov)
                 } else if provisions[idx].yearMonthKey == targetKey {
+                    let deletedId = provisions[idx].id
                     provisions.remove(at: idx)
+                    cloudSyncService?.recordLocalMutation(entityName: "category_provisions", entityId: deletedId, operation: .delete)
                 }
             }
         case .fromThisMonthOnward:
@@ -4243,7 +4251,6 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         save()
-        cloudSyncService?.recordLocalMutation(entityName: "category_provisions", entityId: categoryId, operation: .delete)
     }
 
     /// Remove ou zera a provisão de uma categoria a partir do mês informado.
@@ -4399,20 +4406,37 @@ public final class FinancialDataStore: ObservableObject {
                         categoryQuotas[idx].excludedYearMonthKeys?.remove(targetKey)
                     }
                     save()
-                    return categoryQuotas[idx]
+                    let rule = categoryQuotas[idx]
+                    cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: rule.id, operation: .upsert, entity: rule)
+                    return rule
                 }
             }
 
             // Escopo: .thisAndFutureMonths
+            let removedRules = categoryQuotas.filter { $0.seriesId == existingSeriesId && $0.yearMonthKey > targetKey }
             categoryQuotas.removeAll { $0.seriesId == existingSeriesId && $0.yearMonthKey > targetKey }
+            for removed in removedRules {
+                cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: removed.id, operation: .delete)
+            }
             for idx in categoryQuotas.indices where categoryQuotas[idx].seriesId == existingSeriesId {
-                if var overrides = categoryQuotas[idx].monthlyOverrides {
-                    overrides = overrides.filter { $0.key < targetKey }
-                    categoryQuotas[idx].monthlyOverrides = overrides.isEmpty ? nil : overrides
+                var changed = false
+                if let overrides = categoryQuotas[idx].monthlyOverrides {
+                    let filtered = overrides.filter { $0.key < targetKey }
+                    if filtered != overrides {
+                        categoryQuotas[idx].monthlyOverrides = filtered.isEmpty ? nil : filtered
+                        changed = true
+                    }
                 }
-                if var excluded = categoryQuotas[idx].excludedYearMonthKeys {
-                    excluded = excluded.filter { $0 < targetKey }
-                    categoryQuotas[idx].excludedYearMonthKeys = excluded.isEmpty ? nil : excluded
+                if let excluded = categoryQuotas[idx].excludedYearMonthKeys {
+                    let filtered = excluded.filter { $0 < targetKey }
+                    if filtered != excluded {
+                        categoryQuotas[idx].excludedYearMonthKeys = filtered.isEmpty ? nil : filtered
+                        changed = true
+                    }
+                }
+                if changed {
+                    let rule = categoryQuotas[idx]
+                    cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: rule.id, operation: .upsert, entity: rule)
                 }
             }
 
@@ -4485,7 +4509,11 @@ public final class FinancialDataStore: ObservableObject {
 
         switch scope {
         case .allOccurrences:
+            let toDelete = categoryQuotas.filter { $0.seriesId == seriesId }
             categoryQuotas.removeAll { $0.seriesId == seriesId }
+            for r in toDelete {
+                cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: r.id, operation: .delete)
+            }
         case .onlyThisMonth:
             let candidates = categoryQuotas
                 .enumerated()
@@ -4503,20 +4531,39 @@ public final class FinancialDataStore: ObservableObject {
                     excluded.insert(targetKey)
                     categoryQuotas[idx].excludedYearMonthKeys = excluded
                     categoryQuotas[idx].monthlyOverrides?.removeValue(forKey: targetKey)
+                    let rule = categoryQuotas[idx]
+                    cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: rule.id, operation: .upsert, entity: rule)
                 } else if categoryQuotas[idx].yearMonthKey == targetKey {
+                    let deletedId = categoryQuotas[idx].id
                     categoryQuotas.remove(at: idx)
+                    cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: deletedId, operation: .delete)
                 }
             }
         case .fromThisMonthOnward:
+            let removedRules = categoryQuotas.filter { $0.seriesId == seriesId && $0.yearMonthKey > targetKey }
             categoryQuotas.removeAll { $0.seriesId == seriesId && $0.yearMonthKey > targetKey }
+            for removed in removedRules {
+                cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: removed.id, operation: .delete)
+            }
             for idx in categoryQuotas.indices where categoryQuotas[idx].seriesId == seriesId {
-                if var overrides = categoryQuotas[idx].monthlyOverrides {
-                    overrides = overrides.filter { $0.key < targetKey }
-                    categoryQuotas[idx].monthlyOverrides = overrides.isEmpty ? nil : overrides
+                var changed = false
+                if let overrides = categoryQuotas[idx].monthlyOverrides {
+                    let filtered = overrides.filter { $0.key < targetKey }
+                    if filtered != overrides {
+                        categoryQuotas[idx].monthlyOverrides = filtered.isEmpty ? nil : filtered
+                        changed = true
+                    }
                 }
-                if var excluded = categoryQuotas[idx].excludedYearMonthKeys {
-                    excluded = excluded.filter { $0 < targetKey }
-                    categoryQuotas[idx].excludedYearMonthKeys = excluded.isEmpty ? nil : excluded
+                if let excluded = categoryQuotas[idx].excludedYearMonthKeys {
+                    let filtered = excluded.filter { $0 < targetKey }
+                    if filtered != excluded {
+                        categoryQuotas[idx].excludedYearMonthKeys = filtered.isEmpty ? nil : filtered
+                        changed = true
+                    }
+                }
+                if changed {
+                    let rule = categoryQuotas[idx]
+                    cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: rule.id, operation: .upsert, entity: rule)
                 }
             }
 
@@ -4535,8 +4582,12 @@ public final class FinancialDataStore: ObservableObject {
                     categoryQuotas[exactIdx].plannedQuantity = 0
                     categoryQuotas[exactIdx].estimatedUnitPrice = 0
                     categoryQuotas[exactIdx].repeatForFutureMonths = true
+                    let rule = categoryQuotas[exactIdx]
+                    cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: rule.id, operation: .upsert, entity: rule)
                 } else {
+                    let deletedId = categoryQuotas[exactIdx].id
                     categoryQuotas.remove(at: exactIdx)
+                    cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: deletedId, operation: .delete)
                 }
             } else if hasPriorRecurring {
                 let template = categoryQuotas.first(where: { $0.seriesId == seriesId })
@@ -4549,14 +4600,16 @@ public final class FinancialDataStore: ObservableObject {
                     month: month,
                     plannedQuantity: 0,
                     estimatedUnitPrice: 0,
-                    repeatForFutureMonths: true
+                    repeatForFutureMonths: true,
+                    quotaType: template?.quotaType ?? .expense,
+                    linkedInvestmentId: template?.linkedInvestmentId
                 )
                 categoryQuotas.append(stopper)
+                cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: stopper.id, operation: .upsert, entity: stopper)
             }
         }
 
         save()
-        cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: seriesId, operation: .delete)
     }
 
     /// Retorna os envelopes de Cotas Específicas ativas para uma categoria no mês informado.
