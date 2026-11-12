@@ -451,6 +451,25 @@ public final class FinancialDataStore: ObservableObject {
             self.llmConfig = decoded.llmConfig
             self.chatHistory = decoded.chatHistory
             self.hasSeededInitialStatement = decoded.hasSeededInitialStatement
+
+            // Migrar e garantir categoria "Aportes e investimentos" para depósitos e cotas de investimento
+            let aporteCatId = self.investmentDepositCategoryId()
+            var mutatedData = false
+            for i in 0..<self.transactions.count {
+                if self.transactions[i].transactionOrigin == .investmentDeposit && self.transactions[i].categoryId != aporteCatId {
+                    self.transactions[i].categoryId = aporteCatId
+                    mutatedData = true
+                }
+            }
+            for i in 0..<self.categoryQuotas.count {
+                if self.categoryQuotas[i].quotaType == .investment && self.categoryQuotas[i].categoryId != aporteCatId {
+                    self.categoryQuotas[i].categoryId = aporteCatId
+                    mutatedData = true
+                }
+            }
+            if mutatedData {
+                save()
+            }
         } else {
             // Instalação limpa: sempre inicia zerado, apenas com as categorias padrões, sem despesas ou contas.
             self.categories = DefaultCategoriesCatalog.buildInitialCategories()
@@ -2020,6 +2039,42 @@ public final class FinancialDataStore: ObservableObject {
         return categories(for: type).first?.id ?? categories.first?.id ?? UUID()
     }
 
+    /// Retorna a categoria padronizada "Aportes e investimentos", migrando registros legados
+    /// ou criando-a sob demanda caso ainda não exista no catálogo de categorias do usuário.
+    public func investmentDepositCategoryId() -> UUID {
+        // 1. Categoria exata de despesa "Aportes e investimentos"
+        if let exact = categories.first(where: { $0.type == .expense && $0.name.compare("Aportes e investimentos", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) {
+            return exact.id
+        }
+        // 2. Se houver legado "Aplicações & Reservas" ou "Aportes em Investimentos", atualizar nome
+        if let legacyIdx = categories.firstIndex(where: { $0.type == .expense && ($0.name.compare("Aplicações & Reservas", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame || $0.name.compare("Aportes em Investimentos", options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame) }) {
+            categories[legacyIdx].name = "Aportes e investimentos"
+            save()
+            cloudSyncService?.recordLocalMutation(entityName: "categories", entityId: categories[legacyIdx].id, operation: .upsert, entity: categories[legacyIdx])
+            return categories[legacyIdx].id
+        }
+        // 3. Qualquer categoria que contenha "aporte"
+        if let aporteIdx = categories.firstIndex(where: { $0.type == .expense && $0.name.localizedCaseInsensitiveContains("aporte") }) {
+            categories[aporteIdx].name = "Aportes e investimentos"
+            save()
+            cloudSyncService?.recordLocalMutation(entityName: "categories", entityId: categories[aporteIdx].id, operation: .upsert, entity: categories[aporteIdx])
+            return categories[aporteIdx].id
+        }
+        // 4. Se não existir, criar a categoria "Aportes e investimentos"
+        let newCat = CategoryItem(
+            name: "Aportes e investimentos",
+            type: .expense,
+            iconSymbol: "chart.line.uptrend.xyaxis",
+            colorHex: "#6366F1",
+            keywords: ["APORTE", "INVESTIMENTO", "CDB", "POUPANCA", "COFRINHO"],
+            isSystemDefault: true
+        )
+        categories.append(newCat)
+        save()
+        cloudSyncService?.recordLocalMutation(entityName: "categories", entityId: newCat.id, operation: .upsert, entity: newCat)
+        return newCat.id
+    }
+
     public func inferCategoryId(forTitle title: String, type: TransactionType) -> UUID {
         let normTitle = title.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
         let candidates = categories(for: type)
@@ -3013,7 +3068,7 @@ public final class FinancialDataStore: ObservableObject {
         let txType: TransactionType = movementType == .deposit ? .expense : .income
         let categoryId: UUID = {
             if movementType == .deposit {
-                return fallbackCategoryId(for: .expense, matchingSubstring: "Aplicações")
+                return investmentDepositCategoryId()
             } else {
                 return fallbackCategoryId(for: .income, matchingSubstring: "Resgate")
             }
@@ -4574,11 +4629,16 @@ public final class FinancialDataStore: ObservableObject {
 
             let redemptionTxs = transactions.filter { tx in
                 guard !tx.ignoreInConsolidated, tx.type == .expense else { return false }
-                guard tx.linkedQuotaId == seriesId else { return false }
-                if let quotaMonthKey = tx.linkedQuotaYearMonthKey {
-                    return quotaMonthKey == targetKey
+                if tx.linkedQuotaId == seriesId {
+                    if let quotaMonthKey = tx.linkedQuotaYearMonthKey {
+                        return quotaMonthKey == targetKey
+                    }
+                    return isInMonth(tx.date, monthReference: monthReference)
                 }
-                return isInMonth(tx.date, monthReference: monthReference)
+                if latest.quotaType == .investment, let linkedInvId = latest.linkedInvestmentId {
+                    return tx.linkedInvestmentId == linkedInvId && tx.transactionOrigin == .investmentDeposit && isInMonth(tx.date, monthReference: monthReference)
+                }
+                return false
             }
 
             let consumedUnits = redemptionTxs.reduce(0) { $0 + max(1, $1.linkedQuotaUnits ?? 1) }
@@ -4635,7 +4695,7 @@ public final class FinancialDataStore: ObservableObject {
 
         let finalCatId: UUID = {
             if isInvestment {
-                return fallbackCategoryId(for: .expense, matchingSubstring: "Aplicações")
+                return investmentDepositCategoryId()
             }
             if let catId = activeEnvelope?.categoryId ?? fallbackRule?.categoryId, category(for: catId) != nil {
                 return catId

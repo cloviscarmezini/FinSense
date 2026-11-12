@@ -838,8 +838,8 @@ public struct DashboardView: View {
     private func quotaItemCard(_ quota: CategoryQuotaEnvelope) -> some View {
         let isInvestment = quota.quotaType == .investment
         let statusColorHex: String = {
-            if isInvestment && quota.status == .normal {
-                return "#10B981"
+            if isInvestment {
+                return quota.statusColorHex
             }
             switch quota.status {
             case .normal: return "#0EA5E9"
@@ -856,16 +856,37 @@ public struct DashboardView: View {
                     RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .fill(Color(hex: statusColorHex).opacity(0.15))
                         .frame(width: 34, height: 34)
-                    Image(systemName: quota.iconSymbol)
+                    Image(systemName: isInvestment ? "chart.line.uptrend.xyaxis" : quota.iconSymbol)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(Color(hex: statusColorHex))
                 }
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 5) {
-                        Text("\(quota.name): \(quota.consumedUnits) de \(quota.plannedQuantity) \(isInvestment ? "aportes" : "consumidos") • \(BRLFormatters.currency(quota.remainingProvision)) restantes")
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(1)
+                        if isInvestment {
+                            let target = quota.totalEstimatedAmount
+                            let realized = quota.realizedExpense
+                            if realized >= target && target > 0 {
+                                if realized > target + 0.01 {
+                                    Text("\(quota.name): \(BRLFormatters.currency(realized)) aportados (Meta: \(BRLFormatters.currency(target))) • Meta superada")
+                                        .font(.subheadline.weight(.semibold))
+                                        .lineLimit(1)
+                                } else {
+                                    Text("\(quota.name): \(BRLFormatters.currency(realized)) de \(BRLFormatters.currency(target)) • Meta concluída")
+                                        .font(.subheadline.weight(.semibold))
+                                        .lineLimit(1)
+                                }
+                            } else {
+                                let remaining = max(0.0, target - realized)
+                                Text("\(quota.name): \(BRLFormatters.currency(realized)) de \(BRLFormatters.currency(target)) • \(BRLFormatters.currency(remaining)) restantes")
+                                    .font(.subheadline.weight(.semibold))
+                                    .lineLimit(1)
+                            }
+                        } else {
+                            Text("\(quota.name): \(quota.consumedUnits) de \(quota.plannedQuantity) consumidos • \(BRLFormatters.currency(quota.remainingProvision)) restantes")
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                        }
                         if isInvestment {
                             Text("INVESTIMENTO")
                                 .font(.system(size: 9, weight: .bold))
@@ -901,7 +922,7 @@ public struct DashboardView: View {
 
                 Spacer(minLength: 8)
 
-                Text(quota.status.rawValue)
+                Text(isInvestment ? quota.statusTitle : quota.status.rawValue)
                     .font(.system(size: 10.5, weight: .bold))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -1733,9 +1754,7 @@ public struct QuotaItemEditorSheet: View {
                                 set: { newId in
                                     selectedInvestmentId = newId
                                     if let inv = store.investment(for: newId) {
-                                        if itemName.isEmpty || store.investments.contains(where: { "Aporte \($0.name)" == itemName || $0.name == itemName }) {
-                                            itemName = "Aporte \(inv.name)"
-                                        }
+                                        itemName = "Aporte \(inv.name)"
                                         iconSymbol = inv.iconSymbol
                                     }
                                 }
@@ -1746,14 +1765,6 @@ public struct QuotaItemEditorSheet: View {
                             }
                             .labelsHidden()
                         }
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Nome / Identificação do Aporte")
-                            .font(.caption.bold())
-                            .foregroundStyle(.secondary)
-                        TextField("Ex: Aporte Tesouro Direto, Reserva de Emergência...", text: $itemName)
-                            .textFieldStyle(.roundedBorder)
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
@@ -1936,11 +1947,9 @@ public struct QuotaItemEditorSheet: View {
         if isInvestment {
             let targetInvId = selectedInvestmentId ?? store.investments.first?.id
             let inv = targetInvId != nil ? store.investment(for: targetInvId!) : nil
-            let cleanName = itemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "Aporte \(inv?.name ?? "Investimento")"
-                : itemName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let cleanIcon = !iconSymbol.isEmpty ? iconSymbol : (inv?.iconSymbol ?? "chart.line.uptrend.xyaxis")
-            let fallbackCat = store.fallbackCategoryId(for: .expense, matchingSubstring: "Aplicações")
+            let cleanName = "Aporte \(inv?.name ?? "Investimento")"
+            let cleanIcon = inv?.iconSymbol ?? "chart.line.uptrend.xyaxis"
+            let fallbackCat = store.investmentDepositCategoryId()
 
             store.saveCategoryQuota(
                 seriesId: existingQuota?.seriesId,
@@ -2152,7 +2161,7 @@ public struct QuotaRedemptionSheet: View {
                 Button {
                     store.redeemCategoryQuota(
                         seriesId: quotaEnvelope.seriesId,
-                        units: units,
+                        units: isInvestment ? 1 : units,
                         unitPriceOverride: actualUnitPrice,
                         accountId: selectedAccountId,
                         in: store.selectedMonth,
@@ -2172,7 +2181,13 @@ public struct QuotaRedemptionSheet: View {
         .padding(22)
         .frame(width: 460)
         .onAppear {
-            actualUnitPriceString = String(format: "%.2f", quotaEnvelope.estimatedUnitPrice).replacingOccurrences(of: ".", with: ",")
+            if isInvestment {
+                let remaining = quotaEnvelope.totalEstimatedAmount - quotaEnvelope.realizedExpense
+                let defaultVal = remaining > 0 ? remaining : quotaEnvelope.estimatedUnitPrice
+                actualUnitPriceString = String(format: "%.2f", defaultVal > 0 ? defaultVal : quotaEnvelope.estimatedUnitPrice).replacingOccurrences(of: ".", with: ",")
+            } else {
+                actualUnitPriceString = String(format: "%.2f", quotaEnvelope.estimatedUnitPrice).replacingOccurrences(of: ".", with: ",")
+            }
             selectedAccountId = store.accounts.first?.id ?? UUID()
         }
     }

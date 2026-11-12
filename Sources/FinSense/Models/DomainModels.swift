@@ -1890,11 +1890,17 @@ public struct CategoryQuotaEnvelope: Identifiable, Hashable {
     public let isLocalMonthOverride: Bool
 
     public var progressRatio: Double {
+        if quotaType == .investment && totalEstimatedAmount > 0 {
+            return min(1.0, max(0.0, realizedExpense / totalEstimatedAmount))
+        }
         guard plannedQuantity > 0 else { return 0.0 }
         return min(1.0, max(0.0, Double(consumedUnits) / Double(plannedQuantity)))
     }
 
     public var status: ProvisionStatusLevel {
+        if quotaType == .investment {
+            return .normal
+        }
         if consumedUnits > plannedQuantity {
             return .exceeded
         } else if plannedQuantity > 0 && Double(consumedUnits) / Double(plannedQuantity) >= 0.8 - 0.001 {
@@ -1902,6 +1908,64 @@ public struct CategoryQuotaEnvelope: Identifiable, Hashable {
         } else {
             return .normal
         }
+    }
+
+    public var statusTitle: String {
+        if quotaType == .investment {
+            let target = totalEstimatedAmount > 0 ? totalEstimatedAmount : Double(plannedQuantity) * estimatedUnitPrice
+            guard target > 0 else { return "Pendente" }
+            let ratio = realizedExpense / target
+            if ratio > 1.0 + 0.001 {
+                return "Superado"
+            } else if ratio >= 1.0 - 0.001 {
+                return "Meta Atingida"
+            } else if ratio >= 0.8 - 0.001 {
+                return "Quase lá"
+            } else if realizedExpense > 0 {
+                return "Em andamento"
+            } else {
+                return "Pendente"
+            }
+        }
+        return status.rawValue
+    }
+
+    public var statusColorHex: String {
+        if quotaType == .investment {
+            let target = totalEstimatedAmount > 0 ? totalEstimatedAmount : Double(plannedQuantity) * estimatedUnitPrice
+            guard target > 0 else { return "#94A3B8" }
+            let ratio = realizedExpense / target
+            if ratio >= 1.0 - 0.001 {
+                return "#10B981"
+            } else if ratio >= 0.8 - 0.001 {
+                return "#0284C7"
+            } else if realizedExpense > 0 {
+                return "#0284C7"
+            } else {
+                return "#94A3B8"
+            }
+        }
+        return status.colorHex
+    }
+
+    public var statusIconSymbol: String {
+        if quotaType == .investment {
+            let target = totalEstimatedAmount > 0 ? totalEstimatedAmount : Double(plannedQuantity) * estimatedUnitPrice
+            guard target > 0 else { return "circle" }
+            let ratio = realizedExpense / target
+            if ratio > 1.0 + 0.001 {
+                return "star.fill"
+            } else if ratio >= 1.0 - 0.001 {
+                return "checkmark.circle.fill"
+            } else if ratio >= 0.8 - 0.001 {
+                return "chart.line.uptrend.xyaxis"
+            } else if realizedExpense > 0 {
+                return "arrow.triangle.2.circlepath"
+            } else {
+                return "circle"
+            }
+        }
+        return status.iconSymbol
     }
 
     public init(
@@ -1960,6 +2024,62 @@ public struct CategoryProvisionEnvelope: Identifiable, Hashable {
     public var freeBudgetRealizedExpense: Double { realizedExpense }
     public var freeBudgetRemaining: Double { remainingProvision }
 
+    public var isInvestmentCategory: Bool {
+        category.name.localizedCaseInsensitiveContains("aporte") || category.name.localizedCaseInsensitiveContains("investimento")
+    }
+
+    public var statusTitle: String {
+        if isInvestmentCategory {
+            guard estimatedAmount > 0 else { return "Pendente" }
+            if realizedExpense > estimatedAmount + 0.001 {
+                return "Superado"
+            } else if rawProgressPercentage >= 99.9 {
+                return "Meta Atingida"
+            } else if rawProgressPercentage >= 80.0 {
+                return "Quase lá"
+            } else if realizedExpense > 0 {
+                return "Em andamento"
+            } else {
+                return "Pendente"
+            }
+        }
+        return status.rawValue
+    }
+
+    public var statusColorHex: String {
+        if isInvestmentCategory {
+            guard estimatedAmount > 0 else { return "#94A3B8" }
+            if rawProgressPercentage >= 99.9 {
+                return "#10B981"
+            } else if rawProgressPercentage >= 80.0 {
+                return "#0284C7"
+            } else if realizedExpense > 0 {
+                return "#0284C7"
+            } else {
+                return "#94A3B8"
+            }
+        }
+        return status.colorHex
+    }
+
+    public var statusIconSymbol: String {
+        if isInvestmentCategory {
+            guard estimatedAmount > 0 else { return "circle" }
+            if realizedExpense > estimatedAmount + 0.001 {
+                return "star.fill"
+            } else if rawProgressPercentage >= 99.9 {
+                return "checkmark.circle.fill"
+            } else if rawProgressPercentage >= 80.0 {
+                return "chart.line.uptrend.xyaxis"
+            } else if realizedExpense > 0 {
+                return "arrow.triangle.2.circlepath"
+            } else {
+                return "circle"
+            }
+        }
+        return status.iconSymbol
+    }
+
     public init(
         category: CategoryItem,
         provision: CategoryProvision,
@@ -1986,7 +2106,10 @@ public struct CategoryProvisionEnvelope: Identifiable, Hashable {
         self.rawProgressPercentage = rawPct
         self.clampedProgressPercentage = min(100.0, max(0.0, rawPct))
 
-        if cleanEst > 0 && cleanRealized > cleanEst + 0.001 {
+        let isInv = category.name.localizedCaseInsensitiveContains("aporte") || category.name.localizedCaseInsensitiveContains("investimento")
+        if isInv {
+            self.status = .normal
+        } else if cleanEst > 0 && cleanRealized > cleanEst + 0.001 {
             self.status = .exceeded
         } else if rawPct >= 80.0 - 0.001 {
             self.status = .warning

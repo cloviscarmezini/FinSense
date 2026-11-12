@@ -301,11 +301,11 @@ public enum DefaultCategoriesCatalog {
             ),
             CategoryItem(
                 id: UUID(uuidString: "10000000-0000-0000-0000-000000000013")!,
-                name: "Aplicações & Reservas",
+                name: "Aportes e investimentos",
                 type: .expense,
-                iconSymbol: "Safe",
-                colorHex: "#10B981",
-                keywords: ["APLICACAO COFRINHOS", "APLICACAO CDB", "APLICACAO", "INVESTIMENTO"],
+                iconSymbol: "chart.line.uptrend.xyaxis",
+                colorHex: "#6366F1",
+                keywords: ["APORTE", "INVESTIMENTO", "CDB", "POUPANCA", "COFRINHO", "APLICACAO COFRINHOS", "APLICACAO CDB", "APLICACAO"],
                 isSystemDefault: true
             ),
             CategoryItem(
