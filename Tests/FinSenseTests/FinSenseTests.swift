@@ -4958,4 +4958,98 @@ final class FinSenseTests: XCTestCase {
         XCTAssertTrue(auth.isAuthenticated, "Falha de rede NÃO deve deslogar o usuário nem derrubar a autenticação perene")
         XCTAssertNotNil(auth.refreshToken, "Refresh token deve continuar preservado para novas tentativas futuras")
     }
+
+    func testInvestmentQuotaPlanningAggregationAndRedemption() {
+        let store = FinancialDataStore()
+        let refDate = Date()
+        store.selectedMonth = refDate
+
+        // Cria conta bancária
+        let bank = BankAccount(name: "Conta Corrente", bankPresetId: "itau", initialBalance: 5000.0)
+        store.accounts = [bank]
+
+        // Cria investimento
+        let inv = InvestmentItem(
+            name: "Tesouro Selic 2029",
+            groupName: "Renda Fixa",
+            investmentAccountId: bank.id,
+            balance: 1000.0,
+            iconSymbol: "chart.line.uptrend.xyaxis",
+            colorHex: "#10B981"
+        )
+        store.investments = [inv]
+
+        // Cria Cota / Planejamento de Investimento
+        let quotaRule = store.saveCategoryQuota(
+            categoryId: store.fallbackCategoryId(for: .expense, matchingSubstring: "Aplicações"),
+            name: "Aporte Tesouro Selic",
+            iconSymbol: "chart.line.uptrend.xyaxis",
+            plannedQuantity: 1,
+            estimatedUnitPrice: 500.0,
+            for: refDate,
+            repeatForFutureMonths: true,
+            editScope: .thisAndFutureMonths,
+            quotaType: .investment,
+            linkedInvestmentId: inv.id
+        )
+
+        // 1. Verifica agregação nos envelopes de cotas do mês
+        let envelopes = store.allQuotaEnvelopes(for: refDate)
+        guard let invEnvelope = envelopes.first(where: { $0.seriesId == quotaRule.seriesId }) else {
+            XCTFail("Envelope de cota de investimento deve estar presente em allQuotaEnvelopes")
+            return
+        }
+
+        XCTAssertEqual(invEnvelope.quotaType, QuotaType.investment)
+        XCTAssertEqual(invEnvelope.linkedInvestmentId, inv.id)
+        XCTAssertEqual(invEnvelope.plannedQuantity, 1)
+        XCTAssertEqual(invEnvelope.consumedUnits, 0)
+        XCTAssertEqual(invEnvelope.pendingUnits, 1)
+        XCTAssertEqual(invEnvelope.estimatedUnitPrice, 500.0)
+        XCTAssertEqual(invEnvelope.remainingProvision, 500.0)
+
+        // Verifica agregação no total de cotas restantes
+        let totalQuotasRemaining = store.totalQuotasRemaining(for: refDate)
+        XCTAssertGreaterThanOrEqual(totalQuotasRemaining, 500.0, "Total de cotas restantes deve agregar o planejamento de investimento")
+
+        // 2. Realiza a baixa do planejamento de investimento (Aporte)
+        guard let tx = store.redeemCategoryQuota(
+            seriesId: quotaRule.seriesId,
+            units: 1,
+            unitPriceOverride: 500.0,
+            accountId: bank.id,
+            in: refDate,
+            transactionDate: refDate,
+            details: "Aporte via baixa de cota"
+        ) else {
+            XCTFail("Transação de aporte deve ser criada na baixa da cota")
+            return
+        }
+
+        XCTAssertEqual(tx.type, TransactionType.expense)
+        XCTAssertEqual(tx.amount, 500.0)
+        XCTAssertEqual(tx.transactionOrigin, TransactionOrigin.investmentDeposit)
+        XCTAssertEqual(tx.linkedInvestmentId, inv.id)
+        XCTAssertEqual(tx.linkedQuotaId, quotaRule.seriesId)
+
+        // Verifica que o investimento recebeu o saldo
+        let updatedInv = store.investments.first(where: { $0.id == inv.id })
+        XCTAssertEqual(updatedInv?.balance, 1500.0, "Saldo do investimento deve subir de 1000 para 1500")
+        XCTAssertEqual(updatedInv?.movements.count, 1)
+        XCTAssertEqual(updatedInv?.movements.first?.type, InvestmentMovementType.deposit)
+        XCTAssertEqual(updatedInv?.movements.first?.amount, 500.0)
+
+        // Verifica que o envelope agora aponta como baixado / 0 pendentes
+        let updatedEnvelopes = store.allQuotaEnvelopes(for: refDate)
+        let updatedEnvelope = updatedEnvelopes.first(where: { $0.seriesId == quotaRule.seriesId })
+        XCTAssertEqual(updatedEnvelope?.consumedUnits, 1)
+        XCTAssertEqual(updatedEnvelope?.pendingUnits, 0)
+        XCTAssertEqual(updatedEnvelope?.remainingProvision, 0.0)
+
+        // 3. Testa rollback relacional caso a transação seja excluída posteriormente
+        store.deleteTransaction(tx.id)
+        let revertedInv = store.investments.first(where: { $0.id == inv.id })
+        XCTAssertEqual(revertedInv?.balance, 1000.0, "Saldo do investimento deve reverter para 1000 após deletar transação")
+        XCTAssertEqual(revertedInv?.movements.count, 0, "Movimento de aporte deve ser removido no rollback")
+    }
 }

@@ -1999,6 +1999,11 @@ public final class FinancialDataStore: ObservableObject {
         categories.first(where: { $0.id == id })
     }
 
+    public func investment(for id: UUID?) -> InvestmentItem? {
+        guard let id = id else { return nil }
+        return investments.first(where: { $0.id == id })
+    }
+
     public var expenseCategories: [CategoryItem] {
         categories(for: .expense)
     }
@@ -4270,7 +4275,7 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Cria ou atualiza uma Cota de Item Específico (ex: "Galão de Água", 4 unidades a R$ 30,00 cada)
-    /// com suporte a escopo temporal (`.onlyThisMonth` vs `.thisAndFutureMonths`).
+    /// ou um Planejamento de Investimento com suporte a escopo temporal (`.onlyThisMonth` vs `.thisAndFutureMonths`).
     @discardableResult
     public func saveCategoryQuota(
         seriesId: UUID? = nil,
@@ -4281,7 +4286,9 @@ public final class FinancialDataStore: ObservableObject {
         estimatedUnitPrice: Double,
         for monthReference: Date,
         repeatForFutureMonths: Bool = true,
-        editScope: ProvisionEditScope = .thisAndFutureMonths
+        editScope: ProvisionEditScope = .thisAndFutureMonths,
+        quotaType: QuotaType = .expense,
+        linkedInvestmentId: UUID? = nil
     ) -> CategoryQuotaRule {
         let year = calendar.component(.year, from: monthReference)
         let month = calendar.component(.month, from: monthReference)
@@ -4289,8 +4296,20 @@ public final class FinancialDataStore: ObservableObject {
         let cleanQty = max(1, plannedQuantity)
         let cleanPrice = max(0.0, estimatedUnitPrice)
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cleanName = trimmedName.isEmpty ? "Item Provisionado" : trimmedName
-        let resolvedIcon = iconSymbol ?? Self.defaultIconForQuotaName(cleanName)
+        let cleanName: String = {
+            if !trimmedName.isEmpty { return trimmedName }
+            if quotaType == .investment, let invId = linkedInvestmentId, let inv = investments.first(where: { $0.id == invId }) {
+                return "Aporte \(inv.name)"
+            }
+            return "Item Provisionado"
+        }()
+        let resolvedIcon: String = {
+            if let iconSymbol = iconSymbol, !iconSymbol.isEmpty { return iconSymbol }
+            if quotaType == .investment, let invId = linkedInvestmentId, let inv = investments.first(where: { $0.id == invId }) {
+                return inv.iconSymbol
+            }
+            return Self.defaultIconForQuotaName(cleanName)
+        }()
 
         if let existingSeriesId = seriesId,
            categoryQuotas.contains(where: { $0.seriesId == existingSeriesId }) {
@@ -4312,6 +4331,8 @@ public final class FinancialDataStore: ObservableObject {
                         categoryQuotas[idx].iconSymbol = resolvedIcon
                         categoryQuotas[idx].plannedQuantity = cleanQty
                         categoryQuotas[idx].estimatedUnitPrice = cleanPrice
+                        categoryQuotas[idx].quotaType = quotaType
+                        categoryQuotas[idx].linkedInvestmentId = linkedInvestmentId
                     } else {
                         var overrides = categoryQuotas[idx].monthlyOverrides ?? [:]
                         overrides[targetKey] = CategoryQuotaMonthlyOverride(
@@ -4348,6 +4369,8 @@ public final class FinancialDataStore: ObservableObject {
                 categoryQuotas[exactIdx].plannedQuantity = cleanQty
                 categoryQuotas[exactIdx].estimatedUnitPrice = cleanPrice
                 categoryQuotas[exactIdx].repeatForFutureMonths = repeatForFutureMonths
+                categoryQuotas[exactIdx].quotaType = quotaType
+                categoryQuotas[exactIdx].linkedInvestmentId = linkedInvestmentId
                 save()
                 let rule = categoryQuotas[exactIdx]
                 cloudSyncService?.recordLocalMutation(entityName: "category_quota_rules", entityId: rule.id, operation: .upsert, entity: rule)
@@ -4362,7 +4385,9 @@ public final class FinancialDataStore: ObservableObject {
                     month: month,
                     plannedQuantity: cleanQty,
                     estimatedUnitPrice: cleanPrice,
-                    repeatForFutureMonths: repeatForFutureMonths
+                    repeatForFutureMonths: repeatForFutureMonths,
+                    quotaType: quotaType,
+                    linkedInvestmentId: linkedInvestmentId
                 )
                 categoryQuotas.append(updatedFutureRule)
                 save()
@@ -4380,7 +4405,9 @@ public final class FinancialDataStore: ObservableObject {
             month: month,
             plannedQuantity: cleanQty,
             estimatedUnitPrice: cleanPrice,
-            repeatForFutureMonths: repeatForFutureMonths
+            repeatForFutureMonths: repeatForFutureMonths,
+            quotaType: quotaType,
+            linkedInvestmentId: linkedInvestmentId
         )
         categoryQuotas.append(newRule)
         save()
@@ -4482,14 +4509,27 @@ public final class FinancialDataStore: ObservableObject {
         forCategory categoryId: UUID,
         in monthReference: Date
     ) -> [CategoryQuotaEnvelope] {
+        let rulesForCat = categoryQuotas.filter { $0.categoryId == categoryId }
+        return quotaEnvelopes(from: rulesForCat, in: monthReference)
+    }
+
+    /// Lista todas as cotas específicas ativas (despesas e planejamentos de investimento) no mês informado.
+    public func allQuotaEnvelopes(for monthReference: Date) -> [CategoryQuotaEnvelope] {
+        quotaEnvelopes(from: categoryQuotas, in: monthReference)
+    }
+
+    /// Calcula os envelopes de cotas a partir de uma coleção de regras fornecida.
+    public func quotaEnvelopes(
+        from rulesPool: [CategoryQuotaRule],
+        in monthReference: Date
+    ) -> [CategoryQuotaEnvelope] {
         let targetYear = calendar.component(.year, from: monthReference)
         let targetMonth = calendar.component(.month, from: monthReference)
         let targetKey = targetYear * 100 + targetMonth
 
-        let rulesForCat = categoryQuotas.filter { $0.categoryId == categoryId }
-        guard !rulesForCat.isEmpty else { return [] }
+        guard !rulesPool.isEmpty else { return [] }
 
-        let groupedBySeries = Dictionary(grouping: rulesForCat, by: \.seriesId)
+        let groupedBySeries = Dictionary(grouping: rulesPool, by: \.seriesId)
         var envelopes: [CategoryQuotaEnvelope] = []
 
         for (seriesId, rules) in groupedBySeries {
@@ -4568,16 +4608,9 @@ public final class FinancialDataStore: ObservableObject {
         }
     }
 
-    /// Lista todas as cotas específicas ativas em todas as categorias de despesa no mês informado.
-    public func allQuotaEnvelopes(for monthReference: Date) -> [CategoryQuotaEnvelope] {
-        expenseCategories.flatMap { cat in
-            quotaEnvelopes(forCategory: cat.id, in: monthReference)
-        }
-    }
-
-    /// Dá baixa em uma Cota Específica (ex: "+ Registrar Compra" / "Dar Baixa"),
-    /// incrementando as unidades consumidas e inserindo automaticamente a transação real no extrato
-    /// sem abater da Verba Livre da categoria.
+    /// Dá baixa em uma Cota Específica ou Planejamento de Investimento (ex: "+ Registrar Compra" / "Dar Baixa"),
+    /// incrementando as unidades consumidas e inserindo automaticamente a transação real no extrato.
+    /// Se for cota de investimento, credita o saldo do investimento e cria a movimentação correspondente.
     @discardableResult
     public func redeemCategoryQuota(
         seriesId: UUID,
@@ -4597,18 +4630,25 @@ public final class FinancialDataStore: ObservableObject {
         let activeEnvelope = allActiveQuotas.first(where: { $0.seriesId == seriesId })
         let fallbackRule = categoryQuotas.first(where: { $0.seriesId == seriesId })
 
-        guard let catId = activeEnvelope?.categoryId ?? fallbackRule?.categoryId else {
-            return nil
-        }
+        let isInvestment = (activeEnvelope?.quotaType ?? fallbackRule?.quotaType) == .investment
+        let linkedInvId = activeEnvelope?.linkedInvestmentId ?? fallbackRule?.linkedInvestmentId
 
-        let quotaName = activeEnvelope?.name ?? fallbackRule?.name ?? "Item de Cota"
+        let finalCatId: UUID = {
+            if isInvestment {
+                return fallbackCategoryId(for: .expense, matchingSubstring: "Aplicações")
+            }
+            if let catId = activeEnvelope?.categoryId ?? fallbackRule?.categoryId, category(for: catId) != nil {
+                return catId
+            }
+            return fallbackCategoryId(for: .expense)
+        }()
+
+        let quotaName = activeEnvelope?.name ?? fallbackRule?.name ?? (isInvestment ? "Aporte em Investimento" : "Item de Cota")
         let defaultUnitPrice = activeEnvelope?.estimatedUnitPrice ?? fallbackRule?.estimatedUnitPrice ?? 0.0
         let cleanUnits = max(1, units)
         let actualUnitPrice = max(0.0, unitPriceOverride ?? defaultUnitPrice)
         let totalAmount = Double(cleanUnits) * actualUnitPrice
 
-        // Se a data da transação pertence ao mês de referência (ou se monthReference não foi fixado em outro mês),
-        // usa a data atual (`transactionDate`); caso contrário, alinha ao mês de referência para manter consistência no extrato mensal.
         let effectiveDate: Date = {
             if isInMonth(transactionDate, monthReference: targetMonth) {
                 return transactionDate
@@ -4619,10 +4659,22 @@ public final class FinancialDataStore: ObservableObject {
             }
         }()
 
-        let txTitle = cleanUnits > 1 ? "\(quotaName) (\(cleanUnits) un.)" : quotaName
-        let txDetails = details.isEmpty
-            ? "Baixa de cota específica: \(cleanUnits) un. × \(BRLFormatters.currency(actualUnitPrice))"
-            : details
+        let txTitle: String = {
+            if isInvestment {
+                return "Aporte: \(quotaName)"
+            }
+            return cleanUnits > 1 ? "\(quotaName) (\(cleanUnits) un.)" : quotaName
+        }()
+
+        let txDetails: String = {
+            if !details.isEmpty { return details }
+            if isInvestment {
+                return "Aporte via planejamento de investimento: \(quotaName)"
+            }
+            return "Baixa de cota específica: \(cleanUnits) un. × \(BRLFormatters.currency(actualUnitPrice))"
+        }()
+
+        let txOrigin: TransactionOrigin = isInvestment ? .investmentDeposit : .standard
 
         let tx = FinancialTransaction(
             name: txTitle,
@@ -4631,15 +4683,34 @@ public final class FinancialDataStore: ObservableObject {
             date: effectiveDate,
             type: .expense,
             isPaid: true,
-            categoryId: catId,
+            categoryId: finalCatId,
             accountId: accountId,
             ignoreInConsolidated: false,
             recurrenceMode: .single,
+            linkedInvestmentId: isInvestment ? linkedInvId : nil,
             linkedQuotaId: seriesId,
             linkedQuotaUnits: cleanUnits,
-            linkedQuotaYearMonthKey: targetKey
+            linkedQuotaYearMonthKey: targetKey,
+            transactionOrigin: txOrigin,
+            linkedEntityID: isInvestment ? linkedInvId : nil
         )
         transactions.append(tx)
+
+        if isInvestment, let invId = linkedInvId, let idx = investments.firstIndex(where: { $0.id == invId }) {
+            investments[idx].balance += totalAmount
+            let movement = InvestmentMovement(
+                type: .deposit,
+                amount: totalAmount,
+                date: effectiveDate,
+                sourceAccountId: accountId,
+                investmentAccountId: investments[idx].investmentAccountId,
+                notes: txDetails,
+                generatedTransactionId: tx.id
+            )
+            investments[idx].movements.insert(movement, at: 0)
+            cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: invId, operation: .upsert, entity: investments[idx])
+        }
+
         save()
         cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: tx.id, operation: .upsert, entity: tx)
         return tx
