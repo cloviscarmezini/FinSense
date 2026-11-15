@@ -5128,4 +5128,176 @@ final class FinSenseTests: XCTestCase {
             XCTAssertEqual(pt.projectedDeposits, 0.0, "Anos anteriores ao atual não devem ter projeções futuras")
         }
     }
+
+    func testInvestmentInceptionTimelineStartingAtCreation() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let calendar = store.calendar
+        let targetYear = 2026
+
+        guard let oct2026 = calendar.date(from: DateComponents(year: targetYear, month: 10, day: 15)) else {
+            XCTFail("Failed to create date")
+            return
+        }
+
+        let bank = BankAccount(id: UUID(), name: "Banco Inter", initialBalance: 50000.0)
+        store.accounts = [bank]
+
+        // Caso 1: Investimento incluído em 10/26 com saldo inicial 0
+        let invZero = InvestmentItem(
+            id: UUID(),
+            name: "Fundo Zerado",
+            groupName: "Renda Variável",
+            investmentAccountId: bank.id,
+            balance: 0.0,
+            createdAt: oct2026
+        )
+        store.investments = [invZero]
+
+        let timelineZero = store.investmentTimeline(for: invZero.id, year: targetYear, period: .oneYear)
+        XCTAssertEqual(timelineZero.count, 12)
+        for pt in timelineZero {
+            XCTAssertEqual(pt.baseAccumulated, 0.0, "Saldo base deve ser 0 no mês \(pt.month)")
+            XCTAssertEqual(pt.deposits, 0.0)
+            XCTAssertEqual(pt.withdrawals, 0.0)
+            XCTAssertEqual(pt.projectedDeposits, 0.0)
+            XCTAssertEqual(pt.projectedWithdrawals, 0.0)
+            XCTAssertEqual(pt.endBalance, 0.0, "End balance deve ser 0 no mês \(pt.month)")
+        }
+
+        // Caso 2: Investimento incluído em 10/26 com saldo inicial de R$ 5.000,00
+        let invValue = InvestmentItem(
+            id: UUID(),
+            name: "Fundo com Saldo Inicial",
+            groupName: "Renda Fixa",
+            investmentAccountId: bank.id,
+            balance: 5000.0,
+            createdAt: oct2026
+        )
+        store.investments.append(invValue)
+
+        let timelineValue = store.investmentTimeline(for: invValue.id, year: targetYear, period: .oneYear)
+        XCTAssertEqual(timelineValue.count, 12)
+
+        // Meses anteriores a 10/26 (01..09) devem estar completamente vazios/zerados
+        for pt in timelineValue where pt.month < 10 {
+            XCTAssertEqual(pt.baseAccumulated, 0.0, "Mês anterior à criação (\(pt.month)) deve ter base zerada")
+            XCTAssertEqual(pt.deposits, 0.0)
+            XCTAssertEqual(pt.withdrawals, 0.0)
+            XCTAssertEqual(pt.projectedDeposits, 0.0)
+            XCTAssertEqual(pt.projectedWithdrawals, 0.0)
+            XCTAssertEqual(pt.endBalance, 0.0, "Mês anterior à criação (\(pt.month)) deve ter saldo final zerado")
+        }
+
+        // A partir do mês 10/26 em diante, mantém o mesmo tamanho (5000)
+        for pt in timelineValue where pt.month >= 10 {
+            XCTAssertEqual(pt.baseAccumulated, 5000.0, "A partir de 10/26 a base acumulada deve ser 5000 no mês \(pt.month)")
+            XCTAssertEqual(pt.endBalance, 5000.0, "A partir de 10/26 o saldo final deve se manter 5000 no mês \(pt.month)")
+        }
+
+        // Caso 3: Adição de cotas a partir de 11/26
+        guard let nov2026 = calendar.date(from: DateComponents(year: targetYear, month: 11, day: 1)) else {
+            XCTFail("Failed to create date")
+            return
+        }
+        _ = store.saveCategoryQuota(
+            categoryId: store.fallbackCategoryId(for: .expense, matchingSubstring: "Aplicações"),
+            name: "Cota Mensal Nov",
+            iconSymbol: "dollarsign.circle",
+            plannedQuantity: 1,
+            estimatedUnitPrice: 1000.0,
+            for: nov2026,
+            repeatForFutureMonths: true,
+            editScope: .thisAndFutureMonths,
+            quotaType: .investment,
+            linkedInvestmentId: invValue.id
+        )
+
+        let timelineWithQuota = store.investmentTimeline(for: invValue.id, year: targetYear, period: .oneYear)
+        // Mês 10 segue sem cota
+        let m10 = timelineWithQuota.first(where: { $0.month == 10 })!
+        XCTAssertEqual(m10.projectedDeposits, 0.0)
+        XCTAssertEqual(m10.endBalance, 5000.0)
+
+        // Meses 11 e 12 passam a plotar a cota a partir de novembro
+        let m11 = timelineWithQuota.first(where: { $0.month == 11 })!
+        if m11.isFuture || m11.isCurrent {
+            XCTAssertEqual(m11.projectedDeposits, 1000.0)
+        }
+    }
+
+    func testFutureInvestmentRedemptionPlanningAndConsolidatedRules() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let calendar = store.calendar
+        let today = calendar.startOfDay(for: Date())
+        let nextMonth = calendar.date(byAdding: .month, value: 1, to: today)!
+
+        let bank = BankAccount(id: UUID(), name: "Nubank", initialBalance: 20000.0)
+        let inv = InvestmentItem(
+            id: UUID(),
+            name: "Tesouro Selic",
+            groupName: "Renda Fixa",
+            investmentAccountId: bank.id,
+            balance: 10000.0,
+            showInConsolidated: false,
+            createdAt: calendar.date(byAdding: .month, value: -2, to: today)!
+        )
+        store.accounts = [bank]
+        store.investments = [inv]
+
+        // 1. Resgate futuro quando showInConsolidated == false:
+        // Não deve abater o saldo agora (é previsão)
+        // ignoreInConsolidated deve ser false (aparece no dashboard/transações da data marcada)
+        store.contributeToInvestment(
+            investmentId: inv.id,
+            amount: 2500.0,
+            sourceAccountId: bank.id,
+            investmentAccountId: inv.investmentAccountId,
+            date: nextMonth,
+            movementType: .withdrawal,
+            notes: "Previsão de reforma"
+        )
+
+        let currentInv = store.investments.first(where: { $0.id == inv.id })!
+        XCTAssertEqual(currentInv.balance, 10000.0, "Saldo acumulado não deve subtrair resgate futuro")
+
+        let futureTx = store.transactions.first(where: { $0.linkedInvestmentId == inv.id && $0.type == .income })!
+        XCTAssertFalse(futureTx.isPaid, "Transação futura não deve estar paga")
+        XCTAssertFalse(futureTx.ignoreInConsolidated, "Se showInConsolidated é false, transação futura NÃO deve ser ignorada no consolidado")
+
+        // 2. Timeline deve exibir o resgate previsto no mês futuro
+        let nextYear = calendar.component(.year, from: nextMonth)
+        let nextMonthNum = calendar.component(.month, from: nextMonth)
+        let timeline = store.investmentTimeline(for: inv.id, year: nextYear, period: .oneYear)
+        let nextMonthPoint = timeline.first(where: { $0.month == nextMonthNum })!
+        XCTAssertEqual(nextMonthPoint.projectedWithdrawals, 2500.0, "Mês futuro deve conter projectedWithdrawals")
+        XCTAssertEqual(nextMonthPoint.endBalance, 7500.0, "Saldo final no mês futuro deve subtrair a previsão de resgate")
+
+        // 3. Alternar showInConsolidated para true:
+        // Transação de resgate futuro deve passar a ser ignorada no consolidado para evitar duplicidade
+        store.toggleInvestmentConsolidated(inv.id)
+        let updatedInv = store.investments.first(where: { $0.id == inv.id })!
+        XCTAssertTrue(updatedInv.showInConsolidated)
+        let syncedTx = store.transactions.first(where: { $0.id == futureTx.id })!
+        XCTAssertTrue(syncedTx.ignoreInConsolidated, "Quando investimento é consolidado, resgate futuro deve ter ignoreInConsolidated = true")
+
+        // 4. Alternar de volta para false:
+        store.toggleInvestmentConsolidated(inv.id)
+        let revertedTx = store.transactions.first(where: { $0.id == futureTx.id })!
+        XCTAssertFalse(revertedTx.ignoreInConsolidated, "Quando investimento sai do consolidado, resgate futuro passa a exibir")
+
+        // 5. Excluir a transação de resgate futuro:
+        // O saldo do investimento NÃO deve ser somado novamente
+        store.deleteTransaction(futureTx.id)
+        let finalInv = store.investments.first(where: { $0.id == inv.id })!
+        XCTAssertEqual(finalInv.balance, 10000.0, "Deletar resgate futuro não pago não deve alterar o saldo")
+        XCTAssertEqual(finalInv.movements.count, 0)
+    }
 }

@@ -674,7 +674,9 @@ public struct InvestmentDetailView: View {
 
         let futureProjections = timeline.filter(\.isFuture).reduce(0.0) { $0 + $1.projectedDeposits }
             + (timeline.first(where: \.isCurrent)?.projectedDeposits ?? 0.0)
-        let forecastEndBalance = timeline.last?.endBalance ?? (inv.balance + futureProjections)
+        let futureWithdrawals = timeline.filter(\.isFuture).reduce(0.0) { $0 + $1.projectedWithdrawals }
+            + (timeline.first(where: \.isCurrent)?.projectedWithdrawals ?? 0.0)
+        let forecastEndBalance = timeline.last?.endBalance ?? max(0, inv.balance + futureProjections - futureWithdrawals)
 
         let linkedQuotaRules = store.categoryQuotas.filter {
             $0.quotaType == .investment && $0.linkedInvestmentId == inv.id
@@ -881,8 +883,10 @@ public struct InvestmentDetailView: View {
 
                                 MetricCardView(
                                     title: "Projeção Futura",
-                                    value: BRLFormatters.currency(futureProjections),
-                                    subtitle: "Aportes planejados no período",
+                                    value: BRLFormatters.currency(futureProjections - futureWithdrawals),
+                                    subtitle: futureWithdrawals > 0
+                                        ? "Aportes: \(BRLFormatters.currency(futureProjections)) | Resgates: \(BRLFormatters.currency(futureWithdrawals))"
+                                        : "Aportes planejados no período",
                                     icon: "chart.line.uptrend.xyaxis",
                                     tint: Color(hex: "#6366F1")
                                 )
@@ -945,12 +949,8 @@ public struct InvestmentDetailView: View {
                             }
                             Spacer()
 
-                            // Legenda com Acumulado, Aportes, Projeção, Resgate
+                            // Legenda com Aportes, Projeção, Resgate, Acumulado
                             HStack(spacing: 14) {
-                                HStack(spacing: 6) {
-                                    Circle().fill(Color(hex: "#3B82F6")).frame(width: 9, height: 9)
-                                    Text("Acumulado").font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                                }
                                 HStack(spacing: 6) {
                                     Circle().fill(Color(hex: "#10B981")).frame(width: 9, height: 9)
                                     Text("Aportes").font(.caption.weight(.medium)).foregroundStyle(.secondary)
@@ -965,11 +965,15 @@ public struct InvestmentDetailView: View {
                                     Circle().fill(Color(hex: "#EF4444")).frame(width: 9, height: 9)
                                     Text("Resgate").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                                 }
+                                HStack(spacing: 6) {
+                                    Circle().fill(Color(hex: "#3B82F6")).frame(width: 9, height: 9)
+                                    Text("Acumulado").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                                }
                             }
                         }
 
                         let hasAnyData = timeline.contains {
-                            $0.baseAccumulated > 0 || $0.deposits > 0 || $0.withdrawals > 0 || $0.projectedDeposits > 0
+                            $0.baseAccumulated > 0 || $0.deposits > 0 || $0.withdrawals > 0 || $0.projectedDeposits > 0 || $0.projectedWithdrawals > 0
                         }
 
                         if hasAnyData {
@@ -1011,7 +1015,7 @@ public struct InvestmentDetailView: View {
                                         .cornerRadius(4)
                                     }
 
-                                    // 4. Resgates (Barra ao lado se houver resgate no mês)
+                                    // 4. Resgates Realizados (Barra ao lado se houver resgate no mês)
                                     if pt.withdrawals > 0 {
                                         BarMark(
                                             x: .value("Mês", pt.shortLabel),
@@ -1019,6 +1023,18 @@ public struct InvestmentDetailView: View {
                                             yEnd: .value("Valor", pt.withdrawals)
                                         )
                                         .foregroundStyle(Color(hex: "#EF4444"))
+                                        .position(by: .value("Grupo", "Resgates"))
+                                        .cornerRadius(4)
+                                    }
+
+                                    // 5. Resgates Previstos Futuros
+                                    if pt.projectedWithdrawals > 0 {
+                                        BarMark(
+                                            x: .value("Mês", pt.shortLabel),
+                                            yStart: .value("Base", 0),
+                                            yEnd: .value("Valor", pt.projectedWithdrawals)
+                                        )
+                                        .foregroundStyle(Color(hex: "#EF4444").opacity(0.65))
                                         .position(by: .value("Grupo", "Resgates"))
                                         .cornerRadius(4)
                                     }

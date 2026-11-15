@@ -803,6 +803,7 @@ public struct InvestmentMonthlyMovementPoint: Identifiable, Hashable {
     public let deposits: Double     // Entradas / Aportes efetuados no mês
     public let withdrawals: Double  // Saídas / Resgates efetuados no mês
     public let projectedDeposits: Double // Projeção de aportes com base nas cotas planejadas
+    public let projectedWithdrawals: Double // Projeção de resgates futuros planejados
     public let netMovement: Double
     public let baseAccumulated: Double   // Base acumulada antes dos aportes deste mês
     public let endBalance: Double        // Saldo acumulado final ao fim do mês
@@ -820,6 +821,7 @@ public struct InvestmentMonthlyMovementPoint: Identifiable, Hashable {
         deposits: Double,
         withdrawals: Double,
         projectedDeposits: Double,
+        projectedWithdrawals: Double = 0.0,
         baseAccumulated: Double = 0.0,
         endBalance: Double = 0.0
     ) {
@@ -835,9 +837,10 @@ public struct InvestmentMonthlyMovementPoint: Identifiable, Hashable {
         self.deposits = deposits
         self.withdrawals = withdrawals
         self.projectedDeposits = projectedDeposits
-        self.netMovement = deposits - withdrawals + (isFuture ? projectedDeposits : 0.0)
+        self.projectedWithdrawals = projectedWithdrawals
+        self.netMovement = deposits - withdrawals + (isFuture || isCurrent ? (projectedDeposits - projectedWithdrawals) : 0.0)
         self.baseAccumulated = max(0.0, baseAccumulated)
-        let resolvedEnd = endBalance > 0 ? endBalance : (baseAccumulated + deposits + (isFuture || isCurrent ? projectedDeposits : 0.0))
+        let resolvedEnd = endBalance > 0 ? endBalance : (baseAccumulated + deposits - withdrawals + (isFuture || isCurrent ? (projectedDeposits - projectedWithdrawals) : 0.0))
         self.endBalance = max(0.0, resolvedEnd)
     }
 }

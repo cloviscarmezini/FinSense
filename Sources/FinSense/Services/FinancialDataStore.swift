@@ -2547,19 +2547,23 @@ public final class FinancialDataStore: ObservableObject {
 
         switch origin {
         case .investmentDeposit:
-            // Se deletou um aporte (Adição): localiza o investimento e subtrai o valor do saldo
+            // Se deletou um aporte (Adição): localiza o investimento e subtrai o valor do saldo caso tenha sido realizado
             if let invId = entityId ?? tx.linkedInvestmentId,
                let idx = investments.firstIndex(where: { $0.id == invId }) {
-                investments[idx].balance = max(0.0, investments[idx].balance - tx.amount)
+                if tx.isPaid {
+                    investments[idx].balance = max(0.0, investments[idx].balance - tx.amount)
+                }
                 investments[idx].movements.removeAll { $0.generatedTransactionId == tx.id }
                 cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: invId, operation: .upsert, entity: investments[idx])
             }
 
         case .investmentRedemption:
-            // Se deletou um resgate: localiza o investimento e devolve (soma) o valor de volta ao saldo
+            // Se deletou um resgate: devolve (soma) o valor de volta ao saldo apenas se já havia sido debitado (realizado)
             if let invId = entityId ?? tx.linkedInvestmentId,
                let idx = investments.firstIndex(where: { $0.id == invId }) {
-                investments[idx].balance += tx.amount
+                if tx.isPaid {
+                    investments[idx].balance += tx.amount
+                }
                 investments[idx].movements.removeAll { $0.generatedTransactionId == tx.id }
                 cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: invId, operation: .upsert, entity: investments[idx])
             }
@@ -3031,6 +3035,21 @@ public final class FinancialDataStore: ObservableObject {
     public func toggleInvestmentConsolidated(_ investmentId: UUID) {
         if let idx = investments.firstIndex(where: { $0.id == investmentId }) {
             investments[idx].showInConsolidated.toggle()
+            let isConsolidated = investments[idx].showInConsolidated
+            let today = calendar.startOfDay(for: Date())
+
+            // Sincroniza transações previstas de resgate futuro:
+            // Se o investimento agora está no consolidado, marcação (ignoreInConsolidated = true) para evitar duplicidade.
+            // Se agora não está no consolidado, passa a ser exibido nos dashboards e transações (ignoreInConsolidated = false).
+            for txIdx in transactions.indices {
+                if transactions[txIdx].linkedInvestmentId == investmentId,
+                   transactions[txIdx].transactionOrigin == .investmentRedemption,
+                   calendar.startOfDay(for: transactions[txIdx].date) > today {
+                    transactions[txIdx].ignoreInConsolidated = isConsolidated
+                    cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: transactions[txIdx].id, operation: .upsert, entity: transactions[txIdx])
+                }
+            }
+
             save()
             cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: investmentId, operation: .upsert, entity: investments[idx])
         }
@@ -3065,6 +3084,10 @@ public final class FinancialDataStore: ObservableObject {
         let sourceAccountName = account(for: sourceAccountId)?.name ?? "Conta"
         let destAccountName = account(for: investmentAccountId)?.name ?? "Conta Investimento"
 
+        let today = calendar.startOfDay(for: Date())
+        let movementDay = calendar.startOfDay(for: date)
+        let isFuture = movementDay > today
+
         let txType: TransactionType = movementType == .deposit ? .expense : .income
         let categoryId: UUID = {
             if movementType == .deposit {
@@ -3074,12 +3097,31 @@ public final class FinancialDataStore: ObservableObject {
             }
         }()
 
-        let txTitle = movementType == .deposit
-            ? "Aporte: \(investmentName) (\(groupName))"
-            : "Resgate: \(investmentName) (\(groupName))"
-        let txDetails = movementType == .deposit
-            ? "Saída de \(sourceAccountName) para investimento em \(destAccountName). \(notes)"
-            : "Resgate de \(destAccountName) para \(sourceAccountName). \(notes)"
+        let txTitle: String
+        let txDetails: String
+        if movementType == .deposit {
+            txTitle = isFuture
+                ? "Aporte Previsto: \(investmentName) (\(groupName))"
+                : "Aporte: \(investmentName) (\(groupName))"
+            txDetails = "Saída de \(sourceAccountName) para investimento em \(destAccountName). \(notes)"
+        } else {
+            txTitle = isFuture
+                ? "Resgate Previsto: \(investmentName) (\(groupName))"
+                : "Resgate: \(investmentName) (\(groupName))"
+            txDetails = "Resgate de \(destAccountName) para \(sourceAccountName). \(notes)"
+        }
+
+        // Regra de transações para resgate futuro:
+        // Se o card não estiver marcado para exibir no consolidado (!showInConsolidated),
+        // o valor previsto de saque passa a ser exibido nos dashboards e transações na data marcada (ignoreInConsolidated = false).
+        // Se estiver marcado no consolidado (showInConsolidated == true), aparece apenas a transação como marcação
+        // (ignoreInConsolidated = true) para evitar duplicidade com o saldo do investimento.
+        let ignoreInConsolidated: Bool = {
+            if movementType == .withdrawal && isFuture {
+                return investments[idx].showInConsolidated
+            }
+            return false
+        }()
 
         let tx = FinancialTransaction(
             name: txTitle,
@@ -3087,10 +3129,10 @@ public final class FinancialDataStore: ObservableObject {
             amount: cleanAmount,
             date: date,
             type: txType,
-            isPaid: true,
+            isPaid: !isFuture,
             categoryId: categoryId,
             accountId: sourceAccountId,
-            ignoreInConsolidated: false,
+            ignoreInConsolidated: ignoreInConsolidated,
             recurrenceMode: .single,
             linkedInvestmentId: investmentId,
             transactionOrigin: movementType == .deposit ? .investmentDeposit : .investmentRedemption,
@@ -3098,10 +3140,13 @@ public final class FinancialDataStore: ObservableObject {
         )
         transactions.append(tx)
 
-        if movementType == .deposit {
-            investments[idx].balance += cleanAmount
-        } else {
-            investments[idx].balance = max(0, investments[idx].balance - cleanAmount)
+        // No card principal segue o mesmo saldo acumulado se for previsão/futuro
+        if !isFuture {
+            if movementType == .deposit {
+                investments[idx].balance += cleanAmount
+            } else {
+                investments[idx].balance = max(0, investments[idx].balance - cleanAmount)
+            }
         }
 
         let movement = InvestmentMovement(
@@ -3117,6 +3162,8 @@ public final class FinancialDataStore: ObservableObject {
 
         sortTransactions()
         save()
+        cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: investmentId, operation: .upsert, entity: investments[idx])
+        cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: tx.id, operation: .upsert, entity: tx)
     }
 
     public func recordInvestmentMovement(
@@ -3176,10 +3223,14 @@ public final class FinancialDataStore: ObservableObject {
                 investments[currentIdx].movements.removeAll(where: { $0.id == movementId || $0.generatedTransactionId == txId })
             }
         } else if let mov = movement {
-            if mov.type == .deposit {
-                investments[invIdx].balance = max(0.0, investments[invIdx].balance - mov.amount)
-            } else {
-                investments[invIdx].balance += mov.amount
+            let today = calendar.startOfDay(for: Date())
+            let isPastOrToday = calendar.startOfDay(for: mov.date) <= today
+            if isPastOrToday {
+                if mov.type == .deposit {
+                    investments[invIdx].balance = max(0.0, investments[invIdx].balance - mov.amount)
+                } else {
+                    investments[invIdx].balance += mov.amount
+                }
             }
             investments[invIdx].movements.removeAll(where: { $0.id == movementId })
             save()
@@ -3194,6 +3245,7 @@ public final class FinancialDataStore: ObservableObject {
     ) -> [InvestmentMonthlyMovementPoint] {
         guard let inv = investments.first(where: { $0.id == investmentId }) else { return [] }
         let now = Date()
+        let today = calendar.startOfDay(for: now)
         let currentYear = calendar.component(.year, from: now)
         let currentMonth = calendar.component(.month, from: now)
         guard let currentMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) else {
@@ -3210,130 +3262,121 @@ public final class FinancialDataStore: ObservableObject {
         ymDf.locale = Locale(identifier: "pt_BR")
         ymDf.dateFormat = "MMM/yy"
 
-        var rawMonthlyData: [(month: Int, monthStart: Date, monthEnd: Date, isPast: Bool, isCurrent: Bool, isFuture: Bool, deposits: Double, withdrawals: Double, projected: Double)] = []
+        // 1. Data em que o investimento foi iniciado/incluído
+        let startRefDate = ([inv.createdAt] + allMovs.map(\.date)).min() ?? inv.createdAt
+        let startYear = calendar.component(.year, from: startRefDate)
+        let startMonth = calendar.component(.month, from: startRefDate)
 
-        for m in 1...12 {
-            guard let monthStart = calendar.date(from: DateComponents(year: year, month: m, day: 1)),
-                  let monthEnd = calendar.date(byAdding: DateComponents(month: 1, second: -1), to: monthStart) else {
-                continue
-            }
+        // 2. Saldo inicial do investimento na sua criação:
+        // Estorna do saldo atual todos os aportes e resgates já realizados (data <= hoje)
+        let pastRealizedDeposits = allMovs
+            .filter { $0.type == .deposit && calendar.startOfDay(for: $0.date) <= today }
+            .reduce(0.0) { $0 + $1.amount }
+        let pastRealizedWithdrawals = allMovs
+            .filter { $0.type == .withdrawal && calendar.startOfDay(for: $0.date) <= today }
+            .reduce(0.0) { $0 + $1.amount }
+        let initialBalanceAtStart = max(0.0, inv.balance - pastRealizedDeposits + pastRealizedWithdrawals)
 
-            let isPast = monthStart < currentMonthStart
-            let isCurrent = calendar.isDate(monthStart, equalTo: currentMonthStart, toGranularity: .month)
-            let isFuture = monthStart > currentMonthStart
+        // 3. Simulação cronológica mês a mês a partir do início do investimento
+        // Para qualquer mês antes de (startYear, startMonth), o saldo e movimentações são ZERO (gráfico vazio).
+        var monthlyState: [String: (base: Double, dep: Double, with: Double, projDep: Double, projWith: Double, end: Double)] = [:]
+        var runningBalance = initialBalanceAtStart
 
-            var deposits: Double = 0.0
-            var withdrawals: Double = 0.0
-            var projected: Double = 0.0
-
-            if isPast || isCurrent {
-                for mov in allMovs where isInMonth(mov.date, monthReference: monthStart) {
-                    if mov.type == .deposit {
-                        deposits += mov.amount
-                    } else {
-                        withdrawals += mov.amount
-                    }
-                }
-            }
-
-            if year >= currentYear {
-                let envelopes = allQuotaEnvelopes(for: monthStart).filter { env in
-                    env.rule.quotaType == .investment && env.rule.linkedInvestmentId == investmentId
-                }
-                if isFuture {
-                    projected = envelopes.reduce(0.0) { $0 + $1.totalEstimatedAmount }
-                } else if isCurrent {
-                    projected = envelopes.reduce(0.0) { $0 + max(0.0, $1.remainingProvision) }
-                }
-            } else {
-                projected = 0.0
-            }
-
-            rawMonthlyData.append((m, monthStart, monthEnd, isPast, isCurrent, isFuture, deposits, withdrawals, projected))
-        }
-
-        var monthEndBalances = [Int: Double]()
-        var monthBaseAccumulated = [Int: Double]()
-
-        if year == currentYear {
-            let currentDep = rawMonthlyData.first(where: { $0.month == currentMonth })?.deposits ?? 0.0
-            let currentWith = rawMonthlyData.first(where: { $0.month == currentMonth })?.withdrawals ?? 0.0
-            let currentProj = rawMonthlyData.first(where: { $0.month == currentMonth })?.projected ?? 0.0
-
-            let startOfCurrentMonthBalance = max(0.0, inv.balance - currentDep + currentWith)
-            monthBaseAccumulated[currentMonth] = startOfCurrentMonthBalance
-            let endOfCurrent = inv.balance + currentProj
-            monthEndBalances[currentMonth] = endOfCurrent
-
-            var runningEnd = startOfCurrentMonthBalance
-            for m in stride(from: currentMonth - 1, through: 1, by: -1) {
-                guard let data = rawMonthlyData.first(where: { $0.month == m }) else { continue }
-                monthEndBalances[m] = max(0.0, runningEnd)
-                let base = max(0.0, runningEnd - data.deposits)
-                monthBaseAccumulated[m] = base
-                runningEnd = base + data.withdrawals
-            }
-
-            var runningFuture = endOfCurrent
-            for m in (currentMonth + 1)...12 {
-                guard let data = rawMonthlyData.first(where: { $0.month == m }) else { continue }
-                monthBaseAccumulated[m] = runningFuture
-                runningFuture += data.projected
-                monthEndBalances[m] = runningFuture
-            }
-        } else if year < currentYear {
-            var running = inv.balance
-            if let yearEndDate = calendar.date(from: DateComponents(year: year, month: 12, day: 31, hour: 23, minute: 59, second: 59)) {
-                let laterMovs = allMovs.filter { $0.date > yearEndDate }
-                for mov in laterMovs {
-                    if mov.type == .deposit {
-                        running = max(0.0, running - mov.amount)
-                    } else {
-                        running += mov.amount
-                    }
-                }
-            }
-
-            for m in stride(from: 12, through: 1, by: -1) {
-                guard let data = rawMonthlyData.first(where: { $0.month == m }) else { continue }
-                monthEndBalances[m] = max(0.0, running)
-                let base = max(0.0, running - data.deposits)
-                monthBaseAccumulated[m] = base
-                running = base + data.withdrawals
-            }
-        } else {
-            var baseAtStartOfYear = inv.balance
-            for y in currentYear..<year {
+        let maxSimYear = max(year, currentYear)
+        if startYear <= maxSimYear {
+            for y in startYear...maxSimYear {
                 for m in 1...12 {
-                    if y == currentYear && m < currentMonth { continue }
-                    guard let mDate = calendar.date(from: DateComponents(year: y, month: m, day: 1)) else { continue }
-                    let envs = allQuotaEnvelopes(for: mDate).filter { $0.rule.quotaType == .investment && $0.rule.linkedInvestmentId == investmentId }
-                    if y == currentYear && m == currentMonth {
-                        baseAtStartOfYear += envs.reduce(0.0) { $0 + max(0.0, $1.remainingProvision) }
+                    let ymKey = String(format: "%04d-%02d", y, m)
+                    guard let monthStart = calendar.date(from: DateComponents(year: y, month: m, day: 1)) else { continue }
+
+                    // Se o mês for anterior à inclusão do investimento, tudo é 0
+                    if y < startYear || (y == startYear && m < startMonth) {
+                        monthlyState[ymKey] = (base: 0.0, dep: 0.0, with: 0.0, projDep: 0.0, projWith: 0.0, end: 0.0)
+                        continue
+                    }
+
+                    let isPast = (y < currentYear) || (y == currentYear && m < currentMonth)
+                    let isCurrent = (y == currentYear && m == currentMonth)
+
+                    var monthDeposits: Double = 0.0
+                    var monthWithdrawals: Double = 0.0
+                    var monthProjDeposits: Double = 0.0
+                    var monthProjWithdrawals: Double = 0.0
+
+                    if isPast {
+                        for mov in allMovs where isInMonth(mov.date, monthReference: monthStart) {
+                            if mov.type == .deposit {
+                                monthDeposits += mov.amount
+                            } else {
+                                monthWithdrawals += mov.amount
+                            }
+                        }
+                        let base = runningBalance
+                        let end = max(0.0, base + monthDeposits - monthWithdrawals)
+                        runningBalance = end
+                        monthlyState[ymKey] = (base: base, dep: monthDeposits, with: monthWithdrawals, projDep: 0.0, projWith: 0.0, end: end)
+                    } else if isCurrent {
+                        for mov in allMovs where isInMonth(mov.date, monthReference: monthStart) {
+                            if calendar.startOfDay(for: mov.date) <= today {
+                                if mov.type == .deposit {
+                                    monthDeposits += mov.amount
+                                } else {
+                                    monthWithdrawals += mov.amount
+                                }
+                            } else {
+                                // Movimentação futura dentro do mês atual
+                                if mov.type == .deposit {
+                                    monthProjDeposits += mov.amount
+                                } else {
+                                    monthProjWithdrawals += mov.amount
+                                }
+                            }
+                        }
+                        let envelopes = allQuotaEnvelopes(for: monthStart).filter {
+                            $0.rule.quotaType == .investment && $0.rule.linkedInvestmentId == investmentId
+                        }
+                        monthProjDeposits += envelopes.reduce(0.0) { $0 + max(0.0, $1.remainingProvision) }
+
+                        let base = runningBalance
+                        let realizedEnd = max(0.0, base + monthDeposits - monthWithdrawals)
+                        let end = max(0.0, realizedEnd + monthProjDeposits - monthProjWithdrawals)
+                        runningBalance = end
+                        monthlyState[ymKey] = (base: base, dep: monthDeposits, with: monthWithdrawals, projDep: monthProjDeposits, projWith: monthProjWithdrawals, end: end)
                     } else {
-                        baseAtStartOfYear += envs.reduce(0.0) { $0 + $1.totalEstimatedAmount }
+                        // Futuro
+                        for mov in allMovs where isInMonth(mov.date, monthReference: monthStart) {
+                            if mov.type == .deposit {
+                                monthProjDeposits += mov.amount
+                            } else {
+                                monthProjWithdrawals += mov.amount
+                            }
+                        }
+                        let envelopes = allQuotaEnvelopes(for: monthStart).filter {
+                            $0.rule.quotaType == .investment && $0.rule.linkedInvestmentId == investmentId
+                        }
+                        monthProjDeposits += envelopes.reduce(0.0) { $0 + $1.totalEstimatedAmount }
+
+                        let base = runningBalance
+                        let end = max(0.0, base + monthProjDeposits - monthProjWithdrawals)
+                        runningBalance = end
+                        monthlyState[ymKey] = (base: base, dep: 0.0, with: 0.0, projDep: monthProjDeposits, projWith: monthProjWithdrawals, end: end)
                     }
                 }
-            }
-
-            var running = baseAtStartOfYear
-            for m in 1...12 {
-                guard let data = rawMonthlyData.first(where: { $0.month == m }) else { continue }
-                monthBaseAccumulated[m] = running
-                running += data.projected
-                monthEndBalances[m] = running
             }
         }
 
         var allPoints: [InvestmentMonthlyMovementPoint] = []
-        for data in rawMonthlyData {
-            let m = data.month
+        for m in 1...12 {
+            guard let monthStart = calendar.date(from: DateComponents(year: year, month: m, day: 1)) else { continue }
             let ymKey = String(format: "%04d-%02d", year, m)
-            let shortLabel = shortMonthDf.string(from: data.monthStart).capitalized.replacingOccurrences(of: ".", with: "")
-            let label = ymDf.string(from: data.monthStart).capitalized.replacingOccurrences(of: ".", with: "")
+            let shortLabel = shortMonthDf.string(from: monthStart).capitalized.replacingOccurrences(of: ".", with: "")
+            let label = ymDf.string(from: monthStart).capitalized.replacingOccurrences(of: ".", with: "")
 
-            let baseAcc = monthBaseAccumulated[m] ?? 0.0
-            let endBal = monthEndBalances[m] ?? (baseAcc + data.deposits + data.projected)
+            let state = monthlyState[ymKey] ?? (base: 0.0, dep: 0.0, with: 0.0, projDep: 0.0, projWith: 0.0, end: 0.0)
+
+            let isPast = monthStart < currentMonthStart
+            let isCurrent = calendar.isDate(monthStart, equalTo: currentMonthStart, toGranularity: .month)
+            let isFuture = monthStart > currentMonthStart
 
             allPoints.append(
                 InvestmentMonthlyMovementPoint(
@@ -3342,15 +3385,16 @@ public final class FinancialDataStore: ObservableObject {
                     month: m,
                     label: label,
                     shortLabel: shortLabel,
-                    date: data.monthStart,
-                    isPast: data.isPast,
-                    isCurrent: data.isCurrent,
-                    isFuture: data.isFuture,
-                    deposits: data.deposits,
-                    withdrawals: data.withdrawals,
-                    projectedDeposits: data.projected,
-                    baseAccumulated: baseAcc,
-                    endBalance: endBal
+                    date: monthStart,
+                    isPast: isPast,
+                    isCurrent: isCurrent,
+                    isFuture: isFuture,
+                    deposits: state.dep,
+                    withdrawals: state.with,
+                    projectedDeposits: state.projDep,
+                    projectedWithdrawals: state.projWith,
+                    baseAccumulated: state.base,
+                    endBalance: state.end
                 )
             )
         }
