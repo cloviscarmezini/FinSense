@@ -3187,6 +3187,192 @@ public final class FinancialDataStore: ObservableObject {
         }
     }
 
+    public func investmentTimeline(
+        for investmentId: UUID,
+        year: Int,
+        period: InvestmentPeriodFilter = .oneYear
+    ) -> [InvestmentMonthlyMovementPoint] {
+        guard let inv = investments.first(where: { $0.id == investmentId }) else { return [] }
+        let now = Date()
+        let currentYear = calendar.component(.year, from: now)
+        let currentMonth = calendar.component(.month, from: now)
+        guard let currentMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) else {
+            return []
+        }
+
+        let allMovs = investmentMovements(for: investmentId)
+
+        let shortMonthDf = DateFormatter()
+        shortMonthDf.locale = Locale(identifier: "pt_BR")
+        shortMonthDf.dateFormat = "MMM"
+
+        let ymDf = DateFormatter()
+        ymDf.locale = Locale(identifier: "pt_BR")
+        ymDf.dateFormat = "MMM/yy"
+
+        var rawMonthlyData: [(month: Int, monthStart: Date, monthEnd: Date, isPast: Bool, isCurrent: Bool, isFuture: Bool, deposits: Double, withdrawals: Double, projected: Double)] = []
+
+        for m in 1...12 {
+            guard let monthStart = calendar.date(from: DateComponents(year: year, month: m, day: 1)),
+                  let monthEnd = calendar.date(byAdding: DateComponents(month: 1, second: -1), to: monthStart) else {
+                continue
+            }
+
+            let isPast = monthStart < currentMonthStart
+            let isCurrent = calendar.isDate(monthStart, equalTo: currentMonthStart, toGranularity: .month)
+            let isFuture = monthStart > currentMonthStart
+
+            var deposits: Double = 0.0
+            var withdrawals: Double = 0.0
+            var projected: Double = 0.0
+
+            if isPast || isCurrent {
+                for mov in allMovs where isInMonth(mov.date, monthReference: monthStart) {
+                    if mov.type == .deposit {
+                        deposits += mov.amount
+                    } else {
+                        withdrawals += mov.amount
+                    }
+                }
+            }
+
+            if year >= currentYear {
+                let envelopes = allQuotaEnvelopes(for: monthStart).filter { env in
+                    env.rule.quotaType == .investment && env.rule.linkedInvestmentId == investmentId
+                }
+                if isFuture {
+                    projected = envelopes.reduce(0.0) { $0 + $1.totalEstimatedAmount }
+                } else if isCurrent {
+                    projected = envelopes.reduce(0.0) { $0 + max(0.0, $1.remainingProvision) }
+                }
+            } else {
+                projected = 0.0
+            }
+
+            rawMonthlyData.append((m, monthStart, monthEnd, isPast, isCurrent, isFuture, deposits, withdrawals, projected))
+        }
+
+        var monthEndBalances = [Int: Double]()
+        var monthBaseAccumulated = [Int: Double]()
+
+        if year == currentYear {
+            let currentDep = rawMonthlyData.first(where: { $0.month == currentMonth })?.deposits ?? 0.0
+            let currentWith = rawMonthlyData.first(where: { $0.month == currentMonth })?.withdrawals ?? 0.0
+            let currentProj = rawMonthlyData.first(where: { $0.month == currentMonth })?.projected ?? 0.0
+
+            let startOfCurrentMonthBalance = max(0.0, inv.balance - currentDep + currentWith)
+            monthBaseAccumulated[currentMonth] = startOfCurrentMonthBalance
+            let endOfCurrent = inv.balance + currentProj
+            monthEndBalances[currentMonth] = endOfCurrent
+
+            var runningEnd = startOfCurrentMonthBalance
+            for m in stride(from: currentMonth - 1, through: 1, by: -1) {
+                guard let data = rawMonthlyData.first(where: { $0.month == m }) else { continue }
+                monthEndBalances[m] = max(0.0, runningEnd)
+                let base = max(0.0, runningEnd - data.deposits)
+                monthBaseAccumulated[m] = base
+                runningEnd = base + data.withdrawals
+            }
+
+            var runningFuture = endOfCurrent
+            for m in (currentMonth + 1)...12 {
+                guard let data = rawMonthlyData.first(where: { $0.month == m }) else { continue }
+                monthBaseAccumulated[m] = runningFuture
+                runningFuture += data.projected
+                monthEndBalances[m] = runningFuture
+            }
+        } else if year < currentYear {
+            var running = inv.balance
+            if let yearEndDate = calendar.date(from: DateComponents(year: year, month: 12, day: 31, hour: 23, minute: 59, second: 59)) {
+                let laterMovs = allMovs.filter { $0.date > yearEndDate }
+                for mov in laterMovs {
+                    if mov.type == .deposit {
+                        running = max(0.0, running - mov.amount)
+                    } else {
+                        running += mov.amount
+                    }
+                }
+            }
+
+            for m in stride(from: 12, through: 1, by: -1) {
+                guard let data = rawMonthlyData.first(where: { $0.month == m }) else { continue }
+                monthEndBalances[m] = max(0.0, running)
+                let base = max(0.0, running - data.deposits)
+                monthBaseAccumulated[m] = base
+                running = base + data.withdrawals
+            }
+        } else {
+            var baseAtStartOfYear = inv.balance
+            for y in currentYear..<year {
+                for m in 1...12 {
+                    if y == currentYear && m < currentMonth { continue }
+                    guard let mDate = calendar.date(from: DateComponents(year: y, month: m, day: 1)) else { continue }
+                    let envs = allQuotaEnvelopes(for: mDate).filter { $0.rule.quotaType == .investment && $0.rule.linkedInvestmentId == investmentId }
+                    if y == currentYear && m == currentMonth {
+                        baseAtStartOfYear += envs.reduce(0.0) { $0 + max(0.0, $1.remainingProvision) }
+                    } else {
+                        baseAtStartOfYear += envs.reduce(0.0) { $0 + $1.totalEstimatedAmount }
+                    }
+                }
+            }
+
+            var running = baseAtStartOfYear
+            for m in 1...12 {
+                guard let data = rawMonthlyData.first(where: { $0.month == m }) else { continue }
+                monthBaseAccumulated[m] = running
+                running += data.projected
+                monthEndBalances[m] = running
+            }
+        }
+
+        var allPoints: [InvestmentMonthlyMovementPoint] = []
+        for data in rawMonthlyData {
+            let m = data.month
+            let ymKey = String(format: "%04d-%02d", year, m)
+            let shortLabel = shortMonthDf.string(from: data.monthStart).capitalized.replacingOccurrences(of: ".", with: "")
+            let label = ymDf.string(from: data.monthStart).capitalized.replacingOccurrences(of: ".", with: "")
+
+            let baseAcc = monthBaseAccumulated[m] ?? 0.0
+            let endBal = monthEndBalances[m] ?? (baseAcc + data.deposits + data.projected)
+
+            allPoints.append(
+                InvestmentMonthlyMovementPoint(
+                    yearMonthKey: ymKey,
+                    year: year,
+                    month: m,
+                    label: label,
+                    shortLabel: shortLabel,
+                    date: data.monthStart,
+                    isPast: data.isPast,
+                    isCurrent: data.isCurrent,
+                    isFuture: data.isFuture,
+                    deposits: data.deposits,
+                    withdrawals: data.withdrawals,
+                    projectedDeposits: data.projected,
+                    baseAccumulated: baseAcc,
+                    endBalance: endBal
+                )
+            )
+        }
+
+        switch period {
+        case .oneYear:
+            return allPoints
+        case .sixMonths:
+            if year <= currentYear {
+                return Array(allPoints.suffix(6))
+            } else {
+                return Array(allPoints.prefix(6))
+            }
+        case .threeMonths:
+            if year <= currentYear {
+                return Array(allPoints.suffix(3))
+            } else {
+                return Array(allPoints.prefix(3))
+            }
+        }
+    }
+
     public func investmentMovementTimeline(
         for investmentId: UUID,
         referenceDate: Date? = nil,

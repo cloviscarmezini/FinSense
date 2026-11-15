@@ -780,6 +780,15 @@ public struct InvestmentItem: Identifiable, Codable, Hashable {
     }
 }
 
+public enum InvestmentPeriodFilter: String, CaseIterable, Identifiable {
+    case threeMonths = "3 meses"
+    case sixMonths = "6 meses"
+    case oneYear = "1 ano"
+
+    public var id: String { rawValue }
+    public var title: String { rawValue }
+}
+
 public struct InvestmentMonthlyMovementPoint: Identifiable, Hashable {
     public var id: String { yearMonthKey }
     public let yearMonthKey: String // "2026-11"
@@ -795,6 +804,8 @@ public struct InvestmentMonthlyMovementPoint: Identifiable, Hashable {
     public let withdrawals: Double  // Saídas / Resgates efetuados no mês
     public let projectedDeposits: Double // Projeção de aportes com base nas cotas planejadas
     public let netMovement: Double
+    public let baseAccumulated: Double   // Base acumulada antes dos aportes deste mês
+    public let endBalance: Double        // Saldo acumulado final ao fim do mês
 
     public init(
         yearMonthKey: String,
@@ -808,7 +819,9 @@ public struct InvestmentMonthlyMovementPoint: Identifiable, Hashable {
         isFuture: Bool,
         deposits: Double,
         withdrawals: Double,
-        projectedDeposits: Double
+        projectedDeposits: Double,
+        baseAccumulated: Double = 0.0,
+        endBalance: Double = 0.0
     ) {
         self.yearMonthKey = yearMonthKey
         self.year = year
@@ -823,6 +836,9 @@ public struct InvestmentMonthlyMovementPoint: Identifiable, Hashable {
         self.withdrawals = withdrawals
         self.projectedDeposits = projectedDeposits
         self.netMovement = deposits - withdrawals + (isFuture ? projectedDeposits : 0.0)
+        self.baseAccumulated = max(0.0, baseAccumulated)
+        let resolvedEnd = endBalance > 0 ? endBalance : (baseAccumulated + deposits + (isFuture || isCurrent ? projectedDeposits : 0.0))
+        self.endBalance = max(0.0, resolvedEnd)
     }
 }
 

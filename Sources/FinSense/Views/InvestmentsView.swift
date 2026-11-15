@@ -590,17 +590,31 @@ public struct InvestmentDetailView: View {
     public let investmentId: UUID
     @Environment(\.dismiss) private var dismiss
 
+    @State private var selectedYear: Int
+    @State private var selectedPeriod: InvestmentPeriodFilter = .oneYear
     @State private var showContributeSheet: Bool = false
     @State private var contributeMovementType: InvestmentMovementType = .deposit
     @State private var movementPendingDeletion: InvestmentMovement? = nil
 
-    public init(store: FinancialDataStore, investmentId: UUID) {
+    public init(store: FinancialDataStore, investmentId: UUID, initialYear: Int? = nil) {
         self.store = store
         self.investmentId = investmentId
+        let y = initialYear ?? Calendar.current.component(.year, from: Date())
+        _selectedYear = State(initialValue: y)
     }
 
     private var currentInvestment: InvestmentItem? {
         store.investments.first(where: { $0.id == investmentId })
+    }
+
+    private var availableYears: [Int] {
+        let currentY = store.calendar.component(.year, from: Date())
+        let movYears = store.investmentMovements(for: investmentId).map {
+            store.calendar.component(.year, from: $0.date)
+        }
+        let minY = min(currentY - 2, movYears.min() ?? (currentY - 2))
+        let maxY = max(currentY + 2, movYears.max() ?? (currentY + 2))
+        return Array(minY...maxY)
     }
 
     public var body: some View {
@@ -620,7 +634,7 @@ public struct InvestmentDetailView: View {
                 .frame(width: 500, height: 260)
             }
         }
-        .frame(minWidth: 840, idealWidth: 920, maxWidth: 1100, minHeight: 640, idealHeight: 760)
+        .frame(minWidth: 860, idealWidth: 960, maxWidth: 1150, minHeight: 680, idealHeight: 800)
         .sheet(isPresented: $showContributeSheet) {
             if let inv = currentInvestment {
                 ContributeInvestmentSheet(
@@ -654,269 +668,534 @@ public struct InvestmentDetailView: View {
     private func detailContent(_ inv: InvestmentItem) -> some View {
         let holderAccount = store.account(for: inv.investmentAccountId)
         let movements = store.investmentMovements(for: inv.id)
-        let timeline = store.investmentMovementTimeline(for: inv.id)
+        let timeline = store.investmentTimeline(for: inv.id, year: selectedYear, period: selectedPeriod)
+        let currentYear = store.calendar.component(.year, from: Date())
+        let isPastYear = selectedYear < currentYear
 
-        let totalDeposits = movements.filter { $0.type == .deposit }.reduce(0.0) { $0 + $1.amount }
-        let totalWithdrawals = movements.filter { $0.type == .withdrawal }.reduce(0.0) { $0 + $1.amount }
         let futureProjections = timeline.filter(\.isFuture).reduce(0.0) { $0 + $1.projectedDeposits }
+            + (timeline.first(where: \.isCurrent)?.projectedDeposits ?? 0.0)
+        let forecastEndBalance = timeline.last?.endBalance ?? (inv.balance + futureProjections)
 
         let linkedQuotaRules = store.categoryQuotas.filter {
             $0.quotaType == .investment && $0.linkedInvestmentId == inv.id
         }
 
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                // Header Bar
-                HStack(alignment: .center, spacing: 14) {
-                    CategoryBadgeView(symbol: inv.iconSymbol, colorHex: inv.colorHex, size: 48)
+        VStack(spacing: 0) {
+            // 1. Barra Superior do Modal (Título, Seletor de Ano, Botão Fechar destacado)
+            HStack(alignment: .center, spacing: 16) {
+                HStack(spacing: 8) {
+                    Image(systemName: "chart.line.uptrend.xyaxis")
+                        .font(.title3)
+                        .foregroundStyle(Color(hex: "#10B981"))
+                    Text("Detalhes do Investimento")
+                        .font(.title3.bold())
+                }
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 8) {
-                            Text(inv.name)
-                                .font(.system(size: 22, weight: .bold, design: .rounded))
-                            Text(inv.groupName)
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(Color(hex: inv.colorHex).opacity(0.18)))
-                                .foregroundStyle(Color(hex: inv.colorHex))
-                        }
+                Spacer()
 
-                        HStack(spacing: 6) {
-                            Text("Conta de Custódia: \(holderAccount?.name ?? "Não especificada")")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            if !inv.notes.isEmpty {
-                                Text("• \(inv.notes)")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-
-                    Spacer()
-
-                    Toggle(isOn: Binding(
-                        get: { inv.showInConsolidated },
-                        set: { _ in store.toggleInvestmentConsolidated(inv.id) }
-                    )) {
-                        Text("Exibir no consolidado")
-                            .font(.subheadline.weight(.medium))
-                    }
-                    .toggleStyle(.switch)
-
-                    Divider().frame(height: 32)
-
+                // Barra de Seleção de Ano
+                HStack(spacing: 6) {
                     Button {
-                        contributeMovementType = .deposit
-                        showContributeSheet = true
+                        if let idx = availableYears.firstIndex(of: selectedYear), idx > 0 {
+                            selectedYear = availableYears[idx - 1]
+                        } else {
+                            selectedYear -= 1
+                        }
                     } label: {
-                        Label("Novo Aporte", systemImage: "arrow.down.right.circle.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#10B981"))
-
-                    Button {
-                        contributeMovementType = .withdrawal
-                        showContributeSheet = true
-                    } label: {
-                        Label("Resgatar", systemImage: "arrow.up.left.circle.fill")
+                        Image(systemName: "chevron.left")
+                            .font(.caption.bold())
                     }
                     .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    ForEach(availableYears.filter { abs($0 - selectedYear) <= 2 }, id: \.self) { y in
+                        Button {
+                            selectedYear = y
+                        } label: {
+                            Text(String(y))
+                                .font(.subheadline.weight(y == selectedYear ? .bold : .medium))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(
+                                    Capsule()
+                                        .fill(y == selectedYear ? Color.accentColor : Color.primary.opacity(0.06))
+                                )
+                                .foregroundStyle(y == selectedYear ? Color.white : Color.primary)
+                        }
+                        .buttonStyle(.plain)
+                    }
 
                     Button {
-                        dismiss()
+                        if let idx = availableYears.firstIndex(of: selectedYear), idx < availableYears.count - 1 {
+                            selectedYear = availableYears[idx + 1]
+                        } else {
+                            selectedYear += 1
+                        }
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.bold())
                     }
-                    .buttonStyle(.plain)
-                    .help("Fechar detalhes")
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                 }
-                .padding(18)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
                 .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    Capsule()
                         .fill(Color(nsColor: .controlBackgroundColor))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                    Capsule()
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 1)
                 )
 
-                // KPI Metric Cards
-                Grid(horizontalSpacing: 14, verticalSpacing: 14) {
-                    GridRow {
-                        MetricCardView(
-                            title: "Saldo Acumulado",
-                            value: BRLFormatters.currency(inv.balance),
-                            subtitle: "Posição atual do ativo",
-                            icon: "banknote.fill",
-                            tint: Color(hex: "#10B981")
-                        )
-                        .frame(maxWidth: .infinity)
+                Spacer()
 
-                        MetricCardView(
-                            title: "Total Aportado",
-                            value: BRLFormatters.currency(totalDeposits),
-                            subtitle: "\(movements.filter { $0.type == .deposit }.count) aporte(s) efetuados",
-                            icon: "arrow.down.right.circle.fill",
-                            tint: Color(hex: "#059669")
-                        )
-                        .frame(maxWidth: .infinity)
-
-                        MetricCardView(
-                            title: "Total Resgatado",
-                            value: BRLFormatters.currency(totalWithdrawals),
-                            subtitle: "\(movements.filter { $0.type == .withdrawal }.count) resgate(s) efetuados",
-                            icon: "arrow.up.left.circle.fill",
-                            tint: Color(hex: "#EF4444")
-                        )
-                        .frame(maxWidth: .infinity)
-
-                        MetricCardView(
-                            title: "Projeção Futura (Cotas)",
-                            value: BRLFormatters.currency(futureProjections),
-                            subtitle: "Próximos 6 meses planejados",
-                            icon: "chart.line.uptrend.xyaxis",
-                            tint: Color(hex: "#6366F1")
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
+                // Botão de Fechar Modal claro e destacado
+                Button {
+                    dismiss()
+                } label: {
+                    Label("Fechar", systemImage: "xmark")
+                        .font(.subheadline.weight(.semibold))
                 }
+                .buttonStyle(.bordered)
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 18)
+            .padding(.bottom, 12)
 
-                // Gráfico de Barras: Entradas, Saídas e Projeções
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Fluxo Mensal e Projeções de Aportes")
-                                .font(.headline)
-                            Text("Histórico mensal de aportes e resgates e projeções com base nas cotas de investimento planejadas")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    // 2. Card do Ativo (Identificação, Saldo, Toggle Consolidado, Botões de Movimentação)
+                    HStack(alignment: .center, spacing: 14) {
+                        CategoryBadgeView(symbol: inv.iconSymbol, colorHex: inv.colorHex, size: 48)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(inv.name)
+                                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                                Text(inv.groupName)
+                                    .font(.caption.weight(.semibold))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 3)
+                                    .background(Capsule().fill(Color(hex: inv.colorHex).opacity(0.18)))
+                                    .foregroundStyle(Color(hex: inv.colorHex))
+                            }
+
+                            HStack(spacing: 6) {
+                                Text("Conta de Custódia: \(holderAccount?.name ?? "Não especificada")")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                if !inv.notes.isEmpty {
+                                    Text("• \(inv.notes)")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
+
                         Spacer()
 
-                        HStack(spacing: 14) {
-                            HStack(spacing: 6) {
-                                Circle().fill(Color(hex: "#10B981")).frame(width: 9, height: 9)
-                                Text("Aportes").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        Toggle(isOn: Binding(
+                            get: { inv.showInConsolidated },
+                            set: { _ in store.toggleInvestmentConsolidated(inv.id) }
+                        )) {
+                            Text("Exibir no consolidado")
+                                .font(.subheadline.weight(.medium))
+                        }
+                        .toggleStyle(.switch)
+
+                        Divider().frame(height: 32)
+
+                        Button {
+                            contributeMovementType = .deposit
+                            showContributeSheet = true
+                        } label: {
+                            Label("Novo Aporte", systemImage: "arrow.down.right.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#10B981"))
+
+                        Button {
+                            contributeMovementType = .withdrawal
+                            showContributeSheet = true
+                        } label: {
+                            Label("Resgatar", systemImage: "arrow.up.left.circle.fill")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                    )
+
+                    // 3. Barra de Seleção de Período (Acima dos Cards)
+                    HStack {
+                        Text("Período do Planejamento:")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
+
+                        Picker("Período", selection: $selectedPeriod) {
+                            ForEach(InvestmentPeriodFilter.allCases) { p in
+                                Text(p.title).tag(p)
                             }
-                            HStack(spacing: 6) {
-                                Circle().fill(Color(hex: "#EF4444")).frame(width: 9, height: 9)
-                                Text("Resgates").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(maxWidth: 320)
+
+                        Spacer()
+
+                        if isPastYear {
+                            HStack(spacing: 4) {
+                                Image(systemName: "clock.arrow.circlepath")
+                                Text("Ano Histórico Encerrado (\(selectedYear))")
                             }
-                            HStack(spacing: 6) {
-                                Circle().fill(Color(hex: "#6366F1")).frame(width: 9, height: 9)
-                                Text("Projeção (Cotas)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                        }
+                    }
+
+                    // 4. Cards de Métricas (Saldo Acumulado, Projeção Futura e Previsão para 12/ANO)
+                    Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                        GridRow {
+                            if !isPastYear {
+                                MetricCardView(
+                                    title: "Saldo Acumulado",
+                                    value: BRLFormatters.currency(inv.balance),
+                                    subtitle: "Posição atual do ativo",
+                                    icon: "banknote.fill",
+                                    tint: Color(hex: "#10B981")
+                                )
+                                .frame(maxWidth: .infinity)
+
+                                MetricCardView(
+                                    title: "Projeção Futura",
+                                    value: BRLFormatters.currency(futureProjections),
+                                    subtitle: "Aportes planejados no período",
+                                    icon: "chart.line.uptrend.xyaxis",
+                                    tint: Color(hex: "#6366F1")
+                                )
+                                .frame(maxWidth: .infinity)
+
+                                MetricCardView(
+                                    title: "Previsão para 12/\(selectedYear)",
+                                    value: BRLFormatters.currency(forecastEndBalance),
+                                    subtitle: "Saldo estimado em 31/12/\(selectedYear)",
+                                    icon: "sparkles",
+                                    tint: Color(hex: "#3B82F6")
+                                )
+                                .frame(maxWidth: .infinity)
+                            } else {
+                                let openingBal = timeline.first?.baseAccumulated ?? 0.0
+                                let yearDeposits = timeline.reduce(0.0) { $0 + $1.deposits }
+                                let closingBal = timeline.last?.endBalance ?? 0.0
+
+                                MetricCardView(
+                                    title: "Saldo Inicial (\(selectedYear))",
+                                    value: BRLFormatters.currency(openingBal),
+                                    subtitle: "Posição em 01/01/\(selectedYear)",
+                                    icon: "arrow.right.circle.fill",
+                                    tint: Color(hex: "#3B82F6")
+                                )
+                                .frame(maxWidth: .infinity)
+
+                                MetricCardView(
+                                    title: "Total Aportado em \(selectedYear)",
+                                    value: BRLFormatters.currency(yearDeposits),
+                                    subtitle: "Histórico de entradas no exercício",
+                                    icon: "arrow.down.right.circle.fill",
+                                    tint: Color(hex: "#10B981")
+                                )
+                                .frame(maxWidth: .infinity)
+
+                                MetricCardView(
+                                    title: "Fechamento em 31/12/\(selectedYear)",
+                                    value: BRLFormatters.currency(closingBal),
+                                    subtitle: "Posição final em 31/12/\(selectedYear)",
+                                    icon: "flag.checkered",
+                                    tint: Color(hex: "#F59E0B")
+                                )
+                                .frame(maxWidth: .infinity)
                             }
                         }
                     }
 
-                    let hasAnyData = timeline.contains { $0.deposits > 0 || $0.withdrawals > 0 || $0.projectedDeposits > 0 }
+                    // 5. Gráfico de Barras: Acumulado, Aportes, Projeção e Resgates
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Fluxo Mensal & Composição Acumulada")
+                                    .font(.headline)
+                                Text(isPastYear
+                                     ? "Evolução histórica mês a mês em \(selectedYear)"
+                                     : "Evolução do saldo acumulado com aportes e projeções de cotas na mesma barra")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
 
-                    if hasAnyData {
-                        Chart {
-                            ForEach(timeline) { pt in
-                                if pt.deposits > 0 {
-                                    BarMark(
-                                        x: .value("Mês", pt.shortLabel),
-                                        y: .value("Valor", pt.deposits)
-                                    )
-                                    .foregroundStyle(Color(hex: "#10B981"))
-                                    .position(by: .value("Tipo", "Aportes"))
-                                    .cornerRadius(4)
+                            // Legenda com Acumulado, Aportes, Projeção, Resgate
+                            HStack(spacing: 14) {
+                                HStack(spacing: 6) {
+                                    Circle().fill(Color(hex: "#3B82F6")).frame(width: 9, height: 9)
+                                    Text("Acumulado").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                                 }
-
-                                if pt.withdrawals > 0 {
-                                    BarMark(
-                                        x: .value("Mês", pt.shortLabel),
-                                        y: .value("Valor", pt.withdrawals)
-                                    )
-                                    .foregroundStyle(Color(hex: "#EF4444"))
-                                    .position(by: .value("Tipo", "Resgates"))
-                                    .cornerRadius(4)
+                                HStack(spacing: 6) {
+                                    Circle().fill(Color(hex: "#10B981")).frame(width: 9, height: 9)
+                                    Text("Aportes").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                                 }
-
-                                if pt.projectedDeposits > 0 {
-                                    BarMark(
-                                        x: .value("Mês", pt.shortLabel),
-                                        y: .value("Valor", pt.projectedDeposits)
-                                    )
-                                    .foregroundStyle(Color(hex: "#6366F1"))
-                                    .position(by: .value("Tipo", "Projeção"))
-                                    .cornerRadius(4)
+                                if !isPastYear {
+                                    HStack(spacing: 6) {
+                                        Circle().fill(Color(hex: "#6366F1")).frame(width: 9, height: 9)
+                                        Text("Projeção").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                                    }
+                                }
+                                HStack(spacing: 6) {
+                                    Circle().fill(Color(hex: "#EF4444")).frame(width: 9, height: 9)
+                                    Text("Resgate").font(.caption.weight(.medium)).foregroundStyle(.secondary)
                                 }
                             }
                         }
-                        .frame(height: 240)
-                        .chartYAxis {
-                            AxisMarks(position: .leading) { value in
-                                AxisGridLine()
-                                if let doubleVal = value.as(Double.self) {
-                                    AxisValueLabel {
-                                        Text(BRLFormatters.currency(doubleVal))
-                                            .font(.caption2.monospacedDigit())
+
+                        let hasAnyData = timeline.contains {
+                            $0.baseAccumulated > 0 || $0.deposits > 0 || $0.withdrawals > 0 || $0.projectedDeposits > 0
+                        }
+
+                        if hasAnyData {
+                            Chart {
+                                ForEach(timeline) { pt in
+                                    // 1. Acumulado (Base da barra)
+                                    if pt.baseAccumulated > 0 {
+                                        BarMark(
+                                            x: .value("Mês", pt.shortLabel),
+                                            yStart: .value("Base", 0),
+                                            yEnd: .value("Valor", pt.baseAccumulated)
+                                        )
+                                        .foregroundStyle(Color(hex: "#3B82F6"))
+                                        .position(by: .value("Grupo", "Evolução"))
+                                        .cornerRadius(pt.deposits > 0 || pt.projectedDeposits > 0 ? 0 : 4)
+                                    }
+
+                                    // 2. Aportes (Fatia sobre o acumulado)
+                                    if pt.deposits > 0 {
+                                        BarMark(
+                                            x: .value("Mês", pt.shortLabel),
+                                            yStart: .value("Base", pt.baseAccumulated),
+                                            yEnd: .value("Valor", pt.baseAccumulated + pt.deposits)
+                                        )
+                                        .foregroundStyle(Color(hex: "#10B981"))
+                                        .position(by: .value("Grupo", "Evolução"))
+                                        .cornerRadius(pt.projectedDeposits > 0 ? 0 : 4)
+                                    }
+
+                                    // 3. Projeção (Fatia sobre acumulado + aportes)
+                                    if pt.projectedDeposits > 0 {
+                                        BarMark(
+                                            x: .value("Mês", pt.shortLabel),
+                                            yStart: .value("Base", pt.baseAccumulated + pt.deposits),
+                                            yEnd: .value("Valor", pt.baseAccumulated + pt.deposits + pt.projectedDeposits)
+                                        )
+                                        .foregroundStyle(Color(hex: "#6366F1"))
+                                        .position(by: .value("Grupo", "Evolução"))
+                                        .cornerRadius(4)
+                                    }
+
+                                    // 4. Resgates (Barra ao lado se houver resgate no mês)
+                                    if pt.withdrawals > 0 {
+                                        BarMark(
+                                            x: .value("Mês", pt.shortLabel),
+                                            yStart: .value("Base", 0),
+                                            yEnd: .value("Valor", pt.withdrawals)
+                                        )
+                                        .foregroundStyle(Color(hex: "#EF4444"))
+                                        .position(by: .value("Grupo", "Resgates"))
+                                        .cornerRadius(4)
                                     }
                                 }
                             }
+                            .frame(height: 250)
+                            .chartYAxis {
+                                AxisMarks(position: .leading) { value in
+                                    AxisGridLine()
+                                    if let doubleVal = value.as(Double.self) {
+                                        AxisValueLabel {
+                                            Text(BRLFormatters.currency(doubleVal))
+                                                .font(.caption2.monospacedDigit())
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            VStack(spacing: 8) {
+                                Image(systemName: "chart.bar")
+                                    .font(.system(size: 32))
+                                    .foregroundStyle(.secondary.opacity(0.6))
+                                Text("Nenhum saldo ou movimentação no período selecionado.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 180)
                         }
-                    } else {
-                        VStack(spacing: 8) {
-                            Image(systemName: "chart.bar")
-                                .font(.system(size: 32))
-                                .foregroundStyle(.secondary.opacity(0.6))
-                            Text("Nenhuma movimentação ou projeção no período de 12 meses.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Text("Aportes realizados ou cotas vinculadas aparecerão aqui automaticamente.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 180)
                     }
-                }
-                .padding(18)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                )
+                    .padding(18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                    )
 
-                // Cotas Vinculadas (Planejamento Ativo)
-                if !linkedQuotaRules.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
+                    // 6. Cotas Vinculadas (Planejamento Ativo)
+                    if !linkedQuotaRules.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Label("Planejamentos de Investimento Ativos (Cotas)", systemImage: "target")
+                                    .font(.headline)
+                                Spacer()
+                                Text("\(linkedQuotaRules.count) cota(s) vinculada(s)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            ForEach(linkedQuotaRules) { rule in
+                                HStack {
+                                    CategoryBadgeView(symbol: rule.iconSymbol, colorHex: "#6366F1", size: 34)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(rule.name)
+                                            .font(.subheadline.bold())
+                                        Text("\(rule.plannedQuantity) un. × \(BRLFormatters.currency(rule.estimatedUnitPrice)) = \(BRLFormatters.currency(Double(rule.plannedQuantity) * rule.estimatedUnitPrice)) / mês")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Text(rule.repeatForFutureMonths ? "Recorrente (todos os meses)" : "Mês pontual")
+                                        .font(.caption2.weight(.medium))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                                }
+                                .padding(10)
+                                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.02)))
+                            }
+                        }
+                        .padding(18)
+                        .background(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Color(nsColor: .controlBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                        )
+                    }
+
+                    // 7. Todas as Movimentações
+                    VStack(alignment: .leading, spacing: 14) {
                         HStack {
-                            Label("Planejamentos de Investimento Ativos (Cotas)", systemImage: "target")
+                            Label("Todas as Movimentações", systemImage: "clock.arrow.circlepath")
                                 .font(.headline)
                             Spacer()
-                            Text("\(linkedQuotaRules.count) cota(s) vinculada(s)")
+                            Text("\(movements.count) movimentação(ões)")
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         }
 
-                        ForEach(linkedQuotaRules) { rule in
-                            HStack {
-                                CategoryBadgeView(symbol: rule.iconSymbol, colorHex: "#6366F1", size: 34)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(rule.name)
-                                        .font(.subheadline.bold())
-                                    Text("\(rule.plannedQuantity) un. × \(BRLFormatters.currency(rule.estimatedUnitPrice)) = \(BRLFormatters.currency(Double(rule.plannedQuantity) * rule.estimatedUnitPrice)) / mês")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
+                        if movements.isEmpty {
+                            VStack(spacing: 8) {
+                                Image(systemName: "tray")
+                                    .font(.system(size: 30))
+                                    .foregroundStyle(.secondary.opacity(0.6))
+                                Text("Nenhuma movimentação registrada para este investimento.")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Button("Realizar Primeiro Aporte") {
+                                    contributeMovementType = .deposit
+                                    showContributeSheet = true
                                 }
-                                Spacer()
-                                Text(rule.repeatForFutureMonths ? "Recorrente (todos os meses)" : "Mês pontual")
-                                    .font(.caption2.weight(.medium))
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+                                .buttonStyle(.borderedProminent)
+                                .tint(Color(hex: "#10B981"))
                             }
-                            .padding(10)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.02)))
+                            .frame(maxWidth: .infinity, minHeight: 140)
+                        } else {
+                            VStack(spacing: 8) {
+                                ForEach(movements) { mov in
+                                    let srcAccount = store.account(for: mov.sourceAccountId)
+                                    let dstAccount = store.account(for: mov.investmentAccountId)
+
+                                    HStack(spacing: 12) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: mov.type == .deposit ? "arrow.down.right" : "arrow.up.left")
+                                                .font(.caption.bold())
+                                            Text(mov.type.title)
+                                                .font(.caption.bold())
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            Capsule()
+                                                .fill((mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444")).opacity(0.15))
+                                        )
+                                        .foregroundStyle(mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(mov.type == .deposit
+                                                 ? "De \(srcAccount?.name ?? "Conta") → \(dstAccount?.name ?? "Investimento")"
+                                                 : "De \(dstAccount?.name ?? "Investimento") → \(srcAccount?.name ?? "Conta")")
+                                                .font(.subheadline.weight(.semibold))
+
+                                            if !mov.notes.isEmpty {
+                                                Text(mov.notes)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(2)
+                                            }
+                                        }
+
+                                        Spacer()
+
+                                        Text(BRLFormatters.shortDate(mov.date))
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+
+                                        Text((mov.type == .deposit ? "+ " : "- ") + BRLFormatters.currency(mov.amount))
+                                            .font(.subheadline.bold().monospacedDigit())
+                                            .foregroundStyle(mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+                                            .frame(minWidth: 110, alignment: .trailing)
+
+                                        Button(role: .destructive) {
+                                            movementPendingDeletion = mov
+                                        } label: {
+                                            Image(systemName: "trash")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .help("Excluir movimentação")
+                                    }
+                                    .padding(12)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(Color.primary.opacity(0.025))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+                                    )
+                                }
+                            }
                         }
                     }
                     .padding(18)
@@ -929,114 +1208,8 @@ public struct InvestmentDetailView: View {
                             .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                     )
                 }
-
-                // Todas as Movimentações
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack {
-                        Label("Todas as Movimentações", systemImage: "clock.arrow.circlepath")
-                            .font(.headline)
-                        Spacer()
-                        Text("\(movements.count) movimentação(ões)")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if movements.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: "tray")
-                                .font(.system(size: 30))
-                                .foregroundStyle(.secondary.opacity(0.6))
-                            Text("Nenhuma movimentação registrada para este investimento.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Button("Realizar Primeiro Aporte") {
-                                contributeMovementType = .deposit
-                                showContributeSheet = true
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(Color(hex: "#10B981"))
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 140)
-                    } else {
-                        VStack(spacing: 8) {
-                            ForEach(movements) { mov in
-                                let srcAccount = store.account(for: mov.sourceAccountId)
-                                let dstAccount = store.account(for: mov.investmentAccountId)
-
-                                HStack(spacing: 12) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: mov.type == .deposit ? "arrow.down.right" : "arrow.up.left")
-                                            .font(.caption.bold())
-                                        Text(mov.type.title)
-                                            .font(.caption.bold())
-                                    }
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(
-                                        Capsule()
-                                            .fill((mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444")).opacity(0.15))
-                                    )
-                                    .foregroundStyle(mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
-
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(mov.type == .deposit
-                                             ? "De \(srcAccount?.name ?? "Conta") → \(dstAccount?.name ?? "Investimento")"
-                                             : "De \(dstAccount?.name ?? "Investimento") → \(srcAccount?.name ?? "Conta")")
-                                            .font(.subheadline.weight(.semibold))
-
-                                        if !mov.notes.isEmpty {
-                                            Text(mov.notes)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(2)
-                                        }
-                                    }
-
-                                    Spacer()
-
-                                    Text(BRLFormatters.shortDate(mov.date))
-                                        .font(.caption.monospacedDigit())
-                                        .foregroundStyle(.secondary)
-
-                                    Text((mov.type == .deposit ? "+ " : "- ") + BRLFormatters.currency(mov.amount))
-                                        .font(.subheadline.bold().monospacedDigit())
-                                        .foregroundStyle(mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
-                                        .frame(minWidth: 110, alignment: .trailing)
-
-                                    Button(role: .destructive) {
-                                        movementPendingDeletion = mov
-                                    } label: {
-                                        Image(systemName: "trash")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .buttonStyle(.borderless)
-                                    .help("Excluir movimentação")
-                                }
-                                .padding(12)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Color.primary.opacity(0.025))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .stroke(Color.primary.opacity(0.05), lineWidth: 1)
-                                )
-                            }
-                        }
-                    }
-                }
-                .padding(18)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                )
+                .padding(24)
             }
-            .padding(24)
         }
     }
 }

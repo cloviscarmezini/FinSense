@@ -5052,4 +5052,80 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(revertedInv?.balance, 1000.0, "Saldo do investimento deve reverter para 1000 após deletar transação")
         XCTAssertEqual(revertedInv?.movements.count, 0, "Movimento de aporte deve ser removido no rollback")
     }
+
+    func testInvestmentTimelineAndStackedPeriodCalculations() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let currentYear = store.calendar.component(.year, from: Date())
+        let currentMonth = store.calendar.component(.month, from: Date())
+
+        let bank = BankAccount(id: UUID(), name: "Banco XP", initialBalance: 10000.0)
+        let inv = InvestmentItem(
+            id: UUID(),
+            name: "Fundo Multimercado",
+            groupName: "Renda Variável",
+            investmentAccountId: bank.id,
+            balance: 5000.0
+        )
+        store.accounts = [bank]
+        store.investments = [inv]
+
+        // 1. Grava aporte no mês atual
+        store.recordInvestmentMovement(
+            investmentId: inv.id,
+            type: .deposit,
+            amount: 1000.0,
+            sourceAccountId: bank.id,
+            date: Date(),
+            notes: "Aporte manual"
+        )
+
+        // 2. Cria cota vinculada ao investimento
+        _ = store.saveCategoryQuota(
+            categoryId: store.fallbackCategoryId(for: .expense, matchingSubstring: "Aplicações"),
+            name: "Cota Futura Fundo",
+            iconSymbol: "chart.line.uptrend.xyaxis",
+            plannedQuantity: 1,
+            estimatedUnitPrice: 600.0,
+            for: Date(),
+            repeatForFutureMonths: true,
+            editScope: .thisAndFutureMonths,
+            quotaType: .investment,
+            linkedInvestmentId: inv.id
+        )
+
+        // 3. Verifica timeline de 1 ano
+        let fullYearTimeline = store.investmentTimeline(for: inv.id, year: currentYear, period: .oneYear)
+        XCTAssertEqual(fullYearTimeline.count, 12, "Período de 1 ano deve retornar 12 meses")
+
+        for pt in fullYearTimeline {
+            let totalBarHeight = pt.baseAccumulated + pt.deposits + pt.projectedDeposits
+            XCTAssertEqual(totalBarHeight, pt.endBalance, accuracy: 0.001, "Acumulado, aporte e projeção devem somar o saldo final da barra no mês \(pt.month)")
+        }
+
+        // Ponto do mês atual deve ter o aporte de 1000 registrado
+        if let currentPt = fullYearTimeline.first(where: { $0.month == currentMonth }) {
+            XCTAssertEqual(currentPt.deposits, 1000.0)
+            XCTAssertTrue(currentPt.isCurrent)
+        }
+
+        // 4. Verifica filtro de 6 meses
+        let sixMonthsTimeline = store.investmentTimeline(for: inv.id, year: currentYear, period: .sixMonths)
+        XCTAssertEqual(sixMonthsTimeline.count, 6, "Período de 6 meses deve conter 6 meses")
+
+        // 5. Verifica filtro de 3 meses
+        let threeMonthsTimeline = store.investmentTimeline(for: inv.id, year: currentYear, period: .threeMonths)
+        XCTAssertEqual(threeMonthsTimeline.count, 3, "Período de 3 meses deve conter 3 meses")
+
+        // 6. Verifica ano anterior (somente histórico, projeções zeradas)
+        let pastYear = currentYear - 1
+        let pastYearTimeline = store.investmentTimeline(for: inv.id, year: pastYear, period: .oneYear)
+        XCTAssertEqual(pastYearTimeline.count, 12)
+        for pt in pastYearTimeline {
+            XCTAssertEqual(pt.projectedDeposits, 0.0, "Anos anteriores ao atual não devem ter projeções futuras")
+        }
+    }
 }
