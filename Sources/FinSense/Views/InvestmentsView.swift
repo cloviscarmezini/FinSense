@@ -1,10 +1,12 @@
 import SwiftUI
+import Charts
 
 public struct InvestmentsView: View {
     @ObservedObject public var store: FinancialDataStore
 
     @State private var showCreateInvestmentSheet: Bool = false
     @State private var selectedInvestmentForAction: InvestmentItem? = nil
+    @State private var selectedInvestmentForDetails: InvestmentItem? = nil
     @State private var showGeneralInvestSheet: Bool = false
     @State private var investmentPendingDeletion: InvestmentItem? = nil
 
@@ -145,6 +147,9 @@ public struct InvestmentsView: View {
         .sheet(isPresented: $showCreateInvestmentSheet) {
             CreateInvestmentSheet(store: store)
         }
+        .sheet(item: $selectedInvestmentForDetails) { inv in
+            InvestmentDetailView(store: store, investmentId: inv.id)
+        }
         .sheet(item: $selectedInvestmentForAction) { inv in
             ContributeInvestmentSheet(store: store, preselectedInvestmentId: inv.id)
         }
@@ -192,6 +197,10 @@ public struct InvestmentsView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                }
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    selectedInvestmentForDetails = item
                 }
 
                 Spacer(minLength: 8)
@@ -265,15 +274,26 @@ public struct InvestmentsView: View {
 
             Spacer(minLength: 4)
 
-            Button {
-                selectedInvestmentForAction = item
-            } label: {
-                Label("Adicionar Valor / Movimentar", systemImage: "plus.circle.fill")
-                    .frame(maxWidth: .infinity)
+            HStack(spacing: 8) {
+                Button {
+                    selectedInvestmentForDetails = item
+                } label: {
+                    Label("Ver Detalhes", systemImage: "chart.bar.xaxis")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .frame(minHeight: 32)
+
+                Button {
+                    selectedInvestmentForAction = item
+                } label: {
+                    Label("Movimentar", systemImage: "plus.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: item.colorHex))
+                .frame(minHeight: 32)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Color(hex: item.colorHex))
-            .frame(minHeight: 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(16)
@@ -438,10 +458,17 @@ public struct ContributeInvestmentSheet: View {
     @State private var errorMsg: String? = nil
 
     public let preselectedInvestmentId: UUID?
+    public let initialMovementType: InvestmentMovementType
 
-    public init(store: FinancialDataStore, preselectedInvestmentId: UUID?) {
+    public init(
+        store: FinancialDataStore,
+        preselectedInvestmentId: UUID?,
+        initialMovementType: InvestmentMovementType = .deposit
+    ) {
         self.store = store
         self.preselectedInvestmentId = preselectedInvestmentId
+        self.initialMovementType = initialMovementType
+        _movementType = State(initialValue: initialMovementType)
     }
 
     public var body: some View {
@@ -542,6 +569,7 @@ public struct ContributeInvestmentSheet: View {
         .padding(22)
         .frame(width: 560, height: 480)
         .onAppear {
+            movementType = initialMovementType
             if let pre = preselectedInvestmentId,
                let inv = store.investments.first(where: { $0.id == pre }) {
                 selectedInvestmentId = inv.id
@@ -551,6 +579,464 @@ public struct ContributeInvestmentSheet: View {
                 investmentAccountId = first.investmentAccountId
             }
             sourceAccountId = store.accounts.first?.id ?? UUID()
+        }
+    }
+}
+
+// MARK: - Investment Detail View (macOS)
+
+public struct InvestmentDetailView: View {
+    @ObservedObject public var store: FinancialDataStore
+    public let investmentId: UUID
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var showContributeSheet: Bool = false
+    @State private var contributeMovementType: InvestmentMovementType = .deposit
+    @State private var movementPendingDeletion: InvestmentMovement? = nil
+
+    public init(store: FinancialDataStore, investmentId: UUID) {
+        self.store = store
+        self.investmentId = investmentId
+    }
+
+    private var currentInvestment: InvestmentItem? {
+        store.investments.first(where: { $0.id == investmentId })
+    }
+
+    public var body: some View {
+        Group {
+            if let inv = currentInvestment {
+                detailContent(inv)
+            } else {
+                VStack(spacing: 14) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.secondary)
+                    Text("Investimento não encontrado ou removido.")
+                        .font(.headline)
+                    Button("Fechar") { dismiss() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .frame(width: 500, height: 260)
+            }
+        }
+        .frame(minWidth: 840, idealWidth: 920, maxWidth: 1100, minHeight: 640, idealHeight: 760)
+        .sheet(isPresented: $showContributeSheet) {
+            if let inv = currentInvestment {
+                ContributeInvestmentSheet(
+                    store: store,
+                    preselectedInvestmentId: inv.id,
+                    initialMovementType: contributeMovementType
+                )
+            }
+        }
+        .alert(
+            "Confirmar Exclusão de Movimentação",
+            isPresented: Binding(
+                get: { movementPendingDeletion != nil },
+                set: { if !$0 { movementPendingDeletion = nil } }
+            ),
+            presenting: movementPendingDeletion
+        ) { mov in
+            Button("Excluir Movimentação", role: .destructive) {
+                store.deleteInvestmentMovement(investmentId: investmentId, movementId: mov.id)
+                movementPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                movementPendingDeletion = nil
+            }
+        } message: { mov in
+            Text("Deseja realmente excluir a movimentação de \(mov.type.title) no valor de \(BRLFormatters.currency(mov.amount)) de \(BRLFormatters.shortDate(mov.date))? O saldo do investimento e o lançamento de conta serão estornados.")
+        }
+    }
+
+    @ViewBuilder
+    private func detailContent(_ inv: InvestmentItem) -> some View {
+        let holderAccount = store.account(for: inv.investmentAccountId)
+        let movements = store.investmentMovements(for: inv.id)
+        let timeline = store.investmentMovementTimeline(for: inv.id)
+
+        let totalDeposits = movements.filter { $0.type == .deposit }.reduce(0.0) { $0 + $1.amount }
+        let totalWithdrawals = movements.filter { $0.type == .withdrawal }.reduce(0.0) { $0 + $1.amount }
+        let futureProjections = timeline.filter(\.isFuture).reduce(0.0) { $0 + $1.projectedDeposits }
+
+        let linkedQuotaRules = store.categoryQuotas.filter {
+            $0.quotaType == .investment && $0.linkedInvestmentId == inv.id
+        }
+
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                // Header Bar
+                HStack(alignment: .center, spacing: 14) {
+                    CategoryBadgeView(symbol: inv.iconSymbol, colorHex: inv.colorHex, size: 48)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 8) {
+                            Text(inv.name)
+                                .font(.system(size: 22, weight: .bold, design: .rounded))
+                            Text(inv.groupName)
+                                .font(.caption.weight(.semibold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(Capsule().fill(Color(hex: inv.colorHex).opacity(0.18)))
+                                .foregroundStyle(Color(hex: inv.colorHex))
+                        }
+
+                        HStack(spacing: 6) {
+                            Text("Conta de Custódia: \(holderAccount?.name ?? "Não especificada")")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            if !inv.notes.isEmpty {
+                                Text("• \(inv.notes)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    Spacer()
+
+                    Toggle(isOn: Binding(
+                        get: { inv.showInConsolidated },
+                        set: { _ in store.toggleInvestmentConsolidated(inv.id) }
+                    )) {
+                        Text("Exibir no consolidado")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .toggleStyle(.switch)
+
+                    Divider().frame(height: 32)
+
+                    Button {
+                        contributeMovementType = .deposit
+                        showContributeSheet = true
+                    } label: {
+                        Label("Novo Aporte", systemImage: "arrow.down.right.circle.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#10B981"))
+
+                    Button {
+                        contributeMovementType = .withdrawal
+                        showContributeSheet = true
+                    } label: {
+                        Label("Resgatar", systemImage: "arrow.up.left.circle.fill")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Fechar detalhes")
+                }
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                )
+
+                // KPI Metric Cards
+                Grid(horizontalSpacing: 14, verticalSpacing: 14) {
+                    GridRow {
+                        MetricCardView(
+                            title: "Saldo Acumulado",
+                            value: BRLFormatters.currency(inv.balance),
+                            subtitle: "Posição atual do ativo",
+                            icon: "banknote.fill",
+                            tint: Color(hex: "#10B981")
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        MetricCardView(
+                            title: "Total Aportado",
+                            value: BRLFormatters.currency(totalDeposits),
+                            subtitle: "\(movements.filter { $0.type == .deposit }.count) aporte(s) efetuados",
+                            icon: "arrow.down.right.circle.fill",
+                            tint: Color(hex: "#059669")
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        MetricCardView(
+                            title: "Total Resgatado",
+                            value: BRLFormatters.currency(totalWithdrawals),
+                            subtitle: "\(movements.filter { $0.type == .withdrawal }.count) resgate(s) efetuados",
+                            icon: "arrow.up.left.circle.fill",
+                            tint: Color(hex: "#EF4444")
+                        )
+                        .frame(maxWidth: .infinity)
+
+                        MetricCardView(
+                            title: "Projeção Futura (Cotas)",
+                            value: BRLFormatters.currency(futureProjections),
+                            subtitle: "Próximos 6 meses planejados",
+                            icon: "chart.line.uptrend.xyaxis",
+                            tint: Color(hex: "#6366F1")
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+
+                // Gráfico de Barras: Entradas, Saídas e Projeções
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Fluxo Mensal e Projeções de Aportes")
+                                .font(.headline)
+                            Text("Histórico mensal de aportes e resgates e projeções com base nas cotas de investimento planejadas")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+
+                        HStack(spacing: 14) {
+                            HStack(spacing: 6) {
+                                Circle().fill(Color(hex: "#10B981")).frame(width: 9, height: 9)
+                                Text("Aportes").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 6) {
+                                Circle().fill(Color(hex: "#EF4444")).frame(width: 9, height: 9)
+                                Text("Resgates").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 6) {
+                                Circle().fill(Color(hex: "#6366F1")).frame(width: 9, height: 9)
+                                Text("Projeção (Cotas)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    let hasAnyData = timeline.contains { $0.deposits > 0 || $0.withdrawals > 0 || $0.projectedDeposits > 0 }
+
+                    if hasAnyData {
+                        Chart {
+                            ForEach(timeline) { pt in
+                                if pt.deposits > 0 {
+                                    BarMark(
+                                        x: .value("Mês", pt.shortLabel),
+                                        y: .value("Valor", pt.deposits)
+                                    )
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                                    .position(by: .value("Tipo", "Aportes"))
+                                    .cornerRadius(4)
+                                }
+
+                                if pt.withdrawals > 0 {
+                                    BarMark(
+                                        x: .value("Mês", pt.shortLabel),
+                                        y: .value("Valor", pt.withdrawals)
+                                    )
+                                    .foregroundStyle(Color(hex: "#EF4444"))
+                                    .position(by: .value("Tipo", "Resgates"))
+                                    .cornerRadius(4)
+                                }
+
+                                if pt.projectedDeposits > 0 {
+                                    BarMark(
+                                        x: .value("Mês", pt.shortLabel),
+                                        y: .value("Valor", pt.projectedDeposits)
+                                    )
+                                    .foregroundStyle(Color(hex: "#6366F1"))
+                                    .position(by: .value("Tipo", "Projeção"))
+                                    .cornerRadius(4)
+                                }
+                            }
+                        }
+                        .frame(height: 240)
+                        .chartYAxis {
+                            AxisMarks(position: .leading) { value in
+                                AxisGridLine()
+                                if let doubleVal = value.as(Double.self) {
+                                    AxisValueLabel {
+                                        Text(BRLFormatters.currency(doubleVal))
+                                            .font(.caption2.monospacedDigit())
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        VStack(spacing: 8) {
+                            Image(systemName: "chart.bar")
+                                .font(.system(size: 32))
+                                .foregroundStyle(.secondary.opacity(0.6))
+                            Text("Nenhuma movimentação ou projeção no período de 12 meses.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Text("Aportes realizados ou cotas vinculadas aparecerão aqui automaticamente.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                    }
+                }
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                )
+
+                // Cotas Vinculadas (Planejamento Ativo)
+                if !linkedQuotaRules.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label("Planejamentos de Investimento Ativos (Cotas)", systemImage: "target")
+                                .font(.headline)
+                            Spacer()
+                            Text("\(linkedQuotaRules.count) cota(s) vinculada(s)")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ForEach(linkedQuotaRules) { rule in
+                            HStack {
+                                CategoryBadgeView(symbol: rule.iconSymbol, colorHex: "#6366F1", size: 34)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(rule.name)
+                                        .font(.subheadline.bold())
+                                    Text("\(rule.plannedQuantity) un. × \(BRLFormatters.currency(rule.estimatedUnitPrice)) = \(BRLFormatters.currency(Double(rule.plannedQuantity) * rule.estimatedUnitPrice)) / mês")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Text(rule.repeatForFutureMonths ? "Recorrente (todos os meses)" : "Mês pontual")
+                                    .font(.caption2.weight(.medium))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+                            }
+                            .padding(10)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.02)))
+                        }
+                    }
+                    .padding(18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                    )
+                }
+
+                // Todas as Movimentações
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Label("Todas as Movimentações", systemImage: "clock.arrow.circlepath")
+                            .font(.headline)
+                        Spacer()
+                        Text("\(movements.count) movimentação(ões)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if movements.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "tray")
+                                .font(.system(size: 30))
+                                .foregroundStyle(.secondary.opacity(0.6))
+                            Text("Nenhuma movimentação registrada para este investimento.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Button("Realizar Primeiro Aporte") {
+                                contributeMovementType = .deposit
+                                showContributeSheet = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(Color(hex: "#10B981"))
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 140)
+                    } else {
+                        VStack(spacing: 8) {
+                            ForEach(movements) { mov in
+                                let srcAccount = store.account(for: mov.sourceAccountId)
+                                let dstAccount = store.account(for: mov.investmentAccountId)
+
+                                HStack(spacing: 12) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: mov.type == .deposit ? "arrow.down.right" : "arrow.up.left")
+                                            .font(.caption.bold())
+                                        Text(mov.type.title)
+                                            .font(.caption.bold())
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        Capsule()
+                                            .fill((mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444")).opacity(0.15))
+                                    )
+                                    .foregroundStyle(mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(mov.type == .deposit
+                                             ? "De \(srcAccount?.name ?? "Conta") → \(dstAccount?.name ?? "Investimento")"
+                                             : "De \(dstAccount?.name ?? "Investimento") → \(srcAccount?.name ?? "Conta")")
+                                            .font(.subheadline.weight(.semibold))
+
+                                        if !mov.notes.isEmpty {
+                                            Text(mov.notes)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(2)
+                                        }
+                                    }
+
+                                    Spacer()
+
+                                    Text(BRLFormatters.shortDate(mov.date))
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+
+                                    Text((mov.type == .deposit ? "+ " : "- ") + BRLFormatters.currency(mov.amount))
+                                        .font(.subheadline.bold().monospacedDigit())
+                                        .foregroundStyle(mov.type == .deposit ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+                                        .frame(minWidth: 110, alignment: .trailing)
+
+                                    Button(role: .destructive) {
+                                        movementPendingDeletion = mov
+                                    } label: {
+                                        Image(systemName: "trash")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .help("Excluir movimentação")
+                                }
+                                .padding(12)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color.primary.opacity(0.025))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+                                )
+                            }
+                        }
+                    }
+                }
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                )
+            }
+            .padding(24)
         }
     }
 }

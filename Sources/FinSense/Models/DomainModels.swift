@@ -780,6 +780,52 @@ public struct InvestmentItem: Identifiable, Codable, Hashable {
     }
 }
 
+public struct InvestmentMonthlyMovementPoint: Identifiable, Hashable {
+    public var id: String { yearMonthKey }
+    public let yearMonthKey: String // "2026-11"
+    public let year: Int
+    public let month: Int
+    public let label: String        // "Nov/26"
+    public let shortLabel: String   // "Nov"
+    public let date: Date
+    public let isPast: Bool
+    public let isCurrent: Bool
+    public let isFuture: Bool
+    public let deposits: Double     // Entradas / Aportes efetuados no mês
+    public let withdrawals: Double  // Saídas / Resgates efetuados no mês
+    public let projectedDeposits: Double // Projeção de aportes com base nas cotas planejadas
+    public let netMovement: Double
+
+    public init(
+        yearMonthKey: String,
+        year: Int,
+        month: Int,
+        label: String,
+        shortLabel: String,
+        date: Date,
+        isPast: Bool,
+        isCurrent: Bool,
+        isFuture: Bool,
+        deposits: Double,
+        withdrawals: Double,
+        projectedDeposits: Double
+    ) {
+        self.yearMonthKey = yearMonthKey
+        self.year = year
+        self.month = month
+        self.label = label
+        self.shortLabel = shortLabel
+        self.date = date
+        self.isPast = isPast
+        self.isCurrent = isCurrent
+        self.isFuture = isFuture
+        self.deposits = deposits
+        self.withdrawals = withdrawals
+        self.projectedDeposits = projectedDeposits
+        self.netMovement = deposits - withdrawals + (isFuture ? projectedDeposits : 0.0)
+    }
+}
+
 // MARK: - Debts (Dívidas em Aberto / Negociação)
 
 public struct DebtItem: Identifiable, Codable, Hashable {

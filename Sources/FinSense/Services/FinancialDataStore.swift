@@ -3119,6 +3119,161 @@ public final class FinancialDataStore: ObservableObject {
         save()
     }
 
+    public func recordInvestmentMovement(
+        investmentId: UUID,
+        type: InvestmentMovementType,
+        amount: Double,
+        sourceAccountId: UUID,
+        date: Date = Date(),
+        notes: String = ""
+    ) {
+        guard let inv = investments.first(where: { $0.id == investmentId }) else { return }
+        contributeToInvestment(
+            investmentId: investmentId,
+            amount: amount,
+            sourceAccountId: sourceAccountId,
+            investmentAccountId: inv.investmentAccountId,
+            date: date,
+            movementType: type,
+            notes: notes
+        )
+    }
+
+    public func investmentMovements(for investmentId: UUID) -> [InvestmentMovement] {
+        guard let inv = investments.first(where: { $0.id == investmentId }) else { return [] }
+        var result = inv.movements
+        let knownTxIds = Set(result.compactMap(\.generatedTransactionId))
+
+        let orphanTxs = transactions.filter { tx in
+            (tx.linkedInvestmentId == investmentId || tx.linkedEntityID == investmentId) &&
+            !knownTxIds.contains(tx.id)
+        }
+        for tx in orphanTxs {
+            let isDeposit = tx.transactionOrigin == .investmentDeposit || tx.type == .expense
+            let mov = InvestmentMovement(
+                id: tx.id,
+                type: isDeposit ? .deposit : .withdrawal,
+                amount: tx.amount,
+                date: tx.date,
+                sourceAccountId: tx.accountId,
+                investmentAccountId: inv.investmentAccountId,
+                notes: tx.details.isEmpty ? tx.name : tx.details,
+                generatedTransactionId: tx.id
+            )
+            result.append(mov)
+        }
+        return result.sorted(by: { $0.date > $1.date })
+    }
+
+    public func deleteInvestmentMovement(investmentId: UUID, movementId: UUID) {
+        guard let invIdx = investments.firstIndex(where: { $0.id == investmentId }) else { return }
+        let movement = investments[invIdx].movements.first(where: { $0.id == movementId })
+
+        if let txId = movement?.generatedTransactionId ?? transactions.first(where: { $0.id == movementId })?.id,
+           transactions.contains(where: { $0.id == txId }) {
+            deleteTransaction(txId)
+            if let currentIdx = investments.firstIndex(where: { $0.id == investmentId }) {
+                investments[currentIdx].movements.removeAll(where: { $0.id == movementId || $0.generatedTransactionId == txId })
+            }
+        } else if let mov = movement {
+            if mov.type == .deposit {
+                investments[invIdx].balance = max(0.0, investments[invIdx].balance - mov.amount)
+            } else {
+                investments[invIdx].balance += mov.amount
+            }
+            investments[invIdx].movements.removeAll(where: { $0.id == movementId })
+            save()
+            cloudSyncService?.recordLocalMutation(entityName: "investment_items", entityId: investmentId, operation: .upsert, entity: investments[invIdx])
+        }
+    }
+
+    public func investmentMovementTimeline(
+        for investmentId: UUID,
+        referenceDate: Date? = nil,
+        monthsBack: Int = 5,
+        monthsForward: Int = 6
+    ) -> [InvestmentMonthlyMovementPoint] {
+        let ref = referenceDate ?? Date()
+        let now = Date()
+        guard let currentMonthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: now)) else {
+            return []
+        }
+
+        let allMovs = investmentMovements(for: investmentId)
+
+        var points: [InvestmentMonthlyMovementPoint] = []
+
+        let shortMonthDf = DateFormatter()
+        shortMonthDf.locale = Locale(identifier: "pt_BR")
+        shortMonthDf.dateFormat = "MMM"
+
+        let ymDf = DateFormatter()
+        ymDf.locale = Locale(identifier: "pt_BR")
+        ymDf.dateFormat = "MMM/yy"
+
+        for offset in (-monthsBack)...monthsForward {
+            guard let targetDate = calendar.date(byAdding: .month, value: offset, to: ref),
+                  let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: targetDate)) else {
+                continue
+            }
+
+            let year = calendar.component(.year, from: monthStart)
+            let month = calendar.component(.month, from: monthStart)
+            let ymKey = String(format: "%04d-%02d", year, month)
+            let shortLabel = shortMonthDf.string(from: monthStart).capitalized.replacingOccurrences(of: ".", with: "")
+            let label = ymDf.string(from: monthStart).capitalized.replacingOccurrences(of: ".", with: "")
+
+            let isPast = monthStart < currentMonthStart
+            let isCurrent = monthStart == currentMonthStart
+            let isFuture = monthStart > currentMonthStart
+
+            var deposits: Double = 0.0
+            var withdrawals: Double = 0.0
+            var projectedDeposits: Double = 0.0
+
+            if isPast || isCurrent {
+                for m in allMovs where isInMonth(m.date, monthReference: monthStart) {
+                    if m.type == .deposit {
+                        deposits += m.amount
+                    } else {
+                        withdrawals += m.amount
+                    }
+                }
+            }
+
+            let envelopes = allQuotaEnvelopes(for: monthStart).filter { env in
+                env.rule.quotaType == .investment && env.rule.linkedInvestmentId == investmentId
+            }
+
+            if isFuture {
+                projectedDeposits = envelopes.reduce(0.0) { $0 + $1.totalEstimatedAmount }
+            } else if isCurrent {
+                projectedDeposits = envelopes.reduce(0.0) { $0 + max(0.0, $1.remainingProvision) }
+            } else {
+                projectedDeposits = 0.0
+            }
+
+            points.append(
+                InvestmentMonthlyMovementPoint(
+                    yearMonthKey: ymKey,
+                    year: year,
+                    month: month,
+                    label: label,
+                    shortLabel: shortLabel,
+                    date: monthStart,
+                    isPast: isPast,
+                    isCurrent: isCurrent,
+                    isFuture: isFuture,
+                    deposits: deposits,
+                    withdrawals: withdrawals,
+                    projectedDeposits: projectedDeposits
+                )
+            )
+        }
+
+        return points
+    }
+
     // MARK: - Debts Management (Aba Dívidas)
 
     public var activeDebts: [DebtItem] {
