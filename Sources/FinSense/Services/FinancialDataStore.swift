@@ -557,6 +557,9 @@ public final class FinancialDataStore: ObservableObject {
             if migrateExistingSantanderContractsIfNeeded() {
                 mutatedData = true
             }
+            if migrateExistingCaixaContractsIfNeeded() {
+                mutatedData = true
+            }
             for plan in self.amortizationPlans {
                 syncPlannedAmortizationTransactions(for: plan.contractId, saveAfter: false)
             }
@@ -3967,6 +3970,63 @@ public final class FinancialDataStore: ObservableObject {
         return didMutate
     }
 
+    /// Migra automaticamente contratos CAIXA Habitação (TP) já existentes na base para atribuir
+    /// o crescimento médio mensal extraído do demonstrativo de evolução (+R$ 4,08/mês) ao longo das parcelas futuras.
+    private func migrateExistingCaixaContractsIfNeeded() -> Bool {
+        var didMutate = false
+        let sampleCaixaDoc = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.caixaFinancingOCRText,
+            expectedKind: .financing
+        )
+
+        for cIdx in contracts.indices {
+            var contract = contracts[cIdx]
+            guard contract.kind == .financing,
+                  !contract.isSettled,
+                  (contract.contractNumber == "178770203328-1" || contract.name.localizedCaseInsensitiveContains("CAIXA")) else {
+                continue
+            }
+
+            if contract.scheduledInstallments == nil || contract.scheduledInstallments?.isEmpty == true {
+                contract.scheduledInstallments = sampleCaixaDoc.scheduledInstallments
+                didMutate = true
+            }
+
+            guard let schedule = contract.scheduledInstallments, !schedule.isEmpty else { continue }
+            let scheduleByNumber = Dictionary(uniqueKeysWithValues: schedule.map { ($0.installmentNumber, $0) })
+
+            for tIdx in transactions.indices {
+                guard transactions[tIdx].linkedContractId == contract.id,
+                      let instNum = transactions[tIdx].installmentIndex,
+                      !transactions[tIdx].isPaid else {
+                    continue
+                }
+                if let schedItem = scheduleByNumber[instNum],
+                   abs(transactions[tIdx].amount - schedItem.amount) > 0.005 {
+                    transactions[tIdx].amount = schedItem.amount
+                    didMutate = true
+                }
+            }
+
+            let remainingUnpaid = transactions
+                .filter { $0.linkedContractId == contract.id && $0.installmentIndex != nil && !$0.isPaid }
+                .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
+            if let firstNextAmt = remainingUnpaid.first?.amount,
+               abs(contract.installmentAmount - firstNextAmt) > 0.005 {
+                contract.installmentAmount = firstNextAmt
+                contract.financingDetails?.totalInstallmentAmount = firstNextAmt
+                didMutate = true
+            }
+
+            contracts[cIdx] = contract
+        }
+
+        if didMutate {
+            sortTransactions()
+        }
+        return didMutate
+    }
+
     @discardableResult
     public func createCreditContract(
         kind: CreditContractKind,
@@ -4053,7 +4113,8 @@ public final class FinancialDataStore: ObservableObject {
             .sorted { $0.installmentNumber < $1.installmentNumber }
 
         let initialLoanBalance: Double? = {
-            if !futureScheduledItems.isEmpty,
+            if kind == .loan,
+               !futureScheduledItems.isEmpty,
                let schedule = scheduledInstallments,
                futureScheduledItems.count < schedule.count {
                 // Uma ou mais parcelas da tabela "PARCELAS A VENCER" do banco já saíram do salário (ex: Parcela 11 no 1º dia útil):

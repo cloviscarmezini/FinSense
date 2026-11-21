@@ -526,6 +526,7 @@ public enum LoanProjectionEngine {
         var currentBaseInstallment = initialBaseInstallment
         var currentInsuranceFee = initialInsuranceFee
         var remainingTermMonths = max(initialRemainingMonths, 1)
+        var installmentReductionScale: Decimal = Decimal(1)
         var currentSACAmortizationQuota: Decimal = {
             if !isLoan && contract.amortizationSystem == .sac && remainingTermMonths > 0 {
                 return roundCurrency(initialBalance / Decimal(remainingTermMonths))
@@ -602,6 +603,7 @@ public enum LoanProjectionEngine {
                 let effectiveNormalAmortization: Decimal
                 let effectiveBaseInstallment: Decimal
                 let newBalance: Decimal
+                let totalOutflow: Decimal
 
                 if isLoan, let schedule = contract.scheduledInstallments, !schedule.isEmpty {
                     // Empréstimo com cronograma VLR. PARC decrescente (Valor Presente D0 do demonstrativo Santander DDC):
@@ -622,6 +624,35 @@ public enum LoanProjectionEngine {
 
                     effectiveNormalAmortization = max(.zero, roundCurrency(effectiveD0Installment - interest))
                     newBalance = max(.zero, roundCurrency(correctedBalance - effectiveD0Installment))
+                    totalOutflow = effectiveBaseInstallment
+                } else if !isLoan,
+                          contract.amortizationSystem == .price,
+                          let schedule = contract.scheduledInstallments,
+                          !schedule.isEmpty {
+                    // Financiamento CAIXA TP com cronograma crescente calculado pela média de correção mensal do demonstrativo:
+                    let schedItem = schedule.first(where: { $0.installmentNumber == tx.installmentIndex })
+                    let scheduledTotalPaid = roundCurrency(toDecimal(schedItem?.amount ?? tx.amount) * installmentReductionScale)
+                    let scheduledBase: Decimal = {
+                        if let p = schedItem?.principalAmount, p > 0 {
+                            return roundCurrency(toDecimal(p) * installmentReductionScale)
+                        }
+                        return max(.zero, roundCurrency(scheduledTotalPaid - currentInsuranceFee - fixedAdminFee))
+                    }()
+                    let calcInterest = roundCurrency(correctedBalance * monthlyRateDecimal)
+                    interest = calcInterest
+                    let rawNormalAmortization = max(.zero, scheduledBase - calcInterest)
+
+                    if rawNormalAmortization >= correctedBalance {
+                        effectiveNormalAmortization = correctedBalance
+                        effectiveBaseInstallment = effectiveNormalAmortization + calcInterest
+                        totalOutflow = roundCurrency(effectiveBaseInstallment + currentInsuranceFee + fixedAdminFee)
+                    } else {
+                        effectiveNormalAmortization = rawNormalAmortization
+                        effectiveBaseInstallment = scheduledBase
+                        totalOutflow = scheduledTotalPaid
+                    }
+                    currentBaseInstallment = effectiveBaseInstallment
+                    newBalance = max(.zero, roundCurrency(correctedBalance - effectiveNormalAmortization))
                 } else {
                     let calcInterest = roundCurrency(correctedBalance * monthlyRateDecimal)
                     interest = calcInterest
@@ -650,13 +681,12 @@ public enum LoanProjectionEngine {
                     }
 
                     newBalance = max(.zero, roundCurrency(correctedBalance - effectiveNormalAmortization))
+                    // Seguros e Taxa de Administração compõem o fluxo de caixa (orçamento), mas NÃO entram na amortização do saldo
+                    totalOutflow = roundCurrency(effectiveBaseInstallment + currentInsuranceFee + fixedAdminFee)
                 }
 
-                // Seguros e Taxa de Administração compõem o fluxo de caixa (orçamento), mas NÃO entram na amortização do saldo
-                let totalOutflow = roundCurrency(effectiveBaseInstallment + currentInsuranceFee + fixedAdminFee)
-
-                // Atualiza seguro proporcionalmente para os próximos meses caso financiamento
-                if !isLoan && initialBalance > Decimal(string: "0.01")! && initialInsuranceFee > .zero {
+                // Atualiza seguro proporcionalmente para os próximos meses caso financiamento sem cronograma de crescimento extraído
+                if !isLoan && (contract.scheduledInstallments?.isEmpty ?? true) && initialBalance > Decimal(string: "0.01")! && initialInsuranceFee > .zero {
                     let ratio = max(.zero, min(Decimal(1), newBalance / initialBalance))
                     currentInsuranceFee = roundCurrency(initialInsuranceFee * ratio)
                 }
@@ -788,11 +818,15 @@ public enum LoanProjectionEngine {
 
                     case .reduceInstallment:
                         if contract.amortizationSystem == .price {
+                            let prevBase = currentBaseInstallment
                             currentBaseInstallment = calculatePriceBaseInstallment(
                                 balance: newBalance,
                                 monthlyRateDecimal: monthlyRateDecimal,
                                 remainingMonths: max(remainingTermMonths, 1)
                             )
+                            if prevBase > Decimal(string: "0.01")! {
+                                installmentReductionScale = installmentReductionScale * (currentBaseInstallment / prevBase)
+                            }
                         } else {
                             // SAC: divide o novo saldo pelo prazo restante
                             currentSACAmortizationQuota = roundCurrency(newBalance / Decimal(max(remainingTermMonths, 1)))

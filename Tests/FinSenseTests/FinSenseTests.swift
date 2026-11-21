@@ -5385,7 +5385,7 @@ final class FinSenseTests: XCTestCase {
             XCTAssertEqual(store.calendar.component(.day, from: tx.date), 1, "Transações futuras devem cair no dia de cobrança no salário (dia 1)")
         }
 
-        // 2. Extração Caixa Econômica Federal (Habitação)
+        // 2. Extração Caixa Econômica Federal (Habitação) com crescimento médio mensal extraído do Valor Pago (Parcelas 17 a 28)
         let caixaDoc = ContractDocumentImportService.parseContractDocumentText(
             SampleContractDocumentsData.caixaFinancingOCRText,
             expectedKind: .financing
@@ -5401,6 +5401,70 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(caixaDoc.insuranceFee ?? 0, 86.27, accuracy: 0.01)
         XCTAssertEqual(caixaDoc.adminFee ?? 0, 25.00, accuracy: 0.01)
         XCTAssertNotNil(caixaDoc.referenceDate)
+
+        // Verifica o crescimento médio mensal extraído do documento:
+        // Parcela 17 (05/12/2025): Pago = 2.613,19 -> Parcela 28 (05/11/2026): Pago = 2.658,06
+        // Diferença acumulada em 11 meses = R$ 44,87 -> Média mensal = 44,87 / 11 = R$ 4,07909... (~R$ 4,08/mês)
+        let expectedAvgGrowth = (2658.06 - 2613.19) / 11.0
+        XCTAssertEqual(caixaDoc.averageMonthlyInstallmentGrowth ?? 0, expectedAvgGrowth, accuracy: 0.001, "Deve calcular a média mensal de crescimento de R$ 44,87 / 11 (~R$ 4,08/mês)")
+        XCTAssertEqual(caixaDoc.scheduledInstallments.count, 332, "Deve projetar as 332 parcelas futuras (29 a 360) com o crescimento médio mensal")
+        XCTAssertEqual(caixaDoc.scheduledInstallments[0].installmentNumber, 29)
+        XCTAssertEqual(caixaDoc.scheduledInstallments[0].amount, 2662.14, accuracy: 0.01, "Parcela 29/360 = 2.658,06 + 1 * (44,87/11) = 2.662,14")
+        XCTAssertEqual(caixaDoc.scheduledInstallments[1].installmentNumber, 30)
+        XCTAssertEqual(caixaDoc.scheduledInstallments[1].amount, 2666.22, accuracy: 0.01, "Parcela 30/360 = 2.658,06 + 2 * (44,87/11) = 2.666,22")
+        XCTAssertEqual(caixaDoc.scheduledInstallments[2].installmentNumber, 31)
+        XCTAssertEqual(caixaDoc.scheduledInstallments[2].amount, 2670.30, accuracy: 0.01, "Parcela 31/360 = 2.658,06 + 3 * (44,87/11) = 2.670,30")
+        XCTAssertEqual(caixaDoc.scheduledInstallments[10].installmentNumber, 39)
+        XCTAssertEqual(caixaDoc.scheduledInstallments[10].amount, 2702.93, accuracy: 0.01, "Parcela 39/360 (11 meses após a 28) = 2.658,06 + 44,87 = 2.702,93")
+        XCTAssertEqual(caixaDoc.scheduledInstallments.last?.installmentNumber, 360)
+        XCTAssertEqual(caixaDoc.scheduledInstallments.last?.amount ?? 0, 4012.32, accuracy: 0.01, "Parcela 360/360 = 2.658,06 + 332 * (44,87/11) = 4.012,32")
+
+        // Cria o contrato de financiamento Caixa no store e verifica que todas as 332 transações futuras e a simulação seguem o crescimento médio
+        let caixaContract = store.createCreditContract(
+            kind: .financing,
+            name: caixaDoc.name,
+            contractNumber: caixaDoc.contractNumber,
+            financingSubtype: .imovel,
+            amortizationSystem: caixaDoc.amortizationSystem,
+            totalContractedAmount: caixaDoc.totalContractedAmount,
+            outstandingBalance: caixaDoc.outstandingBalance,
+            installmentAmount: caixaDoc.installmentAmount,
+            billingDay: 5,
+            totalInstallments: caixaDoc.totalInstallments,
+            monthlyInterestRate: caixaDoc.monthlyInterestRate,
+            startDate: caixaDoc.startDate,
+            accountId: bank.id,
+            referenceDate: refNow,
+            overridePastInstallmentsCount: caixaDoc.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: caixaDoc.firstFutureBillingDate,
+            annualNominalInterestRate: caixaDoc.annualNominalInterestRate,
+            indexationRate: caixaDoc.indexationRate,
+            adminFee: caixaDoc.adminFee,
+            insuranceFee: caixaDoc.insuranceFee,
+            baseInstallmentAmount: caixaDoc.baseInstallmentAmount,
+            bankDueDay: caixaDoc.bankDueDay,
+            documentReferenceDate: caixaDoc.referenceDate,
+            maturityDate: caixaDoc.maturityDate,
+            scheduledInstallments: caixaDoc.scheduledInstallments
+        )
+
+        XCTAssertEqual(store.currentOutstandingBalance(for: caixaContract), 324737.86, accuracy: 0.01, "Saldo devedor teórico deve permanecer R$ 324.737,86")
+        let caixaFutureTxs = store.transactions
+            .filter { $0.linkedContractId == caixaContract.id && $0.installmentIndex != nil }
+            .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
+        XCTAssertEqual(caixaFutureTxs.count, 332)
+        XCTAssertEqual(caixaFutureTxs[0].amount, 2662.14, accuracy: 0.01)
+        XCTAssertEqual(caixaFutureTxs[1].amount, 2666.22, accuracy: 0.01)
+        XCTAssertEqual(caixaFutureTxs[2].amount, 2670.30, accuracy: 0.01)
+        XCTAssertEqual(caixaFutureTxs[10].amount, 2702.93, accuracy: 0.01)
+        XCTAssertEqual(caixaFutureTxs.last?.amount ?? 0, 4012.32, accuracy: 0.01)
+
+        let caixaProjection = store.loanProjection(for: caixaContract.id)!
+        let regularRows = caixaProjection.timeline.filter { $0.eventKind == .regularInstallment }
+        XCTAssertEqual(regularRows.count, 332)
+        XCTAssertEqual(LoanProjectionEngine.toDouble(regularRows[0].totalBudgetOutflow), 2662.14, accuracy: 0.01)
+        XCTAssertEqual(LoanProjectionEngine.toDouble(regularRows[1].totalBudgetOutflow), 2666.22, accuracy: 0.01)
+        XCTAssertEqual(LoanProjectionEngine.toDouble(regularRows[2].totalBudgetOutflow), 2670.30, accuracy: 0.01)
     }
 
     func testThreeLayerAmortizationPlanningShadowingExpirationAndConfirmation() {
