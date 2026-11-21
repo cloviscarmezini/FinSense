@@ -316,6 +316,7 @@ public struct SyncDeltasContainerDTO: Codable {
     public let investmentItems: [InvestmentItem]?
     public let debtItems: [DebtItem]?
     public let creditContracts: [CreditContract]?
+    public let amortizationPlans: [AmortizationPlan]?
     public let categoryProvisions: [CategoryProvision]?
     public let categoryQuotaRules: [CategoryQuotaRule]?
 
@@ -326,6 +327,7 @@ public struct SyncDeltasContainerDTO: Codable {
         investmentItems: [InvestmentItem]? = nil,
         debtItems: [DebtItem]? = nil,
         creditContracts: [CreditContract]? = nil,
+        amortizationPlans: [AmortizationPlan]? = nil,
         categoryProvisions: [CategoryProvision]? = nil,
         categoryQuotaRules: [CategoryQuotaRule]? = nil
     ) {
@@ -335,6 +337,7 @@ public struct SyncDeltasContainerDTO: Codable {
         self.investmentItems = investmentItems
         self.debtItems = debtItems
         self.creditContracts = creditContracts
+        self.amortizationPlans = amortizationPlans
         self.categoryProvisions = categoryProvisions
         self.categoryQuotaRules = categoryQuotaRules
     }
@@ -346,6 +349,7 @@ public struct SyncDeltasContainerDTO: Codable {
         case investmentItems = "investment_items"
         case debtItems = "debt_items"
         case creditContracts = "credit_contracts"
+        case amortizationPlans = "amortization_plans"
         case categoryProvisions = "category_provisions"
         case categoryQuotaRules = "category_quota_rules"
     }
@@ -375,6 +379,7 @@ public struct SyncDeltasContainerDTO: Codable {
         self.investmentItems = decodeItems(.investmentItems)
         self.debtItems = decodeItems(.debtItems)
         self.creditContracts = decodeItems(.creditContracts)
+        self.amortizationPlans = decodeItems(.amortizationPlans)
         self.categoryProvisions = decodeItems(.categoryProvisions)
         self.categoryQuotaRules = decodeItems(.categoryQuotaRules)
     }
@@ -386,6 +391,7 @@ public struct SyncDeltasContainerDTO: Codable {
         (investmentItems?.isEmpty ?? true) &&
         (debtItems?.isEmpty ?? true) &&
         (creditContracts?.isEmpty ?? true) &&
+        (amortizationPlans?.isEmpty ?? true) &&
         (categoryProvisions?.isEmpty ?? true) &&
         (categoryQuotaRules?.isEmpty ?? true)
     }

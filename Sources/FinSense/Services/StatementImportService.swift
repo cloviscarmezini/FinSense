@@ -1704,18 +1704,13 @@ public enum ContractDocumentImportService {
             // Calcula a média mensal de crescimento no Valor Pago (e Amortização + Juros) ao longo das parcelas do documento:
             // Ex: Parcela 17 (R$ 2.613,19) -> Parcela 28 (R$ 2.658,06) = +R$ 44,87 em 11 meses => média de +R$ 4,07909.../mês (~R$ 4,08/mês)
             var avgPaidGrowthDec: Decimal = .zero
-            var avgBaseGrowthDec: Decimal = .zero
             if let firstRow = historyRows.first,
                let lastRow = historyRows.last,
                lastRow.installmentNumber > firstRow.installmentNumber {
                 let intervals = Decimal(lastRow.installmentNumber - firstRow.installmentNumber)
                 let paidDiff = LoanProjectionEngine.toDecimal(lastRow.paidAmount) - LoanProjectionEngine.toDecimal(firstRow.paidAmount)
-                let baseDiff = LoanProjectionEngine.toDecimal(lastRow.baseInstallment) - LoanProjectionEngine.toDecimal(firstRow.baseInstallment)
                 if paidDiff > .zero {
                     avgPaidGrowthDec = paidDiff / intervals
-                }
-                if baseDiff > .zero {
-                    avgBaseGrowthDec = baseDiff / intervals
                 }
             }
 

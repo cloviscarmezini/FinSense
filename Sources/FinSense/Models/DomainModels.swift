@@ -1652,6 +1652,32 @@ public struct ContractInstallmentScheduleItem: Identifiable, Codable, Hashable {
         self.principalAmount = principalAmount.map { abs($0) }
         self.interestAmount = interestAmount.map { abs($0) }
     }
+
+    enum CodingKeys: String, CodingKey {
+        case installmentNumber, bankDueDate, amount, principalAmount, interestAmount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.installmentNumber = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("installmentNumber")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("installment_number"))) ?? 1
+        self.bankDueDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("bankDueDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("bank_due_date"))) ?? Date()
+        self.amount = abs((try? c.decodeIfPresent(Double.self, forKey: AnyKey("amount"))) ?? 0.0)
+        self.principalAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("principalAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("principal_amount")))
+        self.interestAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("interestAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("interest_amount")))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(installmentNumber, forKey: .installmentNumber)
+        try c.encode(bankDueDate, forKey: .bankDueDate)
+        try c.encode(amount, forKey: .amount)
+        try c.encodeIfPresent(principalAmount, forKey: .principalAmount)
+        try c.encodeIfPresent(interestAmount, forKey: .interestAmount)
+    }
 }
 
 // MARK: - Camada 2 (Intenção / Planejamento de Amortização) & Cenários de Orçamento
@@ -1746,6 +1772,47 @@ public struct PlannedAmortization: Identifiable, Codable, Hashable {
         self.notes = notes
         self.createdAt = createdAt
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, contractId, date, amount, source, mode, status, linkedTransactionId, notes, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.contractId = (try? c.decode(UUID.self, forKey: AnyKey("contractId")))
+            ?? (try? c.decode(UUID.self, forKey: AnyKey("contract_id"))) ?? UUID()
+        self.date = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("date"))) ?? Date()
+        if let dec = try? c.decodeIfPresent(Decimal.self, forKey: AnyKey("amount")) {
+            self.amount = max(.zero, dec)
+        } else if let dbl = try? c.decodeIfPresent(Double.self, forKey: AnyKey("amount")) {
+            self.amount = max(.zero, Decimal(dbl))
+        } else {
+            self.amount = .zero
+        }
+        self.source = (try? c.decodeIfPresent(AmortizationFundingSource.self, forKey: AnyKey("source"))) ?? .cash
+        self.mode = (try? c.decodeIfPresent(AmortizationRecalculationMode.self, forKey: AnyKey("mode"))) ?? .reduceTerm
+        self.status = (try? c.decodeIfPresent(PlannedAmortizationStatus.self, forKey: AnyKey("status"))) ?? .pending
+        self.linkedTransactionId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedTransactionId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_transaction_id")))
+        self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(contractId, forKey: .contractId)
+        try c.encode(date, forKey: .date)
+        try c.encode(amount, forKey: .amount)
+        try c.encode(source, forKey: .source)
+        try c.encode(mode, forKey: .mode)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(linkedTransactionId, forKey: .linkedTransactionId)
+        try c.encode(notes, forKey: .notes)
+        try c.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 /// Plano de Amortização vinculado a um contrato de crédito (Camada 2 — Intenção)
@@ -1783,6 +1850,66 @@ public struct AmortizationPlan: Identifiable, Codable, Hashable {
         self.items = items
         self.updatedAt = updatedAt
         self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, contractId, generationMode, billingDay, incomeCommitmentPercentage
+        case defaultRecalculationMode, estimatedMonthlyTR, items, updatedAt, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.contractId = (try? c.decode(UUID.self, forKey: AnyKey("contractId")))
+            ?? (try? c.decode(UUID.self, forKey: AnyKey("contract_id"))) ?? UUID()
+        self.generationMode = (try? c.decodeIfPresent(AmortizationPlanGenerationMode.self, forKey: AnyKey("generationMode")))
+            ?? (try? c.decodeIfPresent(AmortizationPlanGenerationMode.self, forKey: AnyKey("generation_mode"))) ?? .manual
+        let rawDay = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("billingDay")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("billing_day"))) ?? 26
+        self.billingDay = min(max(rawDay, 1), 31)
+
+        if let decPct = (try? c.decodeIfPresent(Decimal.self, forKey: AnyKey("incomeCommitmentPercentage")))
+            ?? (try? c.decodeIfPresent(Decimal.self, forKey: AnyKey("income_commitment_percentage"))) {
+            self.incomeCommitmentPercentage = min(max(decPct, Decimal(1)), Decimal(100))
+        } else if let dblPct = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("incomeCommitmentPercentage")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("income_commitment_percentage"))) {
+            self.incomeCommitmentPercentage = min(max(Decimal(dblPct), Decimal(1)), Decimal(100))
+        } else {
+            self.incomeCommitmentPercentage = Decimal(30)
+        }
+
+        self.defaultRecalculationMode = (try? c.decodeIfPresent(AmortizationRecalculationMode.self, forKey: AnyKey("defaultRecalculationMode")))
+            ?? (try? c.decodeIfPresent(AmortizationRecalculationMode.self, forKey: AnyKey("default_recalculation_mode"))) ?? .reduceTerm
+
+        if let decTR = (try? c.decodeIfPresent(Decimal.self, forKey: AnyKey("estimatedMonthlyTR")))
+            ?? (try? c.decodeIfPresent(Decimal.self, forKey: AnyKey("estimated_monthly_tr"))) {
+            self.estimatedMonthlyTR = max(.zero, decTR)
+        } else if let dblTR = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("estimatedMonthlyTR")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("estimated_monthly_tr"))) {
+            self.estimatedMonthlyTR = max(.zero, Decimal(dblTR))
+        } else {
+            self.estimatedMonthlyTR = .zero
+        }
+
+        self.items = (try? c.decodeIfPresent([PlannedAmortization].self, forKey: AnyKey("items"))) ?? []
+        self.updatedAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updatedAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updated_at"))) ?? Date()
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(contractId, forKey: .contractId)
+        try c.encode(generationMode, forKey: .generationMode)
+        try c.encode(billingDay, forKey: .billingDay)
+        try c.encode(incomeCommitmentPercentage, forKey: .incomeCommitmentPercentage)
+        try c.encode(defaultRecalculationMode, forKey: .defaultRecalculationMode)
+        try c.encode(estimatedMonthlyTR, forKey: .estimatedMonthlyTR)
+        try c.encode(items, forKey: .items)
+        try c.encode(updatedAt, forKey: .updatedAt)
+        try c.encode(createdAt, forKey: .createdAt)
     }
 }
 

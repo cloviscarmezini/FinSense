@@ -5245,6 +5245,7 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         syncPlannedAmortizationTransactions(for: contractId)
+        cloudSyncService?.recordLocalMutation(entityName: "amortization_plans", entityId: savedPlan.id, operation: .upsert, entity: savedPlan)
         return savedPlan
     }
 
@@ -5583,10 +5584,18 @@ public final class FinancialDataStore: ObservableObject {
 
     /// Exclui integralmente o planejamento de amortização de um contrato, restaurando a visão base da Camada 1.
     public func deleteAmortizationPlan(for contractId: UUID) {
+        let deletedPlans = amortizationPlans.filter { $0.contractId == contractId }
+        let deletedTxs = transactions.filter { $0.linkedContractId == contractId && $0.transactionOrigin == .plannedAmortization }
         amortizationPlans.removeAll { $0.contractId == contractId }
         transactions.removeAll { $0.linkedContractId == contractId && $0.transactionOrigin == .plannedAmortization }
         sortTransactions()
         save()
+        for plan in deletedPlans {
+            cloudSyncService?.recordLocalMutation(entityName: "amortization_plans", entityId: plan.id, operation: .delete)
+        }
+        for tx in deletedTxs {
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: tx.id, operation: .delete)
+        }
     }
 
     /// Atualiza parâmetros globais do plano de amortização (ex: TR mensal estimada, dia de cobrança, percentual).
