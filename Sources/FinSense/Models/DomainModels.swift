@@ -1187,6 +1187,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
     public var maturityDate: Date? // Data de vencimento final contratual ("Dt. Vcto. Final")
     public var estimatedMonthlyTR: Double? // TR mensal estimada em percentual (ex: 0.10 representa 0,10% a.m. ou 0.001)
     public var lastFGTSUsageDate: Date? // Data do último uso de FGTS no contrato (validação de interstício de 24 meses)
+    public var scheduledInstallments: [ContractInstallmentScheduleItem]? // Cronograma individual de parcelas com VLR. PARC decrescente (ex: Santander DDC)
 
     /// Dia efetivo de vencimento/liquidação no banco (para cálculos pró-rata e ciclo de competência bancária)
     public var effectiveBankDueDay: Int {
@@ -1231,7 +1232,8 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         referenceDate: Date? = nil,
         maturityDate: Date? = nil,
         estimatedMonthlyTR: Double? = nil,
-        lastFGTSUsageDate: Date? = nil
+        lastFGTSUsageDate: Date? = nil,
+        scheduledInstallments: [ContractInstallmentScheduleItem]? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -1272,6 +1274,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.maturityDate = maturityDate
         self.estimatedMonthlyTR = estimatedMonthlyTR
         self.lastFGTSUsageDate = lastFGTSUsageDate
+        self.scheduledInstallments = scheduledInstallments
 
         if kind == .financing && self.financingDetails == nil {
             let effAnnual = annualNominalInterestRate ?? (monthlyInterestRate > 0 ? monthlyInterestRate * 12.0 : 8.51)
@@ -1434,7 +1437,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         case isSettled, settledAmount, settledDate, settledAccountId, notes, createdAt
         case annualNominalInterestRate, indexationRate, adminFee, insuranceFee
         case baseInstallmentAmount, financingDetails, loanDetails
-        case bankDueDay, referenceDate, maturityDate, estimatedMonthlyTR, lastFGTSUsageDate
+        case bankDueDay, referenceDate, maturityDate, estimatedMonthlyTR, lastFGTSUsageDate, scheduledInstallments
     }
 
     public init(from decoder: Decoder) throws {
@@ -1513,6 +1516,8 @@ public struct CreditContract: Identifiable, Codable, Hashable {
             ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("estimated_monthly_tr")))
         self.lastFGTSUsageDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("lastFGTSUsageDate")))
             ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("last_fgts_usage_date")))
+        self.scheduledInstallments = (try? c.decodeIfPresent([ContractInstallmentScheduleItem].self, forKey: AnyKey("scheduledInstallments")))
+            ?? (try? c.decodeIfPresent([ContractInstallmentScheduleItem].self, forKey: AnyKey("scheduled_installments")))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1555,6 +1560,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(maturityDate, forKey: .maturityDate)
         try c.encodeIfPresent(estimatedMonthlyTR, forKey: .estimatedMonthlyTR)
         try c.encodeIfPresent(lastFGTSUsageDate, forKey: .lastFGTSUsageDate)
+        try c.encodeIfPresent(scheduledInstallments, forKey: .scheduledInstallments)
     }
 
     public var subtypeDisplayName: String {
@@ -1580,6 +1586,31 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         case .financing:
             return (financingSubtype ?? .imovel).iconSymbol
         }
+    }
+}
+
+// MARK: - Cronograma Individual de Parcela (VLR. PARC decrescente extraído do demonstrativo)
+
+public struct ContractInstallmentScheduleItem: Identifiable, Codable, Hashable {
+    public var id: Int { installmentNumber }
+    public var installmentNumber: Int
+    public var bankDueDate: Date
+    public var amount: Double // VLR. PARC (ex: 4.468,15 -> 2.697,95)
+    public var principalAmount: Double? // AMORTIZAÇÃO / VLR PRINCIPAL
+    public var interestAmount: Double? // VLR. JUROS
+
+    public init(
+        installmentNumber: Int,
+        bankDueDate: Date,
+        amount: Double,
+        principalAmount: Double? = nil,
+        interestAmount: Double? = nil
+    ) {
+        self.installmentNumber = installmentNumber
+        self.bankDueDate = bankDueDate
+        self.amount = abs(amount)
+        self.principalAmount = principalAmount.map { abs($0) }
+        self.interestAmount = interestAmount.map { abs($0) }
     }
 }
 

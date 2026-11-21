@@ -1145,6 +1145,8 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
     public var bankDueDay: Int // Dia em que o banco recebe o pagamento (DT.VCTO / Data Vencimento)
     public var referenceDate: Date? // Data de referência do Saldo Devedor ("Em:" / "Saldo Devedor Teórico em")
     public var maturityDate: Date? // Data de vencimento final contratual ("Dt. Vcto. Final")
+    public var firstInstallmentBankDueDate: Date? // Data do 1º vencimento no banco ("Dt. 1º Vcto")
+    public var scheduledInstallments: [ContractInstallmentScheduleItem] // Cronograma de parcelas a vencer com VLR. PARC decrescente
 
     public init(
         id: UUID = UUID(),
@@ -1174,7 +1176,9 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
         baseInstallmentAmount: Double? = nil,
         bankDueDay: Int? = nil,
         referenceDate: Date? = nil,
-        maturityDate: Date? = nil
+        maturityDate: Date? = nil,
+        firstInstallmentBankDueDate: Date? = nil,
+        scheduledInstallments: [ContractInstallmentScheduleItem] = []
     ) {
         self.id = id
         self.kind = kind
@@ -1204,6 +1208,76 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
         self.bankDueDay = min(max(bankDueDay ?? billingDay, 1), 31)
         self.referenceDate = referenceDate ?? documentEmissionDate
         self.maturityDate = maturityDate
+        self.firstInstallmentBankDueDate = firstInstallmentBankDueDate
+        self.scheduledInstallments = scheduledInstallments
+    }
+
+    /// Recalcula a quantidade de parcelas já pagas, parcelas futuras restantes, próxima data de cobrança,
+    /// saldo devedor restante e valor da próxima parcela tomando como referência o dia em que o dinheiro
+    /// sai do salário/conta do usuário (`salaryBillingDay`).
+    public func recalculatedForSalaryBillingDay(
+        _ salaryBillingDay: Int,
+        referenceNow: Date,
+        calendar: Calendar = .current
+    ) -> (
+        paidCount: Int,
+        remainingCount: Int,
+        firstFutureBillingDate: Date,
+        remainingBalance: Double,
+        nextInstallmentAmount: Double
+    ) {
+        let clampedDay = min(max(salaryBillingDay, 1), 28)
+        let docRef = referenceDate ?? documentEmissionDate ?? referenceNow
+        let effectiveRef = calendar.startOfDay(for: max(referenceNow, docRef))
+
+        if !scheduledInstallments.isEmpty {
+            let sortedSchedule = scheduledInstallments.sorted { $0.installmentNumber < $1.installmentNumber }
+            let futureItems = sortedSchedule.filter { item in
+                var comps = calendar.dateComponents([.year, .month], from: item.bankDueDate)
+                comps.day = clampedDay
+                let salaryDate = calendar.date(from: comps) ?? item.bankDueDate
+                return calendar.startOfDay(for: salaryDate) > effectiveRef
+            }
+
+            let paidCount = min(totalInstallments, max(paidInstallmentsCount, totalInstallments - futureItems.count))
+            let remainingCount = max(totalInstallments - paidCount, 0)
+
+            let nextBillingDate: Date = {
+                if let firstFuture = futureItems.first {
+                    var comps = calendar.dateComponents([.year, .month], from: firstFuture.bankDueDate)
+                    comps.day = clampedDay
+                    return calendar.date(from: comps) ?? firstFuture.bankDueDate
+                }
+                var comps = calendar.dateComponents([.year, .month], from: effectiveRef)
+                comps.day = clampedDay
+                let candidate = calendar.date(from: comps) ?? effectiveRef
+                return calendar.date(byAdding: .month, value: 1, to: candidate) ?? candidate
+            }()
+
+            let remainingBalance: Double = {
+                if futureItems.count < sortedSchedule.count {
+                    let sum = futureItems.reduce(0.0) { $0 + $1.amount }
+                    return (sum * 100.0).rounded() / 100.0
+                }
+                return outstandingBalance
+            }()
+
+            let nextAmount = futureItems.first?.amount ?? installmentAmount
+            return (paidCount, remainingCount, nextBillingDate, remainingBalance, nextAmount)
+        }
+
+        var comps = calendar.dateComponents([.year, .month], from: firstFutureBillingDate)
+        comps.day = clampedDay
+        var nextDate = calendar.date(from: comps) ?? firstFutureBillingDate
+        var paid = paidInstallmentsCount
+
+        while calendar.startOfDay(for: nextDate) <= effectiveRef && paid < totalInstallments {
+            paid += 1
+            nextDate = calendar.date(byAdding: .month, value: 1, to: nextDate) ?? nextDate
+        }
+
+        let remaining = max(totalInstallments - paid, 0)
+        return (paid, remaining, nextDate, outstandingBalance, installmentAmount)
     }
 }
 
@@ -1272,10 +1346,28 @@ public enum ContractDocumentImportService {
                 ?? extractRegexRate(#"TAXA\s+EFETIVA\s+MENSAL[:\s\n]*(\d{1,2},\d{2,4})"#, in: normalized)
                 ?? 2.00
 
+            // Extrai a tabela completa de PARCELAS A VENCER (com VLR. PARC decrescente por parcela)
+            let parsedScheduleItems: [ContractInstallmentScheduleItem] = {
+                guard let rangePos = normalized.range(of: "PARCELAS A VENCER") else { return [] }
+                let tail = String(normalized[rangePos.upperBound...])
+                let sectionText: String
+                if let totalRange = tail.range(of: "TOTAL A VENCER") {
+                    sectionText = String(tail[..<totalRange.lowerBound])
+                } else if let somaRange = tail.range(of: "SOMA VLR") {
+                    sectionText = String(tail[..<somaRange.lowerBound])
+                } else {
+                    sectionText = tail
+                }
+                return extractSantanderInstallmentSchedule(in: sectionText, totalInstallments: totalInstallments)
+            }()
+
             // Determina quantas parcelas estão em aberto na tabela PARCELAS A VENCER
             let openOccurrences = countOccurrences(of: "EM ABERTO", in: normalized)
             let paidOccurrences = countOccurrences(of: "LIQUIDADA", in: normalized) + countOccurrences(of: " PAGA ", in: normalized)
             let rangeRemaining: Int? = {
+                if !parsedScheduleItems.isEmpty {
+                    return parsedScheduleItems.count
+                }
                 if let rangePos = normalized.range(of: "PARCELAS A VENCER") {
                     let tail = String(normalized[rangePos.upperBound...])
                     if let firstStr = extractRegexGroup(#"PARCELAS\s+(\d{1,3})\s+A\s+\d{1,3}"#, in: tail),
@@ -1285,7 +1377,6 @@ public enum ContractDocumentImportService {
                        lastIdx >= firstIdx {
                         return lastIdx - firstIdx + 1
                     }
-                    // Se for tabela linha a linha em PARCELAS A VENCER, conta as linhas com data de vencimento antes de "TOTAL A VENCER"
                     let sectionText: String
                     if let totalRange = tail.range(of: "TOTAL A VENCER") {
                         sectionText = String(tail[..<totalRange.lowerBound])
@@ -1327,8 +1418,8 @@ public enum ContractDocumentImportService {
 
             let paidInstallments = max(totalInstallments - remainingInstallments, 0)
 
-            // fixed_installment: Prioriza "VLR. PARC" das parcelas já pagas em Movimentações Efetuadas
-            let installmentAmount: Double = {
+            // fixed_installment / VLR. PARC: Prioriza o valor da próxima parcela a vencer (ou o fixo em folha)
+            let fixedPayrollInstallment: Double = {
                 if let directParc = extractRegexBRLAmount(#"V[LI1]R\.?\s*PARC(?:ELA)?[:\s\n]+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: normalized), directParc > 0 {
                     return directParc
                 }
@@ -1340,6 +1431,9 @@ public enum ContractDocumentImportService {
 
             // due_day: Dia do campo "DT.VCTO" (dia em que o banco recebe o pagamento, geralmente dia 25)
             let bankDueDay: Int = {
+                if let firstSched = parsedScheduleItems.first {
+                    return cal.component(.day, from: firstSched.bankDueDate)
+                }
                 if let fDate = firstVctoDate {
                     return cal.component(.day, from: fDate)
                 }
@@ -1354,6 +1448,9 @@ public enum ContractDocumentImportService {
             }()
 
             let firstFutureDate: Date = {
+                if let firstSched = parsedScheduleItems.first {
+                    return firstSched.bankDueDate
+                }
                 if let fDate = firstVctoDate,
                    let calculated = cal.date(byAdding: .month, value: paidInstallments, to: fDate) {
                     return calculated
@@ -1365,14 +1462,48 @@ public enum ContractDocumentImportService {
                 return Date()
             }()
 
+            // Caso o texto não tenha todas as linhas discriminadas mas seja um DDC Santander, sintetiza a curva VLR. PARC decrescente (Valor Presente D0)
+            let finalScheduledInstallments: [ContractInstallmentScheduleItem] = {
+                if !parsedScheduleItems.isEmpty {
+                    return parsedScheduleItems
+                }
+                guard remainingInstallments > 0, fixedPayrollInstallment > 0, monthlyRate > 0 else { return [] }
+                var synthesized: [ContractInstallmentScheduleItem] = []
+                let rateDec = monthlyRate / 100.0
+                let refStart = cal.startOfDay(for: referenceDate)
+                for offset in 0..<remainingInstallments {
+                    let instNum = paidInstallments + offset + 1
+                    let due = cal.date(byAdding: .month, value: offset, to: firstFutureDate) ?? firstFutureDate
+                    let days = max(1, cal.dateComponents([.day], from: refStart, to: cal.startOfDay(for: due)).day ?? ((offset + 1) * 30))
+                    let pv = ((fixedPayrollInstallment / pow(1.0 + rateDec, Double(days) / 30.0)) * 100.0).rounded() / 100.0
+                    let principal = ((pv * 0.778864) * 100.0).rounded() / 100.0
+                    let interest = ((pv - principal) * 100.0).rounded() / 100.0
+                    synthesized.append(
+                        ContractInstallmentScheduleItem(
+                            installmentNumber: instNum,
+                            bankDueDate: due,
+                            amount: pv,
+                            principalAmount: principal,
+                            interestAmount: interest
+                        )
+                    )
+                }
+                return synthesized
+            }()
+
+            let installmentAmount = finalScheduledInstallments.first?.amount ?? fixedPayrollInstallment
+
             let resolvedMaturityDate: Date? = maturityDate ?? {
+                if let lastSched = finalScheduledInstallments.last {
+                    return lastSched.bankDueDate
+                }
                 if remainingInstallments > 0 {
                     return cal.date(byAdding: .month, value: max(remainingInstallments - 1, 0), to: firstFutureDate)
                 }
                 return nil
             }()
 
-            let nominalTotalRemaining = somaNominalAVencer ?? (Double(remainingInstallments) * installmentAmount)
+            let nominalTotalRemaining = somaNominalAVencer ?? (Double(remainingInstallments) * fixedPayrollInstallment)
 
             return ParsedCreditContractDocument(
                 kind: .loan,
@@ -1393,10 +1524,12 @@ public enum ContractDocumentImportService {
                 startDate: startDate,
                 firstFutureBillingDate: firstFutureDate,
                 documentEmissionDate: emissionDate,
-                extractedNotes: "Contrato \(contractNo) • Dt. Formalização: \(BRLFormatters.shortDate(startDate)) • Valor Solicitado: \(BRLFormatters.currency(requestedAmount)) • Vlr. Financiado: \(BRLFormatters.currency(financedAmount)) • \(paidInstallments) parcelas pagas e \(remainingInstallments) parcelas a vencer (Total nominal a vencer: \(BRLFormatters.currency(nominalTotalRemaining)) • Saldo Devedor D0: \(BRLFormatters.currency(outstandingDebt)) • Vencimento no Banco: dia \(bankDueDay)).",
+                extractedNotes: "Contrato \(contractNo) • Dt. Formalização: \(BRLFormatters.shortDate(startDate)) • Valor Solicitado: \(BRLFormatters.currency(requestedAmount)) • Vlr. Financiado: \(BRLFormatters.currency(financedAmount)) • \(paidInstallments) parcelas liquidadas no banco e \(remainingInstallments) parcelas na tabela a vencer (Total nominal a vencer: \(BRLFormatters.currency(nominalTotalRemaining)) • Saldo Devedor D0: \(BRLFormatters.currency(outstandingDebt)) • Vencimento no Banco: dia \(bankDueDay)).",
                 bankDueDay: bankDueDay,
                 referenceDate: referenceDate,
-                maturityDate: resolvedMaturityDate
+                maturityDate: resolvedMaturityDate,
+                firstInstallmentBankDueDate: firstVctoDate,
+                scheduledInstallments: finalScheduledInstallments
             )
         }
 
@@ -1716,24 +1849,105 @@ public enum ContractDocumentImportService {
         }
         return nil
     }
+
+    /// Extrai todas as linhas de parcelas a vencer da tabela do Santander DDC:
+    /// Formato: `NR. PARC   DT.VCTO   VLR. PARC   AMORTIZAÇÃO/VLR PRINCIPAL   VLR. JUROS   SALDO DEVEDOR (D0)   SITUAÇÃO`
+    private static func extractSantanderInstallmentSchedule(
+        in sectionText: String,
+        totalInstallments: Int
+    ) -> [ContractInstallmentScheduleItem] {
+        let pattern = #"\b(\d{1,3})\s+(\d{2}/\d{2}/\d{2,4})\s+(\d{1,3}(?:\.\d{3})*,\d{2})(?:\s+(\d{1,3}(?:\.\d{3})*,\d{2})\s+(\d{1,3}(?:\.\d{3})*,\d{2}))?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else { return [] }
+        let ns = sectionText as NSString
+        let matches = regex.matches(in: sectionText, options: [], range: NSRange(location: 0, length: ns.length))
+
+        var items: [ContractInstallmentScheduleItem] = []
+        var seenNumbers: Set<Int> = []
+
+        for match in matches {
+            guard match.numberOfRanges >= 4 else { continue }
+            let numStr = ns.substring(with: match.range(at: 1))
+            let dateStr = ns.substring(with: match.range(at: 2))
+            let amountStr = ns.substring(with: match.range(at: 3))
+
+            guard let instNum = Int(numStr),
+                  instNum >= 1,
+                  instNum <= max(totalInstallments, 300),
+                  !seenNumbers.contains(instNum),
+                  let dueDate = extractFirstDate(in: dateStr),
+                  let amount = BRLFormatters.parseAmount(amountStr),
+                  amount > 0 else {
+                continue
+            }
+
+            var principal: Double? = nil
+            var interest: Double? = nil
+            if match.numberOfRanges >= 6,
+               match.range(at: 4).location != NSNotFound,
+               match.range(at: 5).location != NSNotFound {
+                principal = BRLFormatters.parseAmount(ns.substring(with: match.range(at: 4)))
+                interest = BRLFormatters.parseAmount(ns.substring(with: match.range(at: 5)))
+            }
+
+            seenNumbers.insert(instNum)
+            items.append(
+                ContractInstallmentScheduleItem(
+                    installmentNumber: instNum,
+                    bankDueDate: dueDate,
+                    amount: amount,
+                    principalAmount: principal,
+                    interestAmount: interest
+                )
+            )
+        }
+
+        return items.sorted { $0.installmentNumber < $1.installmentNumber }
+    }
 }
 
 public enum SampleContractDocumentsData {
     public static let santanderLoanOCRText: String = """
     Banco Santander (Brasil) S.A.
     Documento Descritivo de Crédito Modalidade da Operação: Crédito Consignado
-    Nr. Contrato: 783694303 Data Emissão DDC: 06/11/2026 Dt. Formalização: 30/10/2025
+    Nr. Contrato: 783694303 Data Emissão DDC: 10/11/2026 Dt. Formalização: 30/10/2025
     Cliente: CLOVIS CARMEZINI JUNIOR CPF: 396.520.318-52 Matrícula: 00157579
     Agência: 2972 - AGENCIA DIGITAL - 29
-    Valor Solicitado: 106.863,99 Vlr. Financiado: 110.108,13 Dívida para Liquidação: 91.039,22 Em: 06/11/2026
+    Valor Solicitado: 106.863,99 Vlr. Financiado: 110.108,13 Dívida para Liquidação: 91.341,50 Em: 11/11/2026
     IOF: 3.244,14 Dt. 1º Vcto: 25/01/2026 Dt. Vcto. Final: 25/12/2028
     Seguro: 0,00 Nr. Parcelas: 36 Prazo: 1152
     Custo Efet Total CET: 2,21 % a.m. 29,93 % a.a.
     Tx. Efet. do contrato: 2,0087 % a.m. 26,9535 % a.a.
     Tx. Aplicada a.m. % (Valor Presente): 2,0087 %
     Movimentações Efetuadas: Parcelas 1 a 10 (25/01/2026 a 25/10/2026) - VLR. PARC 4.509,81 - Liquidação Desconto em folha
-    PARCELAS A VENCER: Parcelas 11 a 36 (25/11/2026 a 25/12/2028) - Em aberto Desconto em folha
-    Total a Vencer: Soma Vlr. Parcelas: (117.255,06) Soma Saldo Devedor D0: (91.039,22)
+    PARCELAS A VENCER
+    NR. PARC DT.VCTO VLR. PARC AMORTIZAÇÃO / VLR PRINCIPAL VLR. JUROS SALDO DEVEDOR (D0) SITUAÇÃO
+    11 25/11/2026 4.468,15 3.480,08 988,07 4.468,15 Em aberto Desconto em folha
+    12 25/12/2026 4.380,17 3.411,55 968,62 4.380,17 Em aberto Desconto em folha
+    13 25/01/2027 4.291,07 3.342,16 948,91 4.291,07 Em aberto Desconto em folha
+    14 25/02/2027 4.203,79 3.274,17 929,62 4.203,79 Em aberto Desconto em folha
+    15 25/03/2027 4.126,48 3.213,96 912,52 4.126,48 Em aberto Desconto em folha
+    16 25/04/2027 4.042,54 3.148,59 893,95 4.042,54 Em aberto Desconto em folha
+    17 25/05/2027 3.962,94 3.086,59 876,35 3.962,94 Em aberto Desconto em folha
+    18 25/06/2027 3.882,33 3.023,80 858,53 3.882,33 Em aberto Desconto em folha
+    19 25/07/2027 3.805,88 2.964,26 841,62 3.805,88 Em aberto Desconto em folha
+    20 25/08/2027 3.728,47 2.903,97 824,50 3.728,47 Em aberto Desconto em folha
+    21 25/09/2027 3.652,63 2.844,90 807,73 3.652,63 Em aberto Desconto em folha
+    22 25/10/2027 3.580,70 2.788,88 791,82 3.580,70 Em aberto Desconto em folha
+    23 25/11/2027 3.507,87 2.732,15 775,72 3.507,87 Em aberto Desconto em folha
+    24 25/12/2027 3.438,80 2.678,35 760,45 3.438,80 Em aberto Desconto em folha
+    25 25/01/2028 3.368,85 2.623,87 744,98 3.368,85 Em aberto Desconto em folha
+    26 25/02/2028 3.300,32 2.570,50 729,82 3.300,32 Em aberto Desconto em folha
+    27 25/03/2028 3.237,48 2.521,55 715,93 3.237,48 Em aberto Desconto em folha
+    28 25/04/2028 3.171,63 2.470,26 701,37 3.171,63 Em aberto Desconto em folha
+    29 25/05/2028 3.109,18 2.421,62 687,56 3.109,18 Em aberto Desconto em folha
+    30 25/06/2028 3.045,93 2.372,36 673,57 3.045,93 Em aberto Desconto em folha
+    31 25/07/2028 2.985,96 2.325,65 660,31 2.985,96 Em aberto Desconto em folha
+    32 25/08/2028 2.925,22 2.278,34 646,88 2.925,22 Em aberto Desconto em folha
+    33 25/09/2028 2.865,72 2.232,00 633,72 2.865,72 Em aberto Desconto em folha
+    34 25/10/2028 2.809,29 2.188,05 621,24 2.809,29 Em aberto Desconto em folha
+    35 25/11/2028 2.752,15 2.143,54 608,61 2.752,15 Em aberto Desconto em folha
+    36 25/12/2028 2.697,95 2.101,35 596,60 2.697,95 Em aberto Desconto em folha
+    Total a Vencer: Soma Vlr. Parcelas: (91.341,50) Soma Principal: (71.143,00) Soma Juros: (20.198,50) Soma Saldo Devedor D0: (91.341,50)
     """
 
     public static let caixaFinancingOCRText: String = """

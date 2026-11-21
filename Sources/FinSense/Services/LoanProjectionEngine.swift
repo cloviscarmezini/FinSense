@@ -589,34 +589,59 @@ public enum LoanProjectionEngine {
                     correctedBalance = balanceBefore
                 }
 
-                let interest = roundCurrency(correctedBalance * monthlyRateDecimal)
-                let rawNormalAmortization: Decimal
-                let rawBaseInstallment: Decimal
-
-                if isLoan || contract.amortizationSystem == .price {
-                    rawBaseInstallment = currentBaseInstallment
-                    rawNormalAmortization = max(.zero, rawBaseInstallment - interest)
-                } else {
-                    // SAC: Amortização normal constante = Saldo Corrigido / remaining_term_months
-                    let sacAmort = remainingTermMonths > 0
-                        ? roundCurrency(correctedBalance / Decimal(remainingTermMonths))
-                        : correctedBalance
-                    rawNormalAmortization = max(currentSACAmortizationQuota, sacAmort)
-                    rawBaseInstallment = rawNormalAmortization + interest
-                }
-
-                // Zero-Balance Clamping na parcela normal caso o saldo restante seja menor que a amortização normal
+                let interest: Decimal
                 let effectiveNormalAmortization: Decimal
                 let effectiveBaseInstallment: Decimal
-                if rawNormalAmortization >= correctedBalance {
-                    effectiveNormalAmortization = correctedBalance
-                    effectiveBaseInstallment = effectiveNormalAmortization + interest
-                } else {
-                    effectiveNormalAmortization = rawNormalAmortization
-                    effectiveBaseInstallment = rawBaseInstallment
-                }
+                let newBalance: Decimal
 
-                let newBalance = max(.zero, roundCurrency(correctedBalance - effectiveNormalAmortization))
+                if isLoan, let schedule = contract.scheduledInstallments, !schedule.isEmpty {
+                    // Empréstimo com cronograma VLR. PARC decrescente (Valor Presente D0 do demonstrativo Santander DDC):
+                    // Cada transação futura possui seu próprio VLR. PARC (D0 = Amortização Principal + Juros a valor presente).
+                    let txDecAmount = roundCurrency(toDecimal(tx.amount))
+                    let schedItem = schedule.first(where: { $0.installmentNumber == tx.installmentIndex })
+                    let effectiveD0Installment = min(correctedBalance, txDecAmount)
+                    effectiveBaseInstallment = effectiveD0Installment
+
+                    if let schedInterest = schedItem?.interestAmount {
+                        let rawInterest = roundCurrency(toDecimal(schedInterest))
+                        interest = txDecAmount > .zero
+                            ? roundCurrency(rawInterest * (effectiveD0Installment / txDecAmount))
+                            : .zero
+                    } else {
+                        interest = roundCurrency(effectiveD0Installment * Decimal(string: "0.221136")!)
+                    }
+
+                    effectiveNormalAmortization = max(.zero, roundCurrency(effectiveD0Installment - interest))
+                    newBalance = max(.zero, roundCurrency(correctedBalance - effectiveD0Installment))
+                } else {
+                    let calcInterest = roundCurrency(correctedBalance * monthlyRateDecimal)
+                    interest = calcInterest
+                    let rawNormalAmortization: Decimal
+                    let rawBaseInstallment: Decimal
+
+                    if isLoan || contract.amortizationSystem == .price {
+                        rawBaseInstallment = currentBaseInstallment
+                        rawNormalAmortization = max(.zero, rawBaseInstallment - calcInterest)
+                    } else {
+                        // SAC: Amortização normal constante = Saldo Corrigido / remaining_term_months
+                        let sacAmort = remainingTermMonths > 0
+                            ? roundCurrency(correctedBalance / Decimal(remainingTermMonths))
+                            : correctedBalance
+                        rawNormalAmortization = max(currentSACAmortizationQuota, sacAmort)
+                        rawBaseInstallment = rawNormalAmortization + calcInterest
+                    }
+
+                    // Zero-Balance Clamping na parcela normal caso o saldo restante seja menor que a amortização normal
+                    if rawNormalAmortization >= correctedBalance {
+                        effectiveNormalAmortization = correctedBalance
+                        effectiveBaseInstallment = effectiveNormalAmortization + calcInterest
+                    } else {
+                        effectiveNormalAmortization = rawNormalAmortization
+                        effectiveBaseInstallment = rawBaseInstallment
+                    }
+
+                    newBalance = max(.zero, roundCurrency(correctedBalance - effectiveNormalAmortization))
+                }
 
                 // Seguros e Taxa de Administração compõem o fluxo de caixa (orçamento), mas NÃO entram na amortização do saldo
                 let totalOutflow = roundCurrency(effectiveBaseInstallment + currentInsuranceFee + fixedAdminFee)

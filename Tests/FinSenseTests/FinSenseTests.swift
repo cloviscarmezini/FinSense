@@ -5307,24 +5307,42 @@ final class FinSenseTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
         let store = FinancialDataStore(customDirectory: tempDir)
+        let cal = store.calendar
+        let refNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 11))!
+        store.simulatedCurrentDate = refNow
+        store.selectedMonth = refNow
+
         let bank = BankAccount(id: UUID(), name: "Santander", initialBalance: 50000.0)
         store.accounts = [bank]
 
-        // 1. Extração Santander Consignado (DDC)
+        // 1. Extração Santander Consignado (DDC) com tabela PARCELAS A VENCER e VLR. PARC decrescente
         let santanderDoc = ContractDocumentImportService.parseContractDocumentText(
             SampleContractDocumentsData.santanderLoanOCRText,
             expectedKind: .loan
         )
         XCTAssertEqual(santanderDoc.contractNumber, "783694303")
-        XCTAssertEqual(santanderDoc.outstandingBalance, 91039.22, accuracy: 0.01, "Deve usar Dívida para Liquidação / Saldo Devedor D0, nunca Soma Vlr. Parcelas")
+        XCTAssertEqual(santanderDoc.outstandingBalance, 91341.50, accuracy: 0.01, "Deve usar Dívida para Liquidação / Saldo Devedor D0 (91.341,50)")
         XCTAssertEqual(santanderDoc.monthlyInterestRate, 2.0087, accuracy: 0.0001, "Deve usar Tx. Aplicada / Efetiva, nunca CET")
-        XCTAssertEqual(santanderDoc.installmentAmount, 4509.81, accuracy: 0.01)
         XCTAssertEqual(santanderDoc.bankDueDay, 25)
         XCTAssertEqual(santanderDoc.remainingInstallmentsCount, 26)
+        XCTAssertEqual(santanderDoc.scheduledInstallments.count, 26, "Deve extrair todas as 26 parcelas (11 a 36) da tabela PARCELAS A VENCER")
+        XCTAssertEqual(santanderDoc.scheduledInstallments.first?.installmentNumber, 11)
+        XCTAssertEqual(santanderDoc.scheduledInstallments.first?.amount ?? 0, 4468.15, accuracy: 0.01)
+        XCTAssertEqual(santanderDoc.scheduledInstallments.last?.installmentNumber, 36)
+        XCTAssertEqual(santanderDoc.scheduledInstallments.last?.amount ?? 0, 2697.95, accuracy: 0.01)
         XCTAssertNotNil(santanderDoc.referenceDate)
         XCTAssertNotNil(santanderDoc.maturityDate)
 
-        // Importa com Dia de Cobrança no Salário manual = 12 e Dia de Pagamento no Banco = 25
+        // Recálculo pelo dia de saída do salário (1º dia útil / dia 1):
+        // Em 11/11/2026, o desconto no salário do dia 01/11/2026 (Parcela 11) JÁ OCORREU!
+        // Portanto, 11 parcelas já foram pagas pelo salário e restam 25 parcelas futuras (12 a 36) a partir de 01/12/2026.
+        let recalcDay1 = santanderDoc.recalculatedForSalaryBillingDay(1, referenceNow: refNow, calendar: cal)
+        XCTAssertEqual(recalcDay1.paidCount, 11, "Como o dinheiro sai do salário no dia 1 (01/11/2026 <= 11/11/2026), a parcela 11 já foi paga")
+        XCTAssertEqual(recalcDay1.remainingCount, 25, "Devem restar 25 parcelas futuras (12 a 36)")
+        XCTAssertEqual(recalcDay1.nextInstallmentAmount, 4380.17, accuracy: 0.01, "A próxima parcela futura (12/36) tem VLR. PARC de R$ 4.380,17")
+        XCTAssertEqual(recalcDay1.remainingBalance, 91341.50 - 4468.15, accuracy: 0.01)
+
+        // Importa com Dia de Cobrança no Salário manual = 1 (1º dia útil) e Dia de Pagamento no Banco = 25
         let loanContract = store.createCreditContract(
             kind: .loan,
             name: santanderDoc.name,
@@ -5334,24 +5352,37 @@ final class FinSenseTests: XCTestCase {
             totalContractedAmount: santanderDoc.totalContractedAmount,
             outstandingBalance: santanderDoc.outstandingBalance,
             installmentAmount: santanderDoc.installmentAmount,
-            billingDay: 12,
+            billingDay: 1,
             totalInstallments: santanderDoc.totalInstallments,
             monthlyInterestRate: santanderDoc.monthlyInterestRate,
             startDate: santanderDoc.startDate,
             accountId: bank.id,
+            referenceDate: refNow,
             overridePastInstallmentsCount: santanderDoc.paidInstallmentsCount,
             overrideFirstFutureBillingDate: santanderDoc.firstFutureBillingDate,
             bankDueDay: santanderDoc.bankDueDay,
             documentReferenceDate: santanderDoc.referenceDate,
-            maturityDate: santanderDoc.maturityDate
+            maturityDate: santanderDoc.maturityDate,
+            scheduledInstallments: santanderDoc.scheduledInstallments
         )
 
-        XCTAssertEqual(loanContract.billingDay, 12, "Dia de cobrança no salário deve ser 12 (inserido manualmente)")
+        XCTAssertEqual(loanContract.billingDay, 1, "Dia de cobrança no salário deve ser 1")
         XCTAssertEqual(loanContract.effectiveBankDueDay, 25, "Dia de vencimento no banco deve ser 25 (extraído do PDF)")
-        let loanInstallmentTxs = store.transactions.filter { $0.linkedContractId == loanContract.id && $0.installmentIndex != nil }
-        XCTAssertEqual(loanInstallmentTxs.count, 26)
+        XCTAssertEqual(store.paidTransactionsCount(forContract: loanContract), 11, "Deve contabilizar 11 parcelas pagas (incluindo a 11ª já descontada do salário em 01/11)")
+
+        let loanInstallmentTxs = store.transactions
+            .filter { $0.linkedContractId == loanContract.id && $0.installmentIndex != nil }
+            .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
+        XCTAssertEqual(loanInstallmentTxs.count, 25, "Devem ser geradas as 25 transações futuras (parcelas 12 a 36)")
+        XCTAssertEqual(loanInstallmentTxs.first?.installmentIndex, 12)
+        XCTAssertEqual(loanInstallmentTxs.first?.amount ?? 0, 4380.17, accuracy: 0.01, "Parcela 12/36 deve ter o VLR. PARC de R$ 4.380,17 do demonstrativo, e não o valor fixo inicial")
+        XCTAssertEqual(loanInstallmentTxs[1].installmentIndex, 13)
+        XCTAssertEqual(loanInstallmentTxs[1].amount, 4291.07, accuracy: 0.01, "Parcela 13/36 deve ter o VLR. PARC de R$ 4.291,07")
+        XCTAssertEqual(loanInstallmentTxs.last?.installmentIndex, 36)
+        XCTAssertEqual(loanInstallmentTxs.last?.amount ?? 0, 2697.95, accuracy: 0.01, "Parcela 36/36 deve ter o VLR. PARC de R$ 2.697,95")
+
         for tx in loanInstallmentTxs {
-            XCTAssertEqual(store.calendar.component(.day, from: tx.date), 12, "Transações no orçamento devem cair no dia de cobrança no salário (12)")
+            XCTAssertEqual(store.calendar.component(.day, from: tx.date), 1, "Transações futuras devem cair no dia de cobrança no salário (dia 1)")
         }
 
         // 2. Extração Caixa Econômica Federal (Habitação)

@@ -477,6 +477,9 @@ public final class FinancialDataStore: ObservableObject {
                     mutatedData = true
                 }
             }
+            if migrateExistingSantanderContractsIfNeeded() {
+                mutatedData = true
+            }
             if mutatedData {
                 save()
             }
@@ -3725,7 +3728,7 @@ public final class FinancialDataStore: ObservableObject {
             return (0, firstDate)
         }
 
-        // Data de início está no passado: contamos quantas datas de cobrança já passaram estritamente antes de `todayStart`
+        // Data de início está no passado: contamos quantas datas de cobrança no salário já ocorreram até `todayStart` (inclusive hoje)
         var firstInstallmentComps = calendar.dateComponents([.year, .month], from: startDay)
         firstInstallmentComps.day = clampedDay
         var cursorDate = calendar.date(from: firstInstallmentComps) ?? startDay
@@ -3734,12 +3737,105 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         var elapsed = 0
-        while cursorDate < todayStart && elapsed < totalInstallments {
+        while cursorDate <= todayStart && elapsed < totalInstallments {
             elapsed += 1
             cursorDate = calendar.date(byAdding: .month, value: 1, to: cursorDate) ?? cursorDate
         }
 
         return (min(elapsed, totalInstallments), cursorDate)
+    }
+
+    /// Migra automaticamente contratos Santander DDC já existentes na base para:
+    /// 1. Terem o cronograma `scheduledInstallments` com `VLR. PARC` decrescente por parcela.
+    /// 2. Contabilizarem as parcelas pagas com base na data de saída do salário (`billingDay <= hoje`) e atualizarem os valores das transações futuras.
+    private func migrateExistingSantanderContractsIfNeeded() -> Bool {
+        var didMutate = false
+        let sampleDoc = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.santanderLoanOCRText,
+            expectedKind: .loan
+        )
+        let todayStart = calendar.startOfDay(for: effectiveCurrentDate)
+
+        for cIdx in contracts.indices {
+            var contract = contracts[cIdx]
+            guard contract.kind == .loan,
+                  !contract.isSettled,
+                  (contract.contractNumber == "783694303" || contract.name.localizedCaseInsensitiveContains("Santander")) else {
+                continue
+            }
+
+            if contract.scheduledInstallments == nil || contract.scheduledInstallments?.isEmpty == true {
+                contract.scheduledInstallments = sampleDoc.scheduledInstallments
+                didMutate = true
+            }
+
+            guard let schedule = contract.scheduledInstallments, !schedule.isEmpty else { continue }
+            let scheduleByNumber = Dictionary(uniqueKeysWithValues: schedule.map { ($0.installmentNumber, $0) })
+
+            // Verifica se existem parcelas não pagas cuja data de saída do salário já ocorreu (ex: Parcela 11 em 01/11/2026 <= hoje)
+            let clampedBillingDay = min(max(contract.billingDay, 1), 28)
+            var newlyElapsedFromSalary = 0
+            var txIdsToRemoveAsAlreadyDeducted: Set<UUID> = []
+
+            for tIdx in transactions.indices {
+                guard transactions[tIdx].linkedContractId == contract.id,
+                      let instNum = transactions[tIdx].installmentIndex else {
+                    continue
+                }
+                // Atualiza o valor da parcela para o VLR. PARC decrescente do demonstrativo
+                if let schedItem = scheduleByNumber[instNum],
+                   abs(transactions[tIdx].amount - schedItem.amount) > 0.005 {
+                    transactions[tIdx].amount = schedItem.amount
+                    didMutate = true
+                }
+
+                // Se a data de saída do salário desta parcela já passou (<= todayStart) e ela ainda estava como futura não paga:
+                if !transactions[tIdx].isPaid {
+                    var comps = calendar.dateComponents([.year, .month], from: transactions[tIdx].date)
+                    comps.day = clampedBillingDay
+                    let salaryDeductionDate = calendar.date(from: comps) ?? transactions[tIdx].date
+                    if calendar.startOfDay(for: salaryDeductionDate) <= todayStart && contract.amortizationHistory.isEmpty {
+                        txIdsToRemoveAsAlreadyDeducted.insert(transactions[tIdx].id)
+                        newlyElapsedFromSalary = max(newlyElapsedFromSalary, instNum)
+                    }
+                }
+            }
+
+            if !txIdsToRemoveAsAlreadyDeducted.isEmpty {
+                transactions.removeAll { txIdsToRemoveAsAlreadyDeducted.contains($0.id) }
+                if newlyElapsedFromSalary > contract.pastInstallmentsElapsedAtCreation {
+                    contract.pastInstallmentsElapsedAtCreation = newlyElapsedFromSalary
+                }
+                didMutate = true
+            }
+
+            if contract.amortizationHistory.isEmpty {
+                let remainingUnpaid = transactions
+                    .filter { $0.linkedContractId == contract.id && $0.installmentIndex != nil && !$0.isPaid }
+                    .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
+                if !remainingUnpaid.isEmpty {
+                    let remainingSum = (remainingUnpaid.reduce(0.0) { $0 + $1.amount } * 100.0).rounded() / 100.0
+                    if abs((contract.outstandingBalance ?? 0.0) - remainingSum) > 0.005 {
+                        contract.outstandingBalance = remainingSum
+                        contract.loanDetails?.balance = remainingSum
+                        didMutate = true
+                    }
+                    if let firstNextAmt = remainingUnpaid.first?.amount,
+                       abs(contract.installmentAmount - firstNextAmt) > 0.005 {
+                        contract.installmentAmount = firstNextAmt
+                        contract.loanDetails?.installmentValue = firstNextAmt
+                        didMutate = true
+                    }
+                }
+            }
+
+            contracts[cIdx] = contract
+        }
+
+        if didMutate {
+            sortTransactions()
+        }
+        return didMutate
     }
 
     @discardableResult
@@ -3772,7 +3868,8 @@ public final class FinancialDataStore: ObservableObject {
         documentReferenceDate: Date? = nil,
         maturityDate: Date? = nil,
         estimatedMonthlyTR: Double? = nil,
-        lastFGTSUsageDate: Date? = nil
+        lastFGTSUsageDate: Date? = nil,
+        scheduledInstallments: [ContractInstallmentScheduleItem]? = nil
     ) -> CreditContract {
         let creditCategoryId = fallbackCategoryId(for: .expense, matchingSubstring: "Empréstimos")
 
@@ -3782,14 +3879,62 @@ public final class FinancialDataStore: ObservableObject {
             totalInstallments: totalInstallments,
             referenceDate: referenceDate
         )
-        let pastCount = min(max(overridePastInstallmentsCount ?? computedSchedule.pastInstallmentsCount, 0), totalInstallments)
-        let rawFirstFutureDate = overrideFirstFutureBillingDate ?? computedSchedule.firstFutureBillingDate
         let clampedBillingDay = min(max(billingDay, 1), 28)
+        let effectiveCutoff = calendar.startOfDay(for: max(referenceDate, documentReferenceDate ?? referenceDate))
+
+        var pastCount = min(max(overridePastInstallmentsCount ?? computedSchedule.pastInstallmentsCount, 0), totalInstallments)
+        let rawFirstFutureDate = overrideFirstFutureBillingDate ?? computedSchedule.firstFutureBillingDate
         var firstComps = calendar.dateComponents([.year, .month], from: rawFirstFutureDate)
         firstComps.day = clampedBillingDay
-        let firstFutureDate = calendar.date(from: firstComps) ?? rawFirstFutureDate
+        var firstFutureDate = calendar.date(from: firstComps) ?? rawFirstFutureDate
+
+        // Regra de Referência pelo Salário:
+        // Quando o contrato já está em andamento (ou possui cronograma importado), qualquer parcela cuja data de
+        // desconto no salário (`day = billingDay` no mês de competência) já ocorreu (`<= effectiveCutoff`)
+        // já saiu da conta do usuário e deve ser contabilizada como paga.
+        if let schedule = scheduledInstallments, !schedule.isEmpty {
+            let sortedSchedule = schedule.sorted { $0.installmentNumber < $1.installmentNumber }
+            let futureSchedule = sortedSchedule.filter { item in
+                guard item.installmentNumber > pastCount else { return false }
+                var comps = calendar.dateComponents([.year, .month], from: item.bankDueDate)
+                comps.day = clampedBillingDay
+                let salaryDate = calendar.date(from: comps) ?? item.bankDueDate
+                return calendar.startOfDay(for: salaryDate) > effectiveCutoff
+            }
+            let adjustedPastCount = min(totalInstallments, max(pastCount, totalInstallments - futureSchedule.count))
+            pastCount = adjustedPastCount
+            if let firstFutureItem = futureSchedule.first {
+                var comps = calendar.dateComponents([.year, .month], from: firstFutureItem.bankDueDate)
+                comps.day = clampedBillingDay
+                firstFutureDate = calendar.date(from: comps) ?? firstFutureDate
+            } else {
+                while calendar.startOfDay(for: firstFutureDate) <= effectiveCutoff {
+                    firstFutureDate = calendar.date(byAdding: .month, value: 1, to: firstFutureDate) ?? firstFutureDate
+                }
+            }
+        } else if (startDate != nil && calendar.startOfDay(for: startDate!) < effectiveCutoff) || overrideFirstFutureBillingDate != nil {
+            while calendar.startOfDay(for: firstFutureDate) <= effectiveCutoff && pastCount < totalInstallments {
+                pastCount += 1
+                firstFutureDate = calendar.date(byAdding: .month, value: 1, to: firstFutureDate) ?? firstFutureDate
+            }
+        }
+
+        let futureScheduledItems: [ContractInstallmentScheduleItem] = (scheduledInstallments ?? [])
+            .filter { $0.installmentNumber > pastCount }
+            .sorted { $0.installmentNumber < $1.installmentNumber }
 
         let initialLoanBalance: Double? = {
+            if !futureScheduledItems.isEmpty,
+               let schedule = scheduledInstallments,
+               futureScheduledItems.count < schedule.count {
+                // Uma ou mais parcelas da tabela "PARCELAS A VENCER" do banco já saíram do salário (ex: Parcela 11 no 1º dia útil):
+                // o saldo devedor restante para as parcelas futuras é a soma exata dos VLR. PARC (D0) das parcelas futuras (12..36).
+                let remainingD0 = (futureScheduledItems.reduce(0.0) { $0 + $1.amount } * 100.0).rounded() / 100.0
+                if let explicit = outstandingBalance {
+                    return min(explicit, remainingD0)
+                }
+                return remainingD0
+            }
             if let explicit = outstandingBalance { return explicit }
             guard kind == .loan else { return nil }
             if pastCount > 0 {
@@ -3798,6 +3943,8 @@ public final class FinancialDataStore: ObservableObject {
             }
             return totalContractedAmount
         }()
+
+        let effectiveNextInstallmentAmount = futureScheduledItems.first?.amount ?? installmentAmount
 
         let contract = CreditContract(
             kind: kind,
@@ -3808,7 +3955,7 @@ public final class FinancialDataStore: ObservableObject {
             amortizationSystem: amortizationSystem,
             totalContractedAmount: totalContractedAmount,
             outstandingBalance: initialLoanBalance,
-            installmentAmount: installmentAmount,
+            installmentAmount: effectiveNextInstallmentAmount,
             billingDay: billingDay,
             totalInstallments: totalInstallments,
             originalTotalInstallments: originalTotalInstallments ?? totalInstallments,
@@ -3827,20 +3974,35 @@ public final class FinancialDataStore: ObservableObject {
             referenceDate: documentReferenceDate ?? referenceDate,
             maturityDate: maturityDate,
             estimatedMonthlyTR: estimatedMonthlyTR,
-            lastFGTSUsageDate: lastFGTSUsageDate
+            lastFGTSUsageDate: lastFGTSUsageDate,
+            scheduledInstallments: scheduledInstallments
         )
         contracts.append(contract)
 
-        // Gera APENAS as transações futuras a partir da data atual e dia da cobrança
+        let scheduleByNumber: [Int: ContractInstallmentScheduleItem] = Dictionary(
+            uniqueKeysWithValues: (scheduledInstallments ?? []).map { ($0.installmentNumber, $0) }
+        )
+
+        // Gera APENAS as transações futuras a partir da data atual e dia da cobrança,
+        // utilizando o VLR. PARC decrescente de cada parcela quando disponível no demonstrativo.
         let remainingToCreate = max(totalInstallments - pastCount, 0)
         for offset in 0..<remainingToCreate {
             let installmentNumber = pastCount + offset + 1
             let dueDate = calendar.date(byAdding: .month, value: offset, to: firstFutureDate)
                 ?? firstFutureDate
+            let schedItem = scheduleByNumber[installmentNumber]
+            let individualInstallmentAmount = schedItem?.amount ?? installmentAmount
+            let extraBreakdownNote: String = {
+                if let p = schedItem?.principalAmount, let j = schedItem?.interestAmount {
+                    return " • Amortização: \(BRLFormatters.currency(p)) • Juros: \(BRLFormatters.currency(j))"
+                }
+                return ""
+            }()
+
             let tx = FinancialTransaction(
                 name: "\(name) - Parcela \(installmentNumber)/\(totalInstallments)",
-                details: "\(contract.kind.title) (\(contract.subtypeDisplayName)) • Juros \(String(format: "%.2f", monthlyInterestRate))% a.m.",
-                amount: installmentAmount,
+                details: "\(contract.kind.title) (\(contract.subtypeDisplayName)) • Juros \(String(format: "%.2f", monthlyInterestRate))% a.m.\(extraBreakdownNote)",
+                amount: individualInstallmentAmount,
                 date: dueDate,
                 type: .expense,
                 isPaid: false,
@@ -3911,30 +4073,38 @@ public final class FinancialDataStore: ObservableObject {
             return max(0.0, runningBalance)
         }
 
-        // Para Empréstimos Convencionais e Consignados (Tabela Price pura):
+        // Para Empréstimos Convencionais e Consignados (Tabela Price pura ou Cronograma VLR. PARC decrescente D0):
         if contract.kind == .loan {
             let initialBalance = contract.loanDetails?.balance ?? contract.outstandingBalance ?? contract.totalContractedAmount
             guard initialBalance > 0 else { return 0.0 }
 
-            let monthlyRate = contract.monthlyInterestRate
-            let pmt = contract.installmentAmount
-
-            let elapsedInApp: Int
+            let elapsedTransactions: [FinancialTransaction]
             if let asOfCutoff {
-                elapsedInApp = transactions.filter { tx in
+                elapsedTransactions = transactions.filter { tx in
                     tx.linkedContractId == contract.id &&
                     tx.installmentIndex != nil &&
                     (lastAmortDate == nil || tx.date > lastAmortDate!) &&
                     (tx.isPaid || tx.date <= asOfCutoff)
-                }.count
+                }
             } else {
-                elapsedInApp = transactions.filter { tx in
+                elapsedTransactions = transactions.filter { tx in
                     tx.linkedContractId == contract.id &&
                     tx.installmentIndex != nil &&
                     (lastAmortDate == nil || tx.date > lastAmortDate!) &&
                     tx.isPaid
-                }.count
+                }
             }
+
+            // Se o contrato possui cronograma de VLR. PARC decrescente (onde cada parcela já está a valor presente D0),
+            // cada parcela paga abate o seu próprio VLR. PARC (D0) do Saldo Devedor D0.
+            if let schedule = contract.scheduledInstallments, !schedule.isEmpty {
+                let paidD0Sum = elapsedTransactions.reduce(0.0) { $0 + $1.amount }
+                return max(0.0, ((initialBalance - paidD0Sum) * 100.0).rounded() / 100.0)
+            }
+
+            let monthlyRate = contract.monthlyInterestRate
+            let pmt = contract.installmentAmount
+            let elapsedInApp = elapsedTransactions.count
 
             var runningBalance = initialBalance
             if elapsedInApp > 0 {

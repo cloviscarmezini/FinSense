@@ -879,7 +879,7 @@ public struct CreateCreditContractSheet: View {
     @State private var totalContractedText: String = ""
     @State private var outstandingBalanceText: String = ""
     @State private var installmentAmountText: String = ""
-    @State private var billingDay: Int = 12
+    @State private var billingDay: Int = 1
     @State private var bankDueDay: Int = 25
     @State private var totalInstallments: Int = 48
     @State private var interestRateText: String = "1,65"
@@ -1254,12 +1254,17 @@ public struct CreateCreditContractSheet: View {
         .frame(width: 680, height: 720)
         .onAppear {
             accountId = store.accounts.first?.id ?? UUID()
+            if kind == .financing && billingDay == 1 {
+                billingDay = 5
+                bankDueDay = 5
+            }
         }
         .sheet(isPresented: $showEmbeddedDocImporter) {
             ImportCreditContractDocumentSheet(
                 store: store,
                 llmService: llmService,
                 kind: kind,
+                initialBillingDay: billingDay,
                 onCompleteImport: {
                     dismiss()
                 }
@@ -1276,6 +1281,7 @@ public struct ImportCreditContractDocumentSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     public let kind: CreditContractKind
+    public var initialBillingDay: Int? = nil
     public var onCompleteImport: (() -> Void)? = nil
 
     @State private var selectedFileName: String = "Nenhum documento selecionado"
@@ -1292,7 +1298,7 @@ public struct ImportCreditContractDocumentSheet: View {
     @State private var totalContractedText: String = ""
     @State private var outstandingBalanceText: String = ""
     @State private var installmentAmountText: String = ""
-    @State private var billingDay: Int = 12
+    @State private var billingDay: Int = 1
     @State private var bankDueDay: Int = 25
     @State private var totalInstallments: Int = 36
     @State private var paidInstallmentsCount: Int = 10
@@ -1314,12 +1320,15 @@ public struct ImportCreditContractDocumentSheet: View {
         store: FinancialDataStore,
         llmService: LocalLLMService,
         kind: CreditContractKind,
+        initialBillingDay: Int? = nil,
         onCompleteImport: (() -> Void)? = nil
     ) {
         self.store = store
         self.llmService = llmService
         self.kind = kind
+        self.initialBillingDay = initialBillingDay
         self.onCompleteImport = onCompleteImport
+        _billingDay = State(initialValue: initialBillingDay ?? (kind == .loan ? 1 : 5))
     }
 
     public var body: some View {
@@ -1529,11 +1538,7 @@ public struct ImportCreditContractDocumentSheet: View {
                                 unitSuffix: "dia"
                             )
                             .onChange(of: billingDay) { _, newDay in
-                                var comps = store.calendar.dateComponents([.year, .month], from: firstFutureBillingDate)
-                                comps.day = min(max(newDay, 1), 28)
-                                if let updated = store.calendar.date(from: comps) {
-                                    firstFutureBillingDate = updated
-                                }
+                                recalculateScheduleForSalaryBillingDay(newDay)
                             }
                         }
 
@@ -1682,7 +1687,9 @@ public struct ImportCreditContractDocumentSheet: View {
         outstandingBalanceText = BRLFormatters.currency(doc.outstandingBalance)
         installmentAmountText = BRLFormatters.currency(doc.installmentAmount)
         bankDueDay = doc.bankDueDay
-        billingDay = doc.billingDay
+        if doc.kind == .financing && initialBillingDay == nil {
+            billingDay = doc.billingDay
+        }
         totalInstallments = doc.totalInstallments
         paidInstallmentsCount = doc.paidInstallmentsCount
         interestRateText = String(format: "%.4f", doc.monthlyInterestRate).replacingOccurrences(of: ".", with: ",")
@@ -1702,11 +1709,34 @@ public struct ImportCreditContractDocumentSheet: View {
             baseInstallmentAmountText = BRLFormatters.currency(bp)
         }
         startDate = doc.startDate
-        referenceDate = doc.referenceDate ?? doc.documentEmissionDate ?? Date()
+        referenceDate = doc.referenceDate ?? doc.documentEmissionDate ?? store.effectiveCurrentDate
         maturityDate = doc.maturityDate
         firstFutureBillingDate = doc.firstFutureBillingDate
         notes = doc.extractedNotes
         errorMsg = nil
+
+        // Recalcula parcelas já pagas e próxima cobrança com base no dia em que o valor sai do salário/conta (`billingDay`)
+        recalculateScheduleForSalaryBillingDay(billingDay)
+    }
+
+    private func recalculateScheduleForSalaryBillingDay(_ salaryDay: Int) {
+        guard let doc = parsedDoc else {
+            var comps = store.calendar.dateComponents([.year, .month], from: firstFutureBillingDate)
+            comps.day = min(max(salaryDay, 1), 28)
+            if let updated = store.calendar.date(from: comps) {
+                firstFutureBillingDate = updated
+            }
+            return
+        }
+        let recalc = doc.recalculatedForSalaryBillingDay(
+            salaryDay,
+            referenceNow: store.effectiveCurrentDate,
+            calendar: store.calendar
+        )
+        paidInstallmentsCount = recalc.paidCount
+        firstFutureBillingDate = recalc.firstFutureBillingDate
+        outstandingBalanceText = BRLFormatters.currency(recalc.remainingBalance)
+        installmentAmountText = BRLFormatters.currency(recalc.nextInstallmentAmount)
     }
 
     private func confirmImport() {
@@ -1753,6 +1783,7 @@ public struct ImportCreditContractDocumentSheet: View {
             startDate: startDate,
             accountId: selectedAccountId,
             notes: notes,
+            referenceDate: store.effectiveCurrentDate,
             overridePastInstallmentsCount: paidInstallmentsCount,
             overrideFirstFutureBillingDate: firstFutureBillingDate,
             annualNominalInterestRate: annNominal,
@@ -1762,7 +1793,8 @@ public struct ImportCreditContractDocumentSheet: View {
             baseInstallmentAmount: basePriceAmt,
             bankDueDay: bankDueDay,
             documentReferenceDate: referenceDate,
-            maturityDate: maturityDate
+            maturityDate: maturityDate,
+            scheduledInstallments: parsedDoc?.scheduledInstallments
         )
         onCompleteImport?()
         dismiss()
