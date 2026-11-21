@@ -477,6 +477,7 @@ public enum TransactionOrigin: String, Codable, CaseIterable, Identifiable, Hash
     case loanAmortization
     case loanPayoff
     case contractSettlement
+    case plannedAmortization
     case investmentDeposit
     case investmentRedemption
     case debtPayment
@@ -1180,6 +1181,18 @@ public struct CreditContract: Identifiable, Codable, Hashable {
     public var financingDetails: FinancingModel?
     public var loanDetails: LoanModel?
 
+    // Metadados Documentais & Motor de Amortização (Santander DDC / Caixa Habitação)
+    public var bankDueDay: Int? // Dia em que o banco recebe/liquida o pagamento (DT.VCTO / Data Vencimento, ex: 25 ou 05)
+    public var referenceDate: Date? // Data de referência do Saldo Devedor extraída do documento ("Em:" / "Saldo Devedor Teórico em")
+    public var maturityDate: Date? // Data de vencimento final contratual ("Dt. Vcto. Final")
+    public var estimatedMonthlyTR: Double? // TR mensal estimada em percentual (ex: 0.10 representa 0,10% a.m. ou 0.001)
+    public var lastFGTSUsageDate: Date? // Data do último uso de FGTS no contrato (validação de interstício de 24 meses)
+
+    /// Dia efetivo de vencimento/liquidação no banco (para cálculos pró-rata e ciclo de competência bancária)
+    public var effectiveBankDueDay: Int {
+        min(max(bankDueDay ?? billingDay, 1), 31)
+    }
+
     public init(
         id: UUID = UUID(),
         kind: CreditContractKind,
@@ -1213,7 +1226,12 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         insuranceFee: Double? = nil,
         baseInstallmentAmount: Double? = nil,
         financingDetails: FinancingModel? = nil,
-        loanDetails: LoanModel? = nil
+        loanDetails: LoanModel? = nil,
+        bankDueDay: Int? = nil,
+        referenceDate: Date? = nil,
+        maturityDate: Date? = nil,
+        estimatedMonthlyTR: Double? = nil,
+        lastFGTSUsageDate: Date? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -1249,6 +1267,11 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.baseInstallmentAmount = baseInstallmentAmount
         self.financingDetails = financingDetails
         self.loanDetails = loanDetails
+        self.bankDueDay = bankDueDay.map { min(max($0, 1), 31) }
+        self.referenceDate = referenceDate
+        self.maturityDate = maturityDate
+        self.estimatedMonthlyTR = estimatedMonthlyTR
+        self.lastFGTSUsageDate = lastFGTSUsageDate
 
         if kind == .financing && self.financingDetails == nil {
             let effAnnual = annualNominalInterestRate ?? (monthlyInterestRate > 0 ? monthlyInterestRate * 12.0 : 8.51)
@@ -1411,6 +1434,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         case isSettled, settledAmount, settledDate, settledAccountId, notes, createdAt
         case annualNominalInterestRate, indexationRate, adminFee, insuranceFee
         case baseInstallmentAmount, financingDetails, loanDetails
+        case bankDueDay, referenceDate, maturityDate, estimatedMonthlyTR, lastFGTSUsageDate
     }
 
     public init(from decoder: Decoder) throws {
@@ -1478,6 +1502,17 @@ public struct CreditContract: Identifiable, Codable, Hashable {
             ?? (try? c.decodeIfPresent(FinancingModel.self, forKey: AnyKey("financing_details")))
         self.loanDetails = (try? c.decodeIfPresent(LoanModel.self, forKey: AnyKey("loanDetails")))
             ?? (try? c.decodeIfPresent(LoanModel.self, forKey: AnyKey("loan_details")))
+
+        self.bankDueDay = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("bankDueDay")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("bank_due_day")))
+        self.referenceDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("referenceDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("reference_date")))
+        self.maturityDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("maturityDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("maturity_date")))
+        self.estimatedMonthlyTR = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("estimatedMonthlyTR")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("estimated_monthly_tr")))
+        self.lastFGTSUsageDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("lastFGTSUsageDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("last_fgts_usage_date")))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1515,6 +1550,11 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(baseInstallmentAmount, forKey: .baseInstallmentAmount)
         try c.encodeIfPresent(financingDetails, forKey: .financingDetails)
         try c.encodeIfPresent(loanDetails, forKey: .loanDetails)
+        try c.encodeIfPresent(bankDueDay, forKey: .bankDueDay)
+        try c.encodeIfPresent(referenceDate, forKey: .referenceDate)
+        try c.encodeIfPresent(maturityDate, forKey: .maturityDate)
+        try c.encodeIfPresent(estimatedMonthlyTR, forKey: .estimatedMonthlyTR)
+        try c.encodeIfPresent(lastFGTSUsageDate, forKey: .lastFGTSUsageDate)
     }
 
     public var subtypeDisplayName: String {
@@ -1540,6 +1580,138 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         case .financing:
             return (financingSubtype ?? .imovel).iconSymbol
         }
+    }
+}
+
+// MARK: - Camada 2 (Intenção / Planejamento de Amortização) & Cenários de Orçamento
+
+/// Origem dos recursos da amortização extraordinária planejada
+public enum AmortizationFundingSource: String, Codable, CaseIterable, Identifiable, Hashable {
+    case cash = "Recursos Próprios (Dinheiro)"
+    case fgts = "FGTS"
+
+    public var id: String { rawValue }
+
+    public var shortTitle: String {
+        switch self {
+        case .cash: return "Dinheiro"
+        case .fgts: return "FGTS"
+        }
+    }
+}
+
+/// Estado do aporte planejado na Camada 2 (Intenção)
+public enum PlannedAmortizationStatus: String, Codable, CaseIterable, Identifiable, Hashable {
+    case pending = "Pendente"
+    case executed = "Confirmado / Pago"
+    case expired = "Expirado"
+    case skipped = "Descartado"
+
+    public var id: String { rawValue }
+}
+
+/// Modo de geração do planejamento de amortização
+public enum AmortizationPlanGenerationMode: String, Codable, CaseIterable, Identifiable, Hashable {
+    case manual = "Manual"
+    case automatic = "Automático (% da Renda)"
+
+    public var id: String { rawValue }
+}
+
+/// Seletor Global de Cenário do Orçamento e Fluxo de Caixa
+public enum BudgetProjectionScenario: String, Codable, CaseIterable, Identifiable, Hashable {
+    case realBase = "Real (Base)"
+    case withPlanning = "Com Planejamento"
+
+    public var id: String { rawValue }
+}
+
+/// Status de exibição projetado de uma parcela ou aporte na Camada 3 (Read Model)
+public enum ProjectedInstallmentStatus: String, Codable, CaseIterable, Identifiable, Hashable {
+    case active = "Ativa"
+    case pendingAmortization = "Amortização Planejada"
+    case shadowed = "Suprimida pelo Plano"
+
+    public var id: String { rawValue }
+}
+
+/// Entidade de aporte individual planejado (Camada 2 — Intenção)
+public struct PlannedAmortization: Identifiable, Codable, Hashable {
+    public var id: UUID
+    public var contractId: UUID
+    public var date: Date
+    public var amount: Decimal
+    public var source: AmortizationFundingSource
+    public var mode: AmortizationRecalculationMode
+    public var status: PlannedAmortizationStatus
+    public var linkedTransactionId: UUID?
+    public var notes: String
+    public var createdAt: Date
+
+    public var amountDouble: Double {
+        NSDecimalNumber(decimal: amount).doubleValue
+    }
+
+    public init(
+        id: UUID = UUID(),
+        contractId: UUID,
+        date: Date,
+        amount: Decimal,
+        source: AmortizationFundingSource = .cash,
+        mode: AmortizationRecalculationMode = .reduceTerm,
+        status: PlannedAmortizationStatus = .pending,
+        linkedTransactionId: UUID? = nil,
+        notes: String = "",
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.contractId = contractId
+        self.date = date
+        self.amount = max(Decimal.zero, amount)
+        self.source = source
+        self.mode = mode
+        self.status = status
+        self.linkedTransactionId = linkedTransactionId
+        self.notes = notes
+        self.createdAt = createdAt
+    }
+}
+
+/// Plano de Amortização vinculado a um contrato de crédito (Camada 2 — Intenção)
+public struct AmortizationPlan: Identifiable, Codable, Hashable {
+    public var id: UUID
+    public var contractId: UUID
+    public var generationMode: AmortizationPlanGenerationMode
+    public var billingDay: Int
+    public var incomeCommitmentPercentage: Decimal
+    public var defaultRecalculationMode: AmortizationRecalculationMode
+    public var estimatedMonthlyTR: Decimal
+    public var items: [PlannedAmortization]
+    public var updatedAt: Date
+    public var createdAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        contractId: UUID,
+        generationMode: AmortizationPlanGenerationMode = .manual,
+        billingDay: Int = 26,
+        incomeCommitmentPercentage: Decimal = Decimal(30),
+        defaultRecalculationMode: AmortizationRecalculationMode = .reduceTerm,
+        estimatedMonthlyTR: Decimal = Decimal.zero,
+        items: [PlannedAmortization] = [],
+        updatedAt: Date = Date(),
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.contractId = contractId
+        self.generationMode = generationMode
+        self.billingDay = min(max(billingDay, 1), 31)
+        self.incomeCommitmentPercentage = min(max(incomeCommitmentPercentage, Decimal(1)), Decimal(100))
+        self.defaultRecalculationMode = defaultRecalculationMode
+        self.estimatedMonthlyTR = max(Decimal.zero, estimatedMonthlyTR)
+        self.items = items
+        self.updatedAt = updatedAt
+        self.createdAt = createdAt
     }
 }
 

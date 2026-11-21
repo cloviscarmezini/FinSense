@@ -1141,6 +1141,11 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
     public var insuranceFee: Double?
     public var baseInstallmentAmount: Double?
 
+    // Metadados para Motor de Amortização (Santander DDC & Caixa Habitação)
+    public var bankDueDay: Int // Dia em que o banco recebe o pagamento (DT.VCTO / Data Vencimento)
+    public var referenceDate: Date? // Data de referência do Saldo Devedor ("Em:" / "Saldo Devedor Teórico em")
+    public var maturityDate: Date? // Data de vencimento final contratual ("Dt. Vcto. Final")
+
     public init(
         id: UUID = UUID(),
         kind: CreditContractKind,
@@ -1166,7 +1171,10 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
         indexationRate: FinancingIndexation? = nil,
         adminFee: Double? = nil,
         insuranceFee: Double? = nil,
-        baseInstallmentAmount: Double? = nil
+        baseInstallmentAmount: Double? = nil,
+        bankDueDay: Int? = nil,
+        referenceDate: Date? = nil,
+        maturityDate: Date? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -1193,6 +1201,9 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
         self.adminFee = adminFee
         self.insuranceFee = insuranceFee
         self.baseInstallmentAmount = baseInstallmentAmount
+        self.bankDueDay = min(max(bankDueDay ?? billingDay, 1), 31)
+        self.referenceDate = referenceDate ?? documentEmissionDate
+        self.maturityDate = maturityDate
     }
 }
 
@@ -1222,13 +1233,19 @@ public enum ContractDocumentImportService {
                 ?? extractDate(after: "FORMALIZACAO", in: normalized)
                 ?? Date()
 
-            let emissionDate = extractDate(after: "DATA EMISSAO DDC", in: normalized)
-                ?? extractDate(after: "EM:", in: normalized)
+            let referenceDate = extractDate(after: "EM:", in: normalized)
+                ?? extractDate(after: "DATA EMISSAO DDC", in: normalized)
                 ?? Date()
+
+            let emissionDate = extractDate(after: "DATA EMISSAO DDC", in: normalized)
+                ?? referenceDate
 
             let firstVctoDate = extractDate(after: "1º VCTO", in: normalized)
                 ?? extractDate(after: "1O VCTO", in: normalized)
                 ?? extractDate(after: "1 VCTO", in: normalized)
+
+            let maturityDate = extractDate(after: "DT. VCTO. FINAL", in: normalized)
+                ?? extractDate(after: "VCTO. FINAL", in: normalized)
 
             let financedAmount = extractRegexBRLAmount(#"V[LI1]R\.?\s*FINANCIADO[:\s\n]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: normalized)
                 ?? extractFirstBRLAmount(after: "FINANCIADO", in: normalized)
@@ -1237,6 +1254,7 @@ public enum ContractDocumentImportService {
 
             let requestedAmount = extractFirstBRLAmount(after: "VALOR SOLICITADO", in: normalized) ?? financedAmount
 
+            // current_balance: "Dívida para Liquidação" ou "Soma Saldo Devedor D0" (NUNCA usar "Soma Vlr. Parcelas")
             let outstandingDebt = extractFirstBRLAmount(after: "DIVIDA PARA LIQUIDACAO", in: normalized)
                 ?? extractRegexBRLAmount(#"SOMA\s+SALDO\s+DEVEDOR\s+D[0O][:\s\n\(]*R?\$?\s*(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: normalized)
                 ?? extractFirstBRLAmount(after: "A VENCER:", in: normalized)
@@ -1248,12 +1266,13 @@ public enum ContractDocumentImportService {
                 ?? extractFirstInteger(after: "TOTAL DE PARCELAS", in: normalized)
                 ?? 36
 
-            let monthlyRate = extractRegexRate(#"TX\.?\s*EFET\.?\s*DO\s*CONTRATO[:\s\n]*(\d{1,2},\d{2,4})"#, in: normalized)
-                ?? extractRegexRate(#"TX\.?\s*APLICADA[\s\S]{0,40}?(\d{1,2},\d{2,4})"#, in: normalized)
+            // monthly_interest_rate: "Tx. Aplicada a.m. % (Valor Presente)" ou "Tx. Efet. do contrato" (NUNCA usar CET)
+            let monthlyRate = extractRegexRate(#"TX\.?\s*APLICADA[\s\S]{0,45}?(\d{1,2},\d{2,4})"#, in: normalized)
+                ?? extractRegexRate(#"TX\.?\s*EFET\.?\s*DO\s*CONTRATO[:\s\n]*(\d{1,2},\d{2,4})"#, in: normalized)
                 ?? extractRegexRate(#"TAXA\s+EFETIVA\s+MENSAL[:\s\n]*(\d{1,2},\d{2,4})"#, in: normalized)
                 ?? 2.00
 
-            // Determina quantas parcelas estão em aberto e quantas já foram liquidadas neste contrato específico
+            // Determina quantas parcelas estão em aberto na tabela PARCELAS A VENCER
             let openOccurrences = countOccurrences(of: "EM ABERTO", in: normalized)
             let paidOccurrences = countOccurrences(of: "LIQUIDADA", in: normalized) + countOccurrences(of: " PAGA ", in: normalized)
             let rangeRemaining: Int? = {
@@ -1265,6 +1284,19 @@ public enum ContractDocumentImportService {
                        let lastIdx = Int(lastStr),
                        lastIdx >= firstIdx {
                         return lastIdx - firstIdx + 1
+                    }
+                    // Se for tabela linha a linha em PARCELAS A VENCER, conta as linhas com data de vencimento antes de "TOTAL A VENCER"
+                    let sectionText: String
+                    if let totalRange = tail.range(of: "TOTAL A VENCER") {
+                        sectionText = String(tail[..<totalRange.lowerBound])
+                    } else if let somaRange = tail.range(of: "SOMA VLR") {
+                        sectionText = String(tail[..<somaRange.lowerBound])
+                    } else {
+                        sectionText = tail
+                    }
+                    let openInTable = countOccurrences(of: "EM ABERTO", in: sectionText)
+                    if openInTable > 1 {
+                        return openInTable
                     }
                 }
                 return nil
@@ -1282,7 +1314,7 @@ public enum ContractDocumentImportService {
                 }
                 if let fDate = firstVctoDate {
                     var cursor = cal.startOfDay(for: fDate)
-                    let refDay = cal.startOfDay(for: emissionDate)
+                    let refDay = cal.startOfDay(for: referenceDate)
                     var elapsed = 0
                     while cursor < refDay && elapsed < totalInstallments {
                         elapsed += 1
@@ -1295,20 +1327,24 @@ public enum ContractDocumentImportService {
 
             let paidInstallments = max(totalInstallments - remainingInstallments, 0)
 
-            // Determina o valor nominal da parcela deste contrato específico
+            // fixed_installment: Prioriza "VLR. PARC" das parcelas já pagas em Movimentações Efetuadas
             let installmentAmount: Double = {
-                if let soma = somaNominalAVencer, soma > 0, remainingInstallments > 0 {
-                    return ((soma / Double(remainingInstallments)) * 100.0).rounded() / 100.0
-                }
                 if let directParc = extractRegexBRLAmount(#"V[LI1]R\.?\s*PARC(?:ELA)?[:\s\n]+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: normalized), directParc > 0 {
                     return directParc
+                }
+                if let soma = somaNominalAVencer, soma > 0, remainingInstallments > 0 {
+                    return ((soma / Double(remainingInstallments)) * 100.0).rounded() / 100.0
                 }
                 return remainingInstallments > 0 ? ((outstandingDebt / Double(remainingInstallments)) * 100.0).rounded() / 100.0 : 0.0
             }()
 
-            let billingDay: Int = {
+            // due_day: Dia do campo "DT.VCTO" (dia em que o banco recebe o pagamento, geralmente dia 25)
+            let bankDueDay: Int = {
                 if let fDate = firstVctoDate {
                     return cal.component(.day, from: fDate)
+                }
+                if let mDate = maturityDate {
+                    return cal.component(.day, from: mDate)
                 }
                 if let rangePos = normalized.range(of: "PARCELAS A VENCER"),
                    let d = extractFirstDate(in: String(normalized[rangePos.upperBound...])) {
@@ -1329,6 +1365,13 @@ public enum ContractDocumentImportService {
                 return Date()
             }()
 
+            let resolvedMaturityDate: Date? = maturityDate ?? {
+                if remainingInstallments > 0 {
+                    return cal.date(byAdding: .month, value: max(remainingInstallments - 1, 0), to: firstFutureDate)
+                }
+                return nil
+            }()
+
             let nominalTotalRemaining = somaNominalAVencer ?? (Double(remainingInstallments) * installmentAmount)
 
             return ParsedCreditContractDocument(
@@ -1342,7 +1385,7 @@ public enum ContractDocumentImportService {
                 totalContractedAmount: financedAmount,
                 outstandingBalance: outstandingDebt,
                 installmentAmount: installmentAmount,
-                billingDay: billingDay,
+                billingDay: bankDueDay,
                 totalInstallments: totalInstallments,
                 paidInstallmentsCount: paidInstallments,
                 remainingInstallmentsCount: remainingInstallments,
@@ -1350,7 +1393,10 @@ public enum ContractDocumentImportService {
                 startDate: startDate,
                 firstFutureBillingDate: firstFutureDate,
                 documentEmissionDate: emissionDate,
-                extractedNotes: "Contrato \(contractNo) • Dt. Formalização: \(BRLFormatters.shortDate(startDate)) • Valor Solicitado: \(BRLFormatters.currency(requestedAmount)) • Vlr. Financiado: \(BRLFormatters.currency(financedAmount)) • \(paidInstallments) parcelas pagas e \(remainingInstallments) parcelas a vencer (Total nominal a vencer: \(BRLFormatters.currency(nominalTotalRemaining)) • Saldo Devedor D0: \(BRLFormatters.currency(outstandingDebt)))."
+                extractedNotes: "Contrato \(contractNo) • Dt. Formalização: \(BRLFormatters.shortDate(startDate)) • Valor Solicitado: \(BRLFormatters.currency(requestedAmount)) • Vlr. Financiado: \(BRLFormatters.currency(financedAmount)) • \(paidInstallments) parcelas pagas e \(remainingInstallments) parcelas a vencer (Total nominal a vencer: \(BRLFormatters.currency(nominalTotalRemaining)) • Saldo Devedor D0: \(BRLFormatters.currency(outstandingDebt)) • Vencimento no Banco: dia \(bankDueDay)).",
+                bankDueDay: bankDueDay,
+                referenceDate: referenceDate,
+                maturityDate: resolvedMaturityDate
             )
         }
 
@@ -1363,9 +1409,31 @@ public enum ContractDocumentImportService {
                 ?? "CAIXA-HAB"
 
             let emissionDate = extractDate(after: "DATA GERACAO", in: normalized) ?? Date()
+            let referenceDate = extractDate(after: "SALDO DEVEDOR TEORICO EM", in: normalized)
+                ?? extractDate(after: "SALDO DEVEDOR TEORICO", in: normalized)
+                ?? emissionDate
+
             let outstandingDebt = extractFirstBRLAmount(after: "SALDO DEVEDOR TEORICO", in: normalized)
                 ?? extractFirstBRLAmount(after: "SALDO DEVEDOR", in: normalized)
                 ?? 0.0
+
+            let detectedIndexer: FinancingIndexation = {
+                if let idxRange = normalized.range(of: "INDEXADOR DO SALDO") {
+                    let tail = String(normalized[idxRange.upperBound...].prefix(60))
+                    if tail.contains("IPCA") { return .ipca }
+                    if tail.contains("FIXO") || tail.contains("PREFIXADO") { return .fixed }
+                }
+                return .tr
+            }()
+
+            let detectedSystem: AmortizationSystem = {
+                if let sysRange = normalized.range(of: "SISTEMA DE AMORTIZACAO") {
+                    let tail = String(normalized[sysRange.upperBound...].prefix(50))
+                    if tail.contains("SAC") { return .sac }
+                    if tail.contains("TP") || tail.contains("PRICE") { return .price }
+                }
+                return normalized.contains("SAC") && !normalized.contains("SISTEMA DE AMORTIZACAO TP") ? .sac : .price
+            }()
 
             let totalMonths = extractFirstInteger(after: "PRAZO DO FINANCIAMENTO", in: normalized) ?? 360
             let remainingMonths = extractFirstInteger(after: "PRAZO REMANESCENTE", in: normalized) ?? totalMonths
@@ -1379,14 +1447,17 @@ public enum ContractDocumentImportService {
             var extractedAdminFee: Double = 25.0
 
             if let tableRange = normalized.range(of: "DESCRICAO DAS ULTIMAS PRESTACOES") {
-                let tableTail = String(normalized[tableRange.upperBound...].prefix(450))
+                let tableTail = String(normalized[tableRange.upperBound...].prefix(500))
                 latestPaidDueDate = extractFirstDate(in: tableTail)
 
-                if let directAmortJuros = extractRegexBRLAmount(#"AMORT\+JUROS\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
+                if let directAmortJuros = extractRegexBRLAmount(#"AMORT(?:IZACAO)?\s*\+\s*JUROS\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
                     extractedBasePrice = directAmortJuros
                 }
                 if let directSeguro = extractRegexBRLAmount(#"SEGURO\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
                     extractedInsurance = directSeguro
+                }
+                if let directAdmin = extractRegexBRLAmount(#"TAXA[S]?\s+ADMIN(?:ISTRACAO)?\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
+                    extractedAdminFee = directAdmin
                 }
                 if let directDevido = extractRegexBRLAmount(#"DEVIDO\s+(\d{1,3}(?:\.\d{3})*,\d{2})"#, in: tableTail) {
                     extractedInstallmentAmount = directDevido
@@ -1404,14 +1475,14 @@ public enum ContractDocumentImportService {
                 if extractedInstallmentAmount > 0 && extractedBasePrice > 0 {
                     let calculatedDiff = extractedInstallmentAmount - extractedBasePrice - extractedInsurance
                     if calculatedDiff >= 0.01 {
-                        extractedAdminFee = calculatedDiff
+                        extractedAdminFee = ((calculatedDiff * 100.0).rounded()) / 100.0
                     }
                 } else if extractedBasePrice > 0 && extractedInstallmentAmount == 0 {
                     extractedInstallmentAmount = extractedBasePrice + extractedInsurance + extractedAdminFee
                 }
             }
 
-            let billingDay: Int = {
+            let bankDueDay: Int = {
                 if let d = latestPaidDueDate {
                     return cal.component(.day, from: d)
                 }
@@ -1426,6 +1497,13 @@ public enum ContractDocumentImportService {
                 return Date()
             }()
 
+            let maturityDate: Date? = {
+                if remainingMonths > 0 {
+                    return cal.date(byAdding: .month, value: max(remainingMonths - 1, 0), to: firstFutureDate)
+                }
+                return nil
+            }()
+
             let startDate: Date = {
                 if let d = latestPaidDueDate,
                    let start = cal.date(byAdding: .month, value: -paidMonths, to: d) {
@@ -1434,7 +1512,14 @@ public enum ContractDocumentImportService {
                 return Date()
             }()
 
+            // annual_nominal_rate: "Taxa de Juros Nominal com Relacionamento" (se houver; caso contrário, "Taxa de Juros Contratual Nominal")
             let annualRate: Double = {
+                if let relRate = extractRegexRate(#"TAXA\s+DE\s+JUROS\s+NOMINAL\s+COM\s+RELACIONAMENTO[:\s\n]*(\d{1,2},\d{2,4})"#, in: normalized), relRate > 0 {
+                    return relRate
+                }
+                if let contRate = extractRegexRate(#"TAXA\s+DE\s+JUROS\s+CONTRATUAL\s+NOMINAL[:\s\n]*(\d{1,2},\d{2,4})"#, in: normalized), contRate > 0 {
+                    return contRate
+                }
                 if let rateRange = normalized.range(of: "TAXA DE JUROS") {
                     let tail = String(normalized[rateRange.lowerBound...].prefix(200))
                     let rates = extractAllRates(in: tail)
@@ -1454,6 +1539,7 @@ public enum ContractDocumentImportService {
             let finalBasePrice = extractedBasePrice > 0 ? extractedBasePrice : 2_546.77
             let finalInsurance = extractedInsurance > 0 ? extractedInsurance : 86.27
             let finalInstallment = extractedInstallmentAmount > 0 ? extractedInstallmentAmount : 2_658.04
+            let sysCode = detectedSystem == .sac ? "SAC" : "TP (Tabela Price)"
 
             return ParsedCreditContractDocument(
                 kind: .financing,
@@ -1462,11 +1548,11 @@ public enum ContractDocumentImportService {
                 institutionName: "Caixa Econômica Federal",
                 loanSubtype: .consignado,
                 financingSubtype: .imovel,
-                amortizationSystem: normalized.contains("SAC") && !normalized.contains("SISTEMA DE AMORTIZACAO TP") ? .sac : .price,
+                amortizationSystem: detectedSystem,
                 totalContractedAmount: max(estimatedOriginalContracted, outstandingDebt),
                 outstandingBalance: outstandingDebt,
                 installmentAmount: finalInstallment,
-                billingDay: billingDay,
+                billingDay: bankDueDay,
                 totalInstallments: totalMonths,
                 paidInstallmentsCount: paidMonths,
                 remainingInstallmentsCount: remainingMonths,
@@ -1474,12 +1560,15 @@ public enum ContractDocumentImportService {
                 startDate: startDate,
                 firstFutureBillingDate: firstFutureDate,
                 documentEmissionDate: emissionDate,
-                extractedNotes: "Contrato \(contractNo) • Sistema TP (Tabela Price) + Indexador TR • \(paidMonths) prestações pagas e \(remainingMonths) prestações futuras remanescentes • Saldo Devedor Teórico: \(BRLFormatters.currency(outstandingDebt)).",
+                extractedNotes: "Contrato \(contractNo) • Sistema \(sysCode) + Indexador \(detectedIndexer.shortLabel) • \(paidMonths) prestações pagas e \(remainingMonths) prestações futuras remanescentes • Saldo Devedor Teórico em \(BRLFormatters.shortDate(referenceDate)): \(BRLFormatters.currency(outstandingDebt)) • Vencimento no Banco: dia \(bankDueDay).",
                 annualNominalInterestRate: annualRate,
-                indexationRate: .tr,
+                indexationRate: detectedIndexer,
                 adminFee: extractedAdminFee,
                 insuranceFee: finalInsurance,
-                baseInstallmentAmount: finalBasePrice
+                baseInstallmentAmount: finalBasePrice,
+                bankDueDay: bankDueDay,
+                referenceDate: referenceDate,
+                maturityDate: maturityDate
             )
         }
 
@@ -1543,8 +1632,14 @@ public enum ContractDocumentImportService {
     }
 
     private static func extractFirstDate(in text: String) -> Date? {
-        if let matchRange = text.range(of: #"\d{2}/\d{2}/\d{4}"#, options: .regularExpression) {
+        if let matchRange = text.range(of: #"\b\d{2}/\d{2}/\d{2,4}\b"#, options: .regularExpression) {
             let dateStr = String(text[matchRange])
+            let parts = dateStr.split(separator: "/")
+            if parts.count == 3, parts[2].count == 2, let yy = Int(parts[2]) {
+                let fullYear = yy >= 70 ? 1900 + yy : 2000 + yy
+                let normalizedDateStr = "\(parts[0])/\(parts[1])/\(fullYear)"
+                return BRLFormatters.shortDateFormatter.date(from: normalizedDateStr)
+            }
             return BRLFormatters.shortDateFormatter.date(from: dateStr)
         }
         return nil

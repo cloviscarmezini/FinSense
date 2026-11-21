@@ -78,6 +78,15 @@ public struct DashboardView: View {
 
                     Spacer()
 
+                    Picker("Cenário", selection: $store.budgetProjectionScenario) {
+                        ForEach(BudgetProjectionScenario.allCases) { scenario in
+                            Text(scenario.rawValue).tag(scenario)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 240)
+                    .help("Alterne entre a visão contratual base (Real) e a projeção com planejamento de amortização")
+
                     DashboardPeriodNavigatorBar(store: store)
 
                     Button {

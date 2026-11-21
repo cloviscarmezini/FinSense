@@ -5300,4 +5300,272 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(finalInv.balance, 10000.0, "Deletar resgate futuro não pago não deve alterar o saldo")
         XCTAssertEqual(finalInv.movements.count, 0)
     }
+
+    func testSantanderAndCaixaDocumentExtractionAndManualBillingDay() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let bank = BankAccount(id: UUID(), name: "Santander", initialBalance: 50000.0)
+        store.accounts = [bank]
+
+        // 1. Extração Santander Consignado (DDC)
+        let santanderDoc = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.santanderLoanOCRText,
+            expectedKind: .loan
+        )
+        XCTAssertEqual(santanderDoc.contractNumber, "783694303")
+        XCTAssertEqual(santanderDoc.outstandingBalance, 91039.22, accuracy: 0.01, "Deve usar Dívida para Liquidação / Saldo Devedor D0, nunca Soma Vlr. Parcelas")
+        XCTAssertEqual(santanderDoc.monthlyInterestRate, 2.0087, accuracy: 0.0001, "Deve usar Tx. Aplicada / Efetiva, nunca CET")
+        XCTAssertEqual(santanderDoc.installmentAmount, 4509.81, accuracy: 0.01)
+        XCTAssertEqual(santanderDoc.bankDueDay, 25)
+        XCTAssertEqual(santanderDoc.remainingInstallmentsCount, 26)
+        XCTAssertNotNil(santanderDoc.referenceDate)
+        XCTAssertNotNil(santanderDoc.maturityDate)
+
+        // Importa com Dia de Cobrança no Salário manual = 12 e Dia de Pagamento no Banco = 25
+        let loanContract = store.createCreditContract(
+            kind: .loan,
+            name: santanderDoc.name,
+            contractNumber: santanderDoc.contractNumber,
+            loanSubtype: .consignado,
+            amortizationSystem: .price,
+            totalContractedAmount: santanderDoc.totalContractedAmount,
+            outstandingBalance: santanderDoc.outstandingBalance,
+            installmentAmount: santanderDoc.installmentAmount,
+            billingDay: 12,
+            totalInstallments: santanderDoc.totalInstallments,
+            monthlyInterestRate: santanderDoc.monthlyInterestRate,
+            startDate: santanderDoc.startDate,
+            accountId: bank.id,
+            overridePastInstallmentsCount: santanderDoc.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: santanderDoc.firstFutureBillingDate,
+            bankDueDay: santanderDoc.bankDueDay,
+            documentReferenceDate: santanderDoc.referenceDate,
+            maturityDate: santanderDoc.maturityDate
+        )
+
+        XCTAssertEqual(loanContract.billingDay, 12, "Dia de cobrança no salário deve ser 12 (inserido manualmente)")
+        XCTAssertEqual(loanContract.effectiveBankDueDay, 25, "Dia de vencimento no banco deve ser 25 (extraído do PDF)")
+        let loanInstallmentTxs = store.transactions.filter { $0.linkedContractId == loanContract.id && $0.installmentIndex != nil }
+        XCTAssertEqual(loanInstallmentTxs.count, 26)
+        for tx in loanInstallmentTxs {
+            XCTAssertEqual(store.calendar.component(.day, from: tx.date), 12, "Transações no orçamento devem cair no dia de cobrança no salário (12)")
+        }
+
+        // 2. Extração Caixa Econômica Federal (Habitação)
+        let caixaDoc = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.caixaFinancingOCRText,
+            expectedKind: .financing
+        )
+        XCTAssertEqual(caixaDoc.contractNumber, "178770203328-1")
+        XCTAssertEqual(caixaDoc.outstandingBalance, 324737.86, accuracy: 0.01)
+        XCTAssertEqual(caixaDoc.indexationRate, .tr)
+        XCTAssertEqual(caixaDoc.amortizationSystem, .price)
+        XCTAssertEqual(caixaDoc.annualNominalInterestRate ?? 0, 8.51, accuracy: 0.01, "Deve priorizar Taxa de Juros Nominal com Relacionamento (8,51%)")
+        XCTAssertEqual(caixaDoc.remainingInstallmentsCount, 332)
+        XCTAssertEqual(caixaDoc.bankDueDay, 5)
+        XCTAssertEqual(caixaDoc.baseInstallmentAmount ?? 0, 2546.77, accuracy: 0.01)
+        XCTAssertEqual(caixaDoc.insuranceFee ?? 0, 86.27, accuracy: 0.01)
+        XCTAssertEqual(caixaDoc.adminFee ?? 0, 25.00, accuracy: 0.01)
+        XCTAssertNotNil(caixaDoc.referenceDate)
+    }
+
+    func testThreeLayerAmortizationPlanningShadowingExpirationAndConfirmation() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let cal = store.calendar
+        let baseNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 10))!
+        store.simulatedCurrentDate = baseNow
+        store.selectedMonth = baseNow
+
+        let bank = BankAccount(id: UUID(), name: "Conta Salário", initialBalance: 150000.0)
+        store.accounts = [bank]
+
+        let firstBilling = cal.date(from: DateComponents(year: 2026, month: 11, day: 12))!
+        let contract = store.createCreditContract(
+            kind: .loan,
+            name: "Consignado Santander",
+            contractNumber: "783694303",
+            loanSubtype: .consignado,
+            amortizationSystem: .price,
+            totalContractedAmount: 110108.13,
+            outstandingBalance: 91039.22,
+            installmentAmount: 4509.81,
+            billingDay: 12,
+            totalInstallments: 36,
+            monthlyInterestRate: 2.0087,
+            startDate: cal.date(from: DateComponents(year: 2025, month: 10, day: 30))!,
+            accountId: bank.id,
+            referenceDate: baseNow,
+            overridePastInstallmentsCount: 10,
+            overrideFirstFutureBillingDate: firstBilling,
+            bankDueDay: 25
+        )
+
+        // Camada 1 possui 26 parcelas originais
+        let originalLayer1Count = store.transactions.filter { $0.linkedContractId == contract.id && $0.installmentIndex != nil }.count
+        XCTAssertEqual(originalLayer1Count, 26)
+
+        // 1. Adiciona duas amortizações manuais planejadas (Camada 2) até quitar
+        let amortDate1 = cal.date(from: DateComponents(year: 2026, month: 11, day: 26))!
+        let amortDate2 = cal.date(from: DateComponents(year: 2026, month: 12, day: 26))!
+
+        let item1 = store.addPlannedAmortization(
+            contractId: contract.id,
+            date: amortDate1,
+            amount: Decimal(40000),
+            source: .cash,
+            mode: .reduceTerm
+        )!
+        let item2 = store.addPlannedAmortization(
+            contractId: contract.id,
+            date: amortDate2,
+            amount: Decimal(60000), // Maior que o saldo restante -> deve fazer Zero-Balance Clamping
+            source: .cash,
+            mode: .reduceTerm
+        )!
+
+        // Regra de Ouro da Camada 1: todas as 26 parcelas originais continuam intactas no banco!
+        let layer1AfterPlanCount = store.transactions.filter { $0.linkedContractId == contract.id && $0.installmentIndex != nil }.count
+        XCTAssertEqual(layer1AfterPlanCount, 26, "Camada 1 nunca deve ter parcelas deletadas pelo planejamento")
+
+        // Verifica Camada 3 (LoanProjectionEngine)
+        let proj = store.loanProjection(for: contract.id)!
+        let outcome1 = proj.plannedItemOutcomes[item1.id]!
+        let outcome2 = proj.plannedItemOutcomes[item2.id]!
+
+        // O item 2 usa o saldo planejado após o item 1 (e a parcela de dez/26) como referência e zera a dívida
+        XCTAssertTrue(outcome1.remainingBalanceAfter < Decimal(91039.22))
+        XCTAssertEqual(outcome2.remainingBalanceAfter, .zero, "Segundo aporte deve quitar o saldo restante")
+        XCTAssertTrue(outcome2.changeLeftover > .zero, "Excedente do aporte deve gerar changeLeftover (sobra de caixa)")
+        XCTAssertTrue(outcome2.isFullPayoffStep)
+
+        // As 24 parcelas de 2027 e 2028 (após Dez/2026) devem estar `.shadowed`
+        XCTAssertEqual(proj.shadowedInstallmentTransactionIds.count, 24)
+        XCTAssertEqual(proj.monthsSaved, 24)
+        XCTAssertTrue(proj.totalInterestSaved > Decimal(20000), "Economia de juros deve ser expressiva")
+
+        // 2. Impacto no Orçamento e Toggle Global de Cenário (`Com Planejamento` vs `Real (Base)`)
+        let jan2027 = cal.date(from: DateComponents(year: 2027, month: 1, day: 15))!
+        store.budgetProjectionScenario = .withPlanning
+        XCTAssertEqual(store.monthlyExpense(for: jan2027), 0.0, accuracy: 0.01, "Em 'Com Planejamento', parcela .shadowed em Jan/2027 deve somar R$ 0,00")
+
+        store.budgetProjectionScenario = .realBase
+        XCTAssertEqual(store.monthlyExpense(for: jan2027), 4509.81, accuracy: 0.01, "Em 'Real (Base)', parcela original em Jan/2027 deve somar R$ 4.509,81")
+        store.budgetProjectionScenario = .withPlanning
+
+        // 3. Validação Temporal (`PlanExpirationValidator`): avança o relógio para 28/11/2026 sem confirmar item1
+        let afterDate1 = cal.date(from: DateComponents(year: 2026, month: 11, day: 28))!
+        store.simulatedCurrentDate = afterDate1
+
+        let expiredList = store.expiredPlannedAmortizations(for: contract.id)
+        XCTAssertEqual(expiredList.count, 1, "O aporte de 26/11 deve ter expirado automaticamente")
+        XCTAssertEqual(expiredList.first?.id, item1.id)
+
+        // Efeito cascata reversível: sem o aporte 1 de 40k, o aporte 2 de 60k sozinho não quita mais os ~88k em Dez/2026!
+        // Logo, a parcela de Jan/2027 deixa de ser `.shadowed` e volta a ser `.active`!
+        XCTAssertEqual(store.monthlyExpense(for: jan2027), 4509.81, accuracy: 0.01, "Após expiração, parcela de Jan/2027 deve voltar automaticamente ao orçamento")
+
+        // 4. Confirma pagamento do aporte expirado (`[Confirmar que paguei]`)
+        let confirmed = store.confirmPlannedAmortizationPayment(
+            contractId: contract.id,
+            itemId: item1.id,
+            accountId: bank.id,
+            paymentDate: amortDate1
+        )
+        XCTAssertTrue(confirmed)
+
+        // Agora o saldo real na Camada 1 diminuiu em R$ 40.000,00!
+        let updatedContract = store.contracts.first(where: { $0.id == contract.id })!
+        XCTAssertEqual(updatedContract.extraAmortizedTotal, 40000.0, accuracy: 0.01)
+    }
+
+    func testAutomaticAmortizationPlanAndCaixaFGTS24MonthRule() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let cal = store.calendar
+        let baseNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 1))!
+        store.simulatedCurrentDate = baseNow
+        store.selectedMonth = baseNow
+
+        let bank = BankAccount(id: UUID(), name: "Caixa", initialBalance: 100000.0)
+        store.accounts = [bank]
+
+        // Cria financiamento Caixa com uso prévio de FGTS há 10 meses
+        let prevFGTS = cal.date(byAdding: .month, value: -10, to: baseNow)!
+        let finContract = store.createCreditContract(
+            kind: .financing,
+            name: "Financiamento Caixa TP",
+            contractNumber: "178770203328-1",
+            financingSubtype: .imovel,
+            amortizationSystem: .price,
+            totalContractedAmount: 50000.0,
+            outstandingBalance: 30000.0,
+            installmentAmount: 1500.0,
+            billingDay: 5,
+            totalInstallments: 30,
+            monthlyInterestRate: 8.51 / 12.0,
+            startDate: baseNow,
+            accountId: bank.id,
+            referenceDate: baseNow,
+            annualNominalInterestRate: 8.51,
+            indexationRate: .tr,
+            adminFee: 25.0,
+            insuranceFee: 50.0,
+            baseInstallmentAmount: 1425.0,
+            bankDueDay: 5,
+            lastFGTSUsageDate: prevFGTS
+        )
+
+        // 1. Tenta agendar FGTS parcial com menos de 24 meses -> deve gerar alerta de validação FGTS
+        let nextMonth = cal.date(byAdding: .month, value: 1, to: baseNow)!
+        let fgtsPartial = store.addPlannedAmortization(
+            contractId: finContract.id,
+            date: nextMonth,
+            amount: Decimal(5000),
+            source: .fgts,
+            mode: .reduceTerm
+        )!
+
+        let projPartial = store.loanProjection(for: finContract.id)!
+        XCTAssertFalse(projPartial.fgtsWarnings.isEmpty, "Uso parcial de FGTS com menos de 24 meses deve gerar alerta legal")
+        XCTAssertNotNil(projPartial.plannedItemOutcomes[fgtsPartial.id]?.fgtsValidationWarning)
+
+        // 2. Se o FGTS for para Liquidação Total (fgts_amount >= current_balance), a carência de 24 meses é dispensada por lei!
+        store.updatePlannedAmortization(
+            contractId: finContract.id,
+            itemId: fgtsPartial.id,
+            date: nextMonth,
+            amount: Decimal(35000),
+            source: .fgts,
+            mode: .reduceTerm
+        )
+        let projFullFGTS = store.loanProjection(for: finContract.id)!
+        XCTAssertTrue(projFullFGTS.fgtsWarnings.isEmpty, "Liquidação total com FGTS é isenta da carência de 24 meses por lei")
+        XCTAssertTrue(projFullFGTS.plannedItemOutcomes[fgtsPartial.id]?.isFGTSFullPayoffExempt == true)
+
+        // 3. Testa Geração Automática (% do dinheiro previsto ao final do mês)
+        store.deleteAmortizationPlan(for: finContract.id)
+        let autoPlan = store.generateAutomaticAmortizationPlan(
+            contractId: finContract.id,
+            billingDay: 10,
+            incomeCommitmentPercentage: Decimal(50),
+            mode: .reduceTerm,
+            fallbackMonthlyBaseSurplus: Decimal(10000) // 50% = R$ 5.000/mês
+        )
+        XCTAssertNotNil(autoPlan)
+        let pendingAutoItems = autoPlan?.items.filter { $0.status == .pending } ?? []
+        XCTAssertTrue(pendingAutoItems.count >= 4, "Deve gerar aportes mensais automáticos até quitar o saldo de 30k")
+
+        let autoProj = store.loanProjection(for: finContract.id)!
+        XCTAssertEqual(autoProj.projectedFinalBalanceAfterPlan, .zero, "Planejamento automático deve levar o saldo projetado até a quitação (R$ 0,00)")
+    }
 }
