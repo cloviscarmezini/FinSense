@@ -2580,7 +2580,7 @@ public struct AmortizationPlannerSheet: View {
                 }
             }
 
-            // 3. Painel de Inserção (Exibido APENAS no Modo Criação/Edição)
+            // 3. Painel de Inserção (No Modo Criação/Edição exibe os controles; no Modo Visualização exibe atalho rápido para Adicionar Aporte Manual)
             if isEditingMode {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 14) {
@@ -2625,6 +2625,32 @@ public struct AmortizationPlannerSheet: View {
                         )
                     }
                 }
+            } else {
+                // Atalho visível no topo do Modo Visualização para entrar imediatamente na inserção manual ou edição
+                HStack(spacing: 12) {
+                    Image(systemName: "info.circle.fill")
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                    Text("Você está visualizando o planejamento salvo. Para adicionar novos aportes manuais ou alterar valores, clique ao lado:")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        loadStateFromStore(enterEditIfEmpty: true)
+                        isEditingMode = true
+                        selectedMode = .manual
+                        errorMsg = nil
+                        clampFeedbackMessage = nil
+                    } label: {
+                        Label("Adicionar / Editar Amortização Manual", systemImage: "plus.circle.fill")
+                            .font(.caption.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#6366F1"))
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#6366F1").opacity(0.08)))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: "#6366F1").opacity(0.25), lineWidth: 1))
             }
 
             if let errorMsg {
@@ -2723,7 +2749,8 @@ public struct AmortizationPlannerSheet: View {
         .padding(20)
         .frame(width: 1060, height: 780)
         .onAppear {
-            loadStateFromStore(enterEditIfEmpty: true)
+            let hasActiveSaved = store.hasSavedAmortizationPlan(for: liveContract.id)
+            loadStateFromStore(enterEditIfEmpty: !hasActiveSaved)
         }
     }
 
@@ -2732,7 +2759,11 @@ public struct AmortizationPlannerSheet: View {
         let existingPlan = store.amortizationPlan(for: current.id)
         let hasActiveSaved = store.hasSavedAmortizationPlan(for: current.id)
 
-        isEditingMode = enterEditIfEmpty ? !hasActiveSaved : false
+        if enterEditIfEmpty {
+            isEditingMode = true
+        } else {
+            isEditingMode = !hasActiveSaved
+        }
         selectedMode = existingPlan?.generationMode ?? .manual
         draftItems = existingPlan?.items ?? []
 
@@ -2942,8 +2973,8 @@ public struct AmortizationPlannerSheet: View {
 
         VStack(alignment: .leading, spacing: 8) {
             if isAlreadyQuitado {
-                // Trava quando o empréstimo já estaria quitado
-                HStack(spacing: 10) {
+                // Trava quando o empréstimo já estaria quitado pelos aportes planejados atuais
+                HStack(spacing: 12) {
                     Image(systemName: "checkmark.seal.fill")
                         .font(.title3)
                         .foregroundStyle(Color(hex: "#10B981"))
@@ -2951,11 +2982,30 @@ public struct AmortizationPlannerSheet: View {
                         Text("Este planejamento já leva à QUITAÇÃO TOTAL do contrato (Saldo Devedor R$ 0,00)!")
                             .font(.subheadline.bold())
                             .foregroundStyle(Color(hex: "#10B981"))
-                        Text("Novos aportes adicionais estão bloqueados porque o empréstimo já estará 100% quitado. Para redistribuir valores, edite ou remova um aporte na tabela abaixo.")
+                        Text("Novos aportes adicionais estão bloqueados porque o empréstimo já estará 100% quitado. Você pode editar qualquer valor na lista abaixo ou clicar ao lado para reabrir a inserção manual.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+
+                    if !draftItems.filter({ $0.status == .pending }).isEmpty {
+                        Button {
+                            var pending = draftItems.filter { $0.status == .pending }.sorted { $0.date < $1.date }
+                            if !pending.isEmpty {
+                                let removedLast = pending.removeLast()
+                                let nonPending = draftItems.filter { $0.status != .pending }
+                                draftItems = nonPending + pending
+                                manualDate = removedLast.date
+                                manualAmountText = BRLFormatters.currency(removedLast.amountDouble)
+                            }
+                        } label: {
+                            Label("Ajustar Último Aporte Manualmente", systemImage: "pencil.and.outline")
+                                .font(.caption.bold())
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Color(hex: "#6366F1"))
+                        .controlSize(.small)
+                    }
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#10B981").opacity(0.10)))

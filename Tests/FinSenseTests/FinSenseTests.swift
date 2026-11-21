@@ -5642,10 +5642,42 @@ final class FinSenseTests: XCTestCase {
         )
 
         // 1. Inicialmente não possui planejamento salvo ("Planejar Amortização")
+        // E a projeção sem aportes planejados NÃO deve marcar doesPlanAchieveFullPayoff como true,
+        // mantendo o painel de amortização manual 100% disponível com o saldo máximo para amortizar!
         XCTAssertFalse(store.hasSavedAmortizationPlan(for: contract.id))
+        let emptyProj = store.loanProjection(for: contract.id)!
+        XCTAssertFalse(emptyProj.doesPlanAchieveFullPayoff, "Sem aportes planejados, doesPlanAchieveFullPayoff deve ser false para liberar a inserção manual")
+        let amortDate1 = cal.date(from: DateComponents(year: 2026, month: 11, day: 26))!
+        let maxOnFirstDate = store.maxAvailableLoanBalanceToAmortize(
+            for: contract.id,
+            draftItems: [],
+            onDate: amortDate1
+        )
+        XCTAssertEqual(maxOnFirstDate, 86873.35, accuracy: 0.01, "O painel manual deve permitir amortizar até o saldo devedor atual (86.873,35)")
+
+        // 1b. Testa também o Gerador Automático no contrato Santander (parcelas no dia 1, amortizações no dia 26):
+        // Deve gerar a última transação simbólica de Liquidação Total mesmo quando uma parcela do dia 1 cairia antes do dia 26!
+        let autoSavedPlan = store.generateAutomaticAmortizationPlan(
+            contractId: contract.id,
+            billingDay: 26,
+            incomeCommitmentPercentage: Decimal(40),
+            mode: .reduceTerm,
+            fallbackMonthlyBaseSurplus: Decimal(10000) // R$ 4.000/mês no dia 26
+        )!
+        let autoProjSantander = store.loanProjection(for: contract.id)!
+        XCTAssertTrue(autoProjSantander.doesPlanAchieveFullPayoff, "Plano automático deve atingir quitação total")
+        XCTAssertEqual(autoProjSantander.projectedFinalBalanceAfterPlan, .zero)
+        let autoPlannedTxs = store.transactions
+            .filter { $0.linkedContractId == contract.id && $0.transactionOrigin == .plannedAmortization }
+            .sorted { $0.date < $1.date }
+        XCTAssertFalse(autoPlannedTxs.isEmpty)
+        let lastAutoTx = autoPlannedTxs.last!
+        XCTAssertTrue(store.isPlannedAmortizationFullPayoff(lastAutoTx), "A última transação do plano automático deve ser a Liquidação Total simbólica de quitação")
+        XCTAssertTrue(lastAutoTx.name.localizedCaseInsensitiveContains("Liquidação"), "A última transação deve conter Liquidação no título")
+        XCTAssertEqual(autoSavedPlan.items.count, autoPlannedTxs.count)
+        store.deleteAmortizationPlan(for: contract.id)
 
         // 2. Simulação em Rascunho (não persiste nem cria transações até clicar em "Salvar Planejamento")
-        let amortDate1 = cal.date(from: DateComponents(year: 2026, month: 11, day: 26))!
         let amortDate2 = cal.date(from: DateComponents(year: 2026, month: 12, day: 26))!
         let amortDate3 = cal.date(from: DateComponents(year: 2027, month: 1, day: 26))!
 

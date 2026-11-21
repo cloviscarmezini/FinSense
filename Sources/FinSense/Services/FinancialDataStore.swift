@@ -557,7 +557,10 @@ public final class FinancialDataStore: ObservableObject {
             if migrateExistingSantanderContractsIfNeeded() {
                 mutatedData = true
             }
-            if mutatedData {
+            for plan in self.amortizationPlans {
+                syncPlannedAmortizationTransactions(for: plan.contractId, saveAfter: false)
+            }
+            if mutatedData || !self.amortizationPlans.isEmpty {
                 save()
             }
             validateExpiredAmortizationPlans()
@@ -5031,21 +5034,40 @@ public final class FinancialDataStore: ObservableObject {
         return (shadowed, projectedAmounts)
     }
 
-    /// Indica se uma transação de amortização planejada (`.plannedAmortization`) é a parcela final de LIQUIDAÇÃO / QUITAÇÃO TOTAL do contrato.
+    /// Indica se uma transação (amortização planejada `.plannedAmortization` OU a última parcela ativa de um contrato com plano de amortização)
+    /// representa a transação final de LIQUIDAÇÃO / QUITAÇÃO TOTAL do contrato.
     public func isPlannedAmortizationFullPayoff(_ tx: FinancialTransaction) -> Bool {
-        guard tx.transactionOrigin == .plannedAmortization else { return false }
-        _ = activeProjectionSnapshot()
-        if let cached = cachedActiveProjectionSnapshot, cached.payoffTxIds.contains(tx.id) {
-            return true
+        if tx.transactionOrigin == .plannedAmortization {
+            _ = activeProjectionSnapshot()
+            if let cached = cachedActiveProjectionSnapshot, cached.payoffTxIds.contains(tx.id) {
+                return true
+            }
+            if let contractId = tx.linkedContractId,
+               let proj = loanProjection(for: contractId),
+               let itemId = tx.linkedEntityID,
+               let outcome = proj.plannedItemOutcomes[itemId] {
+                return outcome.isFullPayoffStep || outcome.remainingBalanceAfter <= Decimal(string: "0.01")!
+            }
+            return tx.name.localizedCaseInsensitiveContains("Liquidação") ||
+                   tx.details.localizedCaseInsensitiveContains("Liquidação Total")
         }
-        if let contractId = tx.linkedContractId,
+
+        // Caso o plano seja parcial e a quitação antecipada ocorra na última parcela regular ativa antes das parcelas `.shadowed`:
+        if budgetProjectionScenario == .withPlanning,
+           let contractId = tx.linkedContractId,
+           tx.installmentIndex != nil,
+           !tx.isPaid,
+           hasSavedAmortizationPlan(for: contractId),
            let proj = loanProjection(for: contractId),
-           let itemId = tx.linkedEntityID,
-           let outcome = proj.plannedItemOutcomes[itemId] {
-            return outcome.isFullPayoffStep || outcome.remainingBalanceAfter <= Decimal(string: "0.01")!
+           proj.monthsSaved > 0 {
+            if let row = proj.timeline.first(where: { $0.linkedTransactionId == tx.id }),
+               row.status == .active,
+               row.finalBalance <= Decimal(string: "0.01")! {
+                return true
+            }
         }
-        return tx.name.localizedCaseInsensitiveContains("Liquidação") ||
-               tx.details.localizedCaseInsensitiveContains("Liquidação Total")
+
+        return false
     }
 
     /// Status de exibição projetado de uma transação na lista (`.active`, `.pendingAmortization` ou `.shadowed`).

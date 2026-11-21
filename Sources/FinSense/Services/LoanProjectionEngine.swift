@@ -443,6 +443,15 @@ public enum LoanProjectionEngine {
         let monthsSaved = max(0, originalRemainingMonths - projectedActiveMonths)
         let interestSaved = max(.zero, roundCurrency(baselineRun.totalInterest - projectedRun.totalInterest))
 
+        // Um planejamento só atinge a QUITAÇÃO TOTAL por amortização quando existem aportes planejados pendentes
+        // e o último aporte planejado zera efetivamente o saldo devedor (`balanceAfterLastPlannedItem <= 0.01` ou `isFullPayoffStep`).
+        let doesPlanAchieveFullPayoff = !pendingAmortizations.isEmpty && (
+            projectedRun.balanceAfterLastPlannedItem <= Decimal(string: "0.01")! ||
+            projectedRun.plannedOutcomes.values.contains(where: {
+                $0.isFullPayoffStep || $0.remainingBalanceAfter <= Decimal(string: "0.01")!
+            })
+        )
+
         return LoanProjectionResult(
             contractId: contract.id,
             currentRealBalance: initialBalance,
@@ -460,7 +469,7 @@ public enum LoanProjectionEngine {
             totalInterestSaved: interestSaved,
             totalExtraAmortized: projectedRun.totalExtraAmortized,
             totalChangeLeftover: projectedRun.totalChangeLeftover,
-            doesPlanAchieveFullPayoff: projectedRun.finalBalance <= Decimal(string: "0.01")!,
+            doesPlanAchieveFullPayoff: doesPlanAchieveFullPayoff,
             shadowedInstallmentTransactionIds: projectedRun.shadowedTxIds,
             activeInstallmentProjectedAmounts: projectedRun.activeTxProjectedAmounts,
             fgtsWarnings: projectedRun.fgtsWarnings,
@@ -951,7 +960,44 @@ public enum LoanProjectionEngine {
 
             let balanceAvailableToAmortize = probeOutcome.balanceBefore
             if balanceAvailableToAmortize <= Decimal(string: "0.01")! {
-                // Dívida já quitada!
+                // O saldo zerou antes de `candidateDate` (por conta de uma parcela normal entre o último aporte e `candidateDate`).
+                // Se o último aporte gerado ainda tinha deixado um saldo residual > 0, geramos a transação final simbólica
+                // de Liquidação Total imediatamente antes daquela parcela final para quitar 100% via planejamento!
+                if let lastGen = generatedItems.last,
+                   let lastOutcome = simResult.plannedItemOutcomes[lastGen.id],
+                   lastOutcome.remainingBalanceAfter > Decimal(string: "0.01")! {
+                    let residualToPayOff = lastOutcome.remainingBalanceAfter
+                    let finalPayoffDate: Date = {
+                        let lastGenDay = calendar.startOfDay(for: lastGen.date)
+                        if let nextRegularRow = simResult.timeline.first(where: {
+                            $0.eventKind == .regularInstallment &&
+                            calendar.startOfDay(for: $0.date) > lastGenDay &&
+                            calendar.startOfDay(for: $0.date) <= calendar.startOfDay(for: candidateDate)
+                        }) {
+                            let dayBefore = calendar.date(byAdding: .day, value: -1, to: nextRegularRow.date) ?? nextRegularRow.date
+                            return calendar.startOfDay(for: dayBefore) > lastGenDay ? dayBefore : lastGen.date
+                        }
+                        return candidateDate
+                    }()
+
+                    let pctInt = NSDecimalNumber(decimal: pct).intValue
+                    if calendar.isDate(finalPayoffDate, inSameDayAs: lastGen.date) {
+                        // Soma o resíduo final ao último aporte para transformá-lo na Liquidação Total
+                        generatedItems[generatedItems.count - 1].amount = roundCurrency(lastGen.amount + residualToPayOff)
+                        generatedItems[generatedItems.count - 1].notes = "Liquidação Total Automática (\(pctInt)% do saldo previsto no mês)"
+                    } else {
+                        let finalPayoffItem = PlannedAmortization(
+                            contractId: contract.id,
+                            date: finalPayoffDate,
+                            amount: residualToPayOff,
+                            source: .cash,
+                            mode: effectiveMode,
+                            status: .pending,
+                            notes: "Liquidação Total Automática (Quitação do saldo residual)"
+                        )
+                        generatedItems.append(finalPayoffItem)
+                    }
+                }
                 break
             }
 
@@ -961,6 +1007,7 @@ public enum LoanProjectionEngine {
             }
 
             let pctInt = NSDecimalNumber(decimal: pct).intValue
+            let isPayoffHere = actualAmount >= balanceAvailableToAmortize
             let newItem = PlannedAmortization(
                 contractId: contract.id,
                 date: candidateDate,
@@ -968,11 +1015,13 @@ public enum LoanProjectionEngine {
                 source: .cash,
                 mode: effectiveMode,
                 status: .pending,
-                notes: "Planejamento automático (\(pctInt)% do saldo previsto no mês)"
+                notes: isPayoffHere
+                    ? "Liquidação Total Automática (\(pctInt)% do saldo previsto no mês)"
+                    : "Planejamento automático (\(pctInt)% do saldo previsto no mês)"
             )
             generatedItems.append(newItem)
 
-            if actualAmount >= balanceAvailableToAmortize {
+            if isPayoffHere {
                 // Este aporte quitou 100% do saldo restante!
                 break
             }
@@ -983,7 +1032,7 @@ public enum LoanProjectionEngine {
 
     /// Calcula o saldo devedor exato disponível para amortizar em uma data específica (`onDate`),
     /// levando em conta as parcelas normais até aquela data e todos os aportes planejados anteriores (ou no mesmo dia).
-    /// Se o empréstimo já estiver quitado antes ou nessa data pelos demais aportes, retorna `.zero`.
+    /// Se o empréstimo já estiver quitado antes ou nessa data pelos demais aportes planejados, retorna `.zero`.
     public static func maxAvailableLoanBalanceToAmortize(
         contract: CreditContract,
         unpaidInstallmentTransactions: [FinancialTransaction],
@@ -998,25 +1047,28 @@ public enum LoanProjectionEngine {
             $0.status == .pending && $0.id != excludingItemId && $0.amount > .zero
         }
 
-        // Verifica primeiro se os itens existentes por si sós já quitam o contrato em data <= onDate
-        let basePlan = AmortizationPlan(
-            contractId: contract.id,
-            generationMode: .manual,
-            billingDay: contract.billingDay,
-            incomeCommitmentPercentage: Decimal(30),
-            defaultRecalculationMode: .reduceTerm,
-            estimatedMonthlyTR: estimatedMonthlyTR,
-            items: filteredItems
-        )
-        let baseSim = simulate(
-            contract: contract,
-            unpaidInstallmentTransactions: unpaidInstallmentTransactions,
-            currentRealBalanceDouble: currentRealBalanceDouble,
-            plan: basePlan,
-            calendar: calendar
-        )
-        if baseSim.doesPlanAchieveFullPayoff && excludingItemId == nil {
-            return .zero
+        // Se já existem outros aportes planejados e eles por si sós já atingem a quitação total do empréstimo,
+        // verifica se a quitação ocorre antes ou na data consultada (ou bloqueia novos aportes quando excludingItemId == nil)
+        if !filteredItems.isEmpty {
+            let basePlan = AmortizationPlan(
+                contractId: contract.id,
+                generationMode: .manual,
+                billingDay: contract.billingDay,
+                incomeCommitmentPercentage: Decimal(30),
+                defaultRecalculationMode: .reduceTerm,
+                estimatedMonthlyTR: estimatedMonthlyTR,
+                items: filteredItems
+            )
+            let baseSim = simulate(
+                contract: contract,
+                unpaidInstallmentTransactions: unpaidInstallmentTransactions,
+                currentRealBalanceDouble: currentRealBalanceDouble,
+                plan: basePlan,
+                calendar: calendar
+            )
+            if baseSim.doesPlanAchieveFullPayoff && excludingItemId == nil {
+                return .zero
+            }
         }
 
         let probeId = UUID()

@@ -761,7 +761,7 @@ public struct TransactionsView: View {
         let projStatus = store.transactionProjectionStatus(for: tx)
         let isShadowed = projStatus == .shadowed
         let isPlannedAmort = projStatus == .pendingAmortization
-        let isPayoffPlannedAmort = isPlannedAmort && store.isPlannedAmortizationFullPayoff(tx)
+        let isPayoffPlannedAmort = !isShadowed && store.isPlannedAmortizationFullPayoff(tx)
         let effectiveAmount = store.effectiveTransactionAmount(for: tx)
 
         HStack(spacing: 14) {
