@@ -1265,7 +1265,14 @@ public struct ParsedCreditContractDocument: Identifiable, Hashable, Codable {
                 return outstandingBalance
             }()
 
-            let nextAmount = futureItems.first?.amount ?? installmentAmount
+            let nextAmount: Double = {
+                if kind == .financing {
+                    // Em financiamentos (ex: Caixa TP), o valor cadastrado é o valor base correto da parcela atual do documento (ex: R$ 2.658,06),
+                    // enquanto o aumento mensal médio é projetado ao longo das parcelas futuras como especulação para o fechamento de cada mês.
+                    return installmentAmount
+                }
+                return futureItems.first?.amount ?? installmentAmount
+            }()
             return (paidCount, remainingCount, nextBillingDate, remainingBalance, nextAmount)
         }
 
@@ -1713,8 +1720,9 @@ public enum ContractDocumentImportService {
             }
 
             // Atribui esse crescimento médio ao longo de todas as parcelas futuras remanescentes (ex: Parcelas 29 a 360)
+            // `principalAmount` armazena o valor base cadastrado da parcela (R$ 2.658,06) e `interestAmount` armazena o aumento projetado acumulado no mês (`k * média`),
+            // de modo que a projeção impacta o fechamento de cada mês futuro como especulação sem alterar o saldo de quitação (R$ 324.737,86).
             let latestPaidDec = LoanProjectionEngine.toDecimal(latestPaidInstallment)
-            let latestBaseDec = LoanProjectionEngine.toDecimal(finalBasePrice)
             var caixaScheduledInstallments: [ContractInstallmentScheduleItem] = []
             if remainingMonths > 0 {
                 caixaScheduledInstallments.reserveCapacity(remainingMonths)
@@ -1722,15 +1730,15 @@ public enum ContractDocumentImportService {
                     let step = Decimal(offset + 1)
                     let instNum = paidMonths + offset + 1
                     let due = cal.date(byAdding: .month, value: offset, to: firstFutureDate) ?? firstFutureDate
-                    let projectedPaid = LoanProjectionEngine.roundCurrency(latestPaidDec + step * avgPaidGrowthDec)
-                    let projectedBase = LoanProjectionEngine.roundCurrency(latestBaseDec + step * avgBaseGrowthDec)
+                    let projectedCorrection = LoanProjectionEngine.roundCurrency(step * avgPaidGrowthDec)
+                    let projectedPaid = LoanProjectionEngine.roundCurrency(latestPaidDec + projectedCorrection)
                     caixaScheduledInstallments.append(
                         ContractInstallmentScheduleItem(
                             installmentNumber: instNum,
                             bankDueDate: due,
                             amount: LoanProjectionEngine.toDouble(projectedPaid),
-                            principalAmount: LoanProjectionEngine.toDouble(projectedBase),
-                            interestAmount: nil
+                            principalAmount: latestPaidInstallment,
+                            interestAmount: LoanProjectionEngine.toDouble(projectedCorrection)
                         )
                     )
                 }
@@ -1741,7 +1749,7 @@ public enum ContractDocumentImportService {
             let sysCode = detectedSystem == .sac ? "SAC" : "TP (Tabela Price)"
             let growthSummaryNote: String = {
                 if let avgG = avgGrowthDouble, let firstH = historyRows.first, let lastH = historyRows.last {
-                    return " • Correção média mensal no Valor Pago (Parcelas \(firstH.installmentNumber) a \(lastH.installmentNumber): \(BRLFormatters.currency(firstH.paidAmount)) → \(BRLFormatters.currency(lastH.paidAmount))): +\(BRLFormatters.currency(avgG))/mês (Próxima parcela \(paidMonths + 1)/\(totalMonths): \(BRLFormatters.currency(nextProjectedInstallment)))"
+                    return " • Valor cadastrado da parcela: \(BRLFormatters.currency(latestPaidInstallment)) • Projeção de correção mensal pela média do documento (Parcelas \(firstH.installmentNumber) a \(lastH.installmentNumber): \(BRLFormatters.currency(firstH.paidAmount)) → \(BRLFormatters.currency(lastH.paidAmount))): +\(BRLFormatters.currency(avgG))/mês (1ª futura: \(BRLFormatters.currency(nextProjectedInstallment)))"
                 }
                 return ""
             }()
@@ -1756,7 +1764,7 @@ public enum ContractDocumentImportService {
                 amortizationSystem: detectedSystem,
                 totalContractedAmount: max(estimatedOriginalContracted, outstandingDebt),
                 outstandingBalance: outstandingDebt,
-                installmentAmount: nextProjectedInstallment,
+                installmentAmount: latestPaidInstallment,
                 billingDay: bankDueDay,
                 totalInstallments: totalMonths,
                 paidInstallmentsCount: paidMonths,

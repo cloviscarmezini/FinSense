@@ -2500,6 +2500,7 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         let baseCleanName = Self.stripInstallmentSuffix(from: cleanUpdated.name)
+        let didUserChangeAmount = abs(cleanUpdated.amount - originalBeforeEdit.amount) > 0.005
         transactions[targetIdx] = cleanUpdated
 
         if scope != .onlyThis, let groupId = cleanUpdated.seriesGroupId {
@@ -2526,11 +2527,24 @@ public final class FinancialDataStore: ObservableObject {
                 }
 
                 if shouldApply {
-                    transactions[idx].amount = cleanUpdated.amount
+                    // Se a transação pertence a um contrato com projeção crescente ou VLR. PARC individual por parcela,
+                    // preserva o valor projetado individual de cada parcela futura quando o usuário não alterou o valor!
+                    if transactions[idx].linkedContractId != nil && !didUserChangeAmount {
+                        // Preserva o valor individual da parcela
+                    } else if let projCorr = transactions[idx].projectedInstallmentCorrectionAmount,
+                              projCorr > 0,
+                              let newBase = cleanUpdated.baseInstallmentRegisteredAmount {
+                        transactions[idx].baseInstallmentRegisteredAmount = newBase
+                        transactions[idx].amount = ((newBase + projCorr) * 100.0).rounded() / 100.0
+                    } else {
+                        transactions[idx].amount = cleanUpdated.amount
+                    }
                     transactions[idx].categoryId = cleanUpdated.categoryId
                     transactions[idx].accountId = cleanUpdated.accountId
                     transactions[idx].ignoreInConsolidated = cleanUpdated.ignoreInConsolidated
-                    transactions[idx].details = cleanUpdated.details
+                    if transactions[idx].linkedContractId == nil {
+                        transactions[idx].details = cleanUpdated.details
+                    }
                     if didUserChangeDate {
                         var comps = calendar.dateComponents([.year, .month], from: transactions[idx].date)
                         if let monthStart = calendar.date(from: comps),
@@ -2591,10 +2605,19 @@ public final class FinancialDataStore: ObservableObject {
             if isDateInFuture(transactions[idx].date, referenceNow: now) {
                 transactions[idx].date = now
             }
+            if let baseReg = transactions[idx].baseInstallmentRegisteredAmount,
+               transactions[idx].confirmedRealInterestCorrectionAmount == nil {
+                transactions[idx].confirmedRealInterestCorrectionAmount = ((transactions[idx].amount - baseReg) * 100.0).rounded() / 100.0
+            }
             transactions[idx].isPaid = true
         } else {
-            // Desfazendo pagamento
+            // Desfazendo pagamento: restaura o valor projetado (base + projeção de correção) se houver
             transactions[idx].isPaid = false
+            transactions[idx].confirmedRealInterestCorrectionAmount = nil
+            if let baseReg = transactions[idx].baseInstallmentRegisteredAmount {
+                let projCorr = transactions[idx].projectedInstallmentCorrectionAmount ?? 0.0
+                transactions[idx].amount = ((baseReg + projCorr) * 100.0).rounded() / 100.0
+            }
         }
         sortTransactions()
         invalidateDerivedCaches()
@@ -2603,6 +2626,105 @@ public final class FinancialDataStore: ObservableObject {
             cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .upsert, entity: tx)
         }
         return true
+    }
+
+    /// Confirma o pagamento real de uma parcela de contrato (ex: Financiamento CAIXA TP com aumento projetado),
+    /// gravando o valor final efetivamente pago na ocasião e os juros/correção reais efetivados,
+    /// sem alterar o Saldo Devedor de quitação do financiamento.
+    @discardableResult
+    public func confirmContractInstallmentPayment(
+        transactionId: UUID,
+        realPaidAmount: Double,
+        paymentDate: Date? = nil,
+        referenceNow: Date? = nil
+    ) -> Bool {
+        let now = referenceNow ?? effectiveCurrentDate
+        guard let idx = transactions.firstIndex(where: { $0.id == transactionId }) else { return false }
+        let cleanPaid = abs(realPaidAmount)
+        guard cleanPaid > 0 else { return false }
+
+        let contract = transactions[idx].linkedContractId.flatMap { cid in
+            contracts.first(where: { $0.id == cid })
+        }
+        let baseReg = transactions[idx].baseInstallmentRegisteredAmount
+            ?? contract?.installmentAmount
+            ?? transactions[idx].amount
+        let projCorr = transactions[idx].projectedInstallmentCorrectionAmount ?? max(0.0, transactions[idx].amount - baseReg)
+        let realCorrection = ((cleanPaid - baseReg) * 100.0).rounded() / 100.0
+
+        let effectivePayDate: Date = {
+            if let explicitDate = paymentDate {
+                return explicitDate
+            }
+            return isDateInFuture(transactions[idx].date, referenceNow: now) ? now : transactions[idx].date
+        }()
+
+        transactions[idx].baseInstallmentRegisteredAmount = baseReg
+        transactions[idx].projectedInstallmentCorrectionAmount = projCorr
+        transactions[idx].confirmedRealInterestCorrectionAmount = realCorrection
+        transactions[idx].amount = cleanPaid
+        transactions[idx].date = effectivePayDate
+        transactions[idx].isPaid = true
+
+        let corrSign = realCorrection >= 0 ? "+" : ""
+        if let contract {
+            transactions[idx].details = "\(contract.kind.title) (\(contract.subtypeDisplayName)) • Valor cadastrado: \(BRLFormatters.currency(baseReg)) • Juros/Correção efetivada no pagamento: \(corrSign)\(BRLFormatters.currency(realCorrection)) (Projeção era +\(BRLFormatters.currency(projCorr)))"
+        }
+
+        sortTransactions()
+        invalidateDerivedCaches()
+        save()
+        cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: transactionId, operation: .upsert, entity: transactions[idx])
+        return true
+    }
+
+    /// Retorna a decomposição do valor cadastrado da parcela vs. aumento projetado (especulação de juros/correção)
+    /// ou juros/correção efetivamente confirmados no pagamento, para exibição clara na linha da transação e no modal de pagamento.
+    public func installmentCorrectionBreakdown(for tx: FinancialTransaction) -> InstallmentCorrectionBreakdown? {
+        guard let contractId = tx.linkedContractId,
+              tx.installmentIndex != nil,
+              let contract = contracts.first(where: { $0.id == contractId }),
+              contract.kind == .financing else {
+            return nil
+        }
+
+        let avgGrowth = contract.averageMonthlyInstallmentGrowth ?? {
+            if contract.contractNumber == "178770203328-1" || contract.name.localizedCaseInsensitiveContains("CAIXA") {
+                return (2658.06 - 2613.19) / 11.0
+            }
+            return 0.0
+        }()
+        guard avgGrowth > 0.0001 || tx.projectedInstallmentCorrectionAmount != nil || tx.baseInstallmentRegisteredAmount != nil else {
+            return nil
+        }
+
+        let step = max(1, (tx.installmentIndex ?? (contract.pastInstallmentsElapsedAtCreation + 1)) - contract.pastInstallmentsElapsedAtCreation)
+        let baseReg = tx.baseInstallmentRegisteredAmount ?? contract.installmentAmount
+        let projectedCorr: Double = {
+            if let explicitProj = tx.projectedInstallmentCorrectionAmount, explicitProj > 0 {
+                return explicitProj
+            }
+            if avgGrowth > 0.0001 {
+                let dec = LoanProjectionEngine.roundCurrency(Decimal(step) * LoanProjectionEngine.toDecimal(avgGrowth))
+                return LoanProjectionEngine.toDouble(dec)
+            }
+            return max(0.0, tx.amount - baseReg)
+        }()
+
+        let confirmedReal: Double? = tx.isPaid
+            ? (tx.confirmedRealInterestCorrectionAmount ?? (((tx.amount - baseReg) * 100.0).rounded() / 100.0))
+            : nil
+
+        let effectiveTotal = tx.isPaid ? tx.amount : effectiveTransactionAmount(for: tx)
+
+        return InstallmentCorrectionBreakdown(
+            baseRegisteredAmount: baseReg,
+            projectedCorrectionAmount: projectedCorr,
+            confirmedRealCorrectionAmount: confirmedReal,
+            effectiveTotalAmount: effectiveTotal,
+            averageMonthlyGrowth: avgGrowth,
+            futureMonthStep: step
+        )
     }
 
     public func toggleTransactionIgnoreInConsolidated(_ id: UUID) {
@@ -3971,13 +4093,18 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Migra automaticamente contratos CAIXA Habitação (TP) já existentes na base para atribuir
-    /// o crescimento médio mensal extraído do demonstrativo de evolução (+R$ 4,08/mês) ao longo das parcelas futuras.
+    /// o crescimento médio mensal extraído do demonstrativo de evolução (+R$ 4,08/mês) ao longo de TODAS as parcelas futuras,
+    /// mantendo o valor cadastrado base da parcela (R$ 2.658,06) e o Saldo Devedor de quitação (R$ 324.737,86) intactos.
     private func migrateExistingCaixaContractsIfNeeded() -> Bool {
         var didMutate = false
         let sampleCaixaDoc = ContractDocumentImportService.parseContractDocumentText(
             SampleContractDocumentsData.caixaFinancingOCRText,
             expectedKind: .financing
         )
+        let baseRegisteredAmount = sampleCaixaDoc.installmentAmount // R$ 2.658,06
+        let avgGrowthDouble = sampleCaixaDoc.averageMonthlyInstallmentGrowth ?? ((2658.06 - 2613.19) / 11.0)
+        let avgGrowthDec = LoanProjectionEngine.toDecimal(avgGrowthDouble)
+        let baseRegisteredDec = LoanProjectionEngine.toDecimal(baseRegisteredAmount)
 
         for cIdx in contracts.indices {
             var contract = contracts[cIdx]
@@ -3991,31 +4118,46 @@ public final class FinancialDataStore: ObservableObject {
                 contract.scheduledInstallments = sampleCaixaDoc.scheduledInstallments
                 didMutate = true
             }
-
-            guard let schedule = contract.scheduledInstallments, !schedule.isEmpty else { continue }
-            let scheduleByNumber = Dictionary(uniqueKeysWithValues: schedule.map { ($0.installmentNumber, $0) })
-
-            for tIdx in transactions.indices {
-                guard transactions[tIdx].linkedContractId == contract.id,
-                      let instNum = transactions[tIdx].installmentIndex,
-                      !transactions[tIdx].isPaid else {
-                    continue
-                }
-                if let schedItem = scheduleByNumber[instNum],
-                   abs(transactions[tIdx].amount - schedItem.amount) > 0.005 {
-                    transactions[tIdx].amount = schedItem.amount
-                    didMutate = true
-                }
+            if contract.averageMonthlyInstallmentGrowth == nil || abs((contract.averageMonthlyInstallmentGrowth ?? 0) - avgGrowthDouble) > 0.0001 {
+                contract.averageMonthlyInstallmentGrowth = avgGrowthDouble
+                didMutate = true
+            }
+            if contract.amortizationHistory.isEmpty && abs(contract.installmentAmount - baseRegisteredAmount) > 0.005 {
+                contract.installmentAmount = baseRegisteredAmount
+                contract.financingDetails?.totalInstallmentAmount = baseRegisteredAmount
+                didMutate = true
             }
 
-            let remainingUnpaid = transactions
-                .filter { $0.linkedContractId == contract.id && $0.installmentIndex != nil && !$0.isPaid }
-                .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
-            if let firstNextAmt = remainingUnpaid.first?.amount,
-               abs(contract.installmentAmount - firstNextAmt) > 0.005 {
-                contract.installmentAmount = firstNextAmt
-                contract.financingDetails?.totalInstallmentAmount = firstNextAmt
-                didMutate = true
+            // Ordena todas as parcelas futuras não pagas deste financiamento em ordem cronológica (1ª futura até a última)
+            let unpaidIndices = transactions.indices
+                .filter { idx in
+                    transactions[idx].linkedContractId == contract.id &&
+                    transactions[idx].installmentIndex != nil &&
+                    !transactions[idx].isPaid
+                }
+                .sorted { a, b in
+                    let instA = transactions[a].installmentIndex ?? 0
+                    let instB = transactions[b].installmentIndex ?? 0
+                    if instA != instB { return instA < instB }
+                    return transactions[a].date < transactions[b].date
+                }
+
+            for (offset, tIdx) in unpaidIndices.enumerated() {
+                let step = offset + 1
+                let projCorrectionDec = LoanProjectionEngine.roundCurrency(Decimal(step) * avgGrowthDec)
+                let projTotalDec = LoanProjectionEngine.roundCurrency(baseRegisteredDec + projCorrectionDec)
+                let projCorrectionDouble = LoanProjectionEngine.toDouble(projCorrectionDec)
+                let projTotalDouble = LoanProjectionEngine.toDouble(projTotalDec)
+
+                if abs(transactions[tIdx].amount - projTotalDouble) > 0.005 ||
+                   transactions[tIdx].baseInstallmentRegisteredAmount == nil ||
+                   transactions[tIdx].projectedInstallmentCorrectionAmount == nil {
+                    transactions[tIdx].baseInstallmentRegisteredAmount = baseRegisteredAmount
+                    transactions[tIdx].projectedInstallmentCorrectionAmount = projCorrectionDouble
+                    transactions[tIdx].amount = projTotalDouble
+                    transactions[tIdx].details = "\(contract.kind.title) (\(contract.subtypeDisplayName)) • Valor cadastrado: \(BRLFormatters.currency(baseRegisteredAmount)) • Projeção de correção (+\(step)m): +\(BRLFormatters.currency(projCorrectionDouble)) (Média doc: +\(BRLFormatters.currency(avgGrowthDouble))/mês)"
+                    didMutate = true
+                }
             }
 
             contracts[cIdx] = contract
@@ -4058,7 +4200,8 @@ public final class FinancialDataStore: ObservableObject {
         maturityDate: Date? = nil,
         estimatedMonthlyTR: Double? = nil,
         lastFGTSUsageDate: Date? = nil,
-        scheduledInstallments: [ContractInstallmentScheduleItem]? = nil
+        scheduledInstallments: [ContractInstallmentScheduleItem]? = nil,
+        averageMonthlyInstallmentGrowth: Double? = nil
     ) -> CreditContract {
         let creditCategoryId = fallbackCategoryId(for: .expense, matchingSubstring: "Empréstimos")
 
@@ -4134,7 +4277,26 @@ public final class FinancialDataStore: ObservableObject {
             return totalContractedAmount
         }()
 
-        let effectiveNextInstallmentAmount = futureScheduledItems.first?.amount ?? installmentAmount
+        // Para empréstimos consignados (Santander DDC), `installmentAmount` assume o VLR. PARC da próxima parcela futura;
+        // Para financiamentos (Caixa TP), `installmentAmount` preserva o valor base cadastrado da parcela atual do documento (ex: R$ 2.658,06).
+        let effectiveNextInstallmentAmount = (kind == .loan)
+            ? (futureScheduledItems.first?.amount ?? installmentAmount)
+            : installmentAmount
+
+        let resolvedAvgGrowth: Double? = {
+            if let explicitGrowth = averageMonthlyInstallmentGrowth, explicitGrowth > 0 {
+                return explicitGrowth
+            }
+            if kind == .financing, futureScheduledItems.count >= 2 {
+                let firstAmt = futureScheduledItems[0].amount
+                let lastAmt = futureScheduledItems[futureScheduledItems.count - 1].amount
+                let steps = Double(futureScheduledItems.count - 1)
+                if lastAmt > firstAmt && steps > 0 {
+                    return (lastAmt - firstAmt) / steps
+                }
+            }
+            return nil
+        }()
 
         let contract = CreditContract(
             kind: kind,
@@ -4165,29 +4327,54 @@ public final class FinancialDataStore: ObservableObject {
             maturityDate: maturityDate,
             estimatedMonthlyTR: estimatedMonthlyTR,
             lastFGTSUsageDate: lastFGTSUsageDate,
-            scheduledInstallments: scheduledInstallments
+            scheduledInstallments: scheduledInstallments,
+            averageMonthlyInstallmentGrowth: resolvedAvgGrowth
         )
         contracts.append(contract)
 
         let scheduleByNumber: [Int: ContractInstallmentScheduleItem] = Dictionary(
             uniqueKeysWithValues: (scheduledInstallments ?? []).map { ($0.installmentNumber, $0) }
         )
+        let avgGrowthDec = LoanProjectionEngine.toDecimal(resolvedAvgGrowth ?? 0.0)
+        let baseRegisteredDec = LoanProjectionEngine.toDecimal(installmentAmount)
 
-        // Gera APENAS as transações futuras a partir da data atual e dia da cobrança,
-        // utilizando o VLR. PARC decrescente de cada parcela quando disponível no demonstrativo.
+        // Gera APENAS as transações futuras a partir da data atual e dia da cobrança:
+        // - Em empréstimos Santander DDC: utiliza o VLR. PARC decrescente de cada parcela.
+        // - Em financiamentos Caixa TP: mantém o valor base cadastrado (`baseInstallmentRegisteredAmount`) e soma o aumento projetado acumulado (`step * média`)
+        //   para garantir previsibilidade a longo prazo em todas as parcelas futuras sem alterar o Saldo Devedor de quitação.
         let remainingToCreate = max(totalInstallments - pastCount, 0)
         for offset in 0..<remainingToCreate {
-            let installmentNumber = pastCount + offset + 1
+            let step = offset + 1
+            let installmentNumber = pastCount + step
             let dueDate = calendar.date(byAdding: .month, value: offset, to: firstFutureDate)
                 ?? firstFutureDate
             let schedItem = scheduleByNumber[installmentNumber]
-            let individualInstallmentAmount = schedItem?.amount ?? installmentAmount
-            let extraBreakdownNote: String = {
+
+            let individualInstallmentAmount: Double
+            let txBaseRegisteredAmount: Double?
+            let txProjectedCorrectionAmount: Double?
+            let extraBreakdownNote: String
+
+            if kind == .financing && avgGrowthDec > .zero {
+                let projCorrDec = LoanProjectionEngine.roundCurrency(Decimal(step) * avgGrowthDec)
+                let projTotalDec = LoanProjectionEngine.roundCurrency(baseRegisteredDec + projCorrDec)
+                let projCorrDouble = LoanProjectionEngine.toDouble(projCorrDec)
+                let projTotalDouble = LoanProjectionEngine.toDouble(projTotalDec)
+
+                individualInstallmentAmount = projTotalDouble
+                txBaseRegisteredAmount = installmentAmount
+                txProjectedCorrectionAmount = projCorrDouble
+                extraBreakdownNote = " • Valor cadastrado: \(BRLFormatters.currency(installmentAmount)) • Projeção de correção (+\(step)m): +\(BRLFormatters.currency(projCorrDouble)) (Média doc: +\(BRLFormatters.currency(resolvedAvgGrowth ?? 0.0))/mês)"
+            } else {
+                individualInstallmentAmount = schedItem?.amount ?? installmentAmount
+                txBaseRegisteredAmount = nil
+                txProjectedCorrectionAmount = nil
                 if let p = schedItem?.principalAmount, let j = schedItem?.interestAmount {
-                    return " • Amortização: \(BRLFormatters.currency(p)) • Juros: \(BRLFormatters.currency(j))"
+                    extraBreakdownNote = " • Amortização: \(BRLFormatters.currency(p)) • Juros: \(BRLFormatters.currency(j))"
+                } else {
+                    extraBreakdownNote = ""
                 }
-                return ""
-            }()
+            }
 
             let tx = FinancialTransaction(
                 name: "\(name) - Parcela \(installmentNumber)/\(totalInstallments)",
@@ -4203,7 +4390,9 @@ public final class FinancialDataStore: ObservableObject {
                 seriesGroupId: contract.id,
                 installmentIndex: installmentNumber,
                 installmentTotal: totalInstallments,
-                linkedContractId: contract.id
+                linkedContractId: contract.id,
+                baseInstallmentRegisteredAmount: txBaseRegisteredAmount,
+                projectedInstallmentCorrectionAmount: txProjectedCorrectionAmount
             )
             transactions.append(tx)
         }

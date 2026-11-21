@@ -627,31 +627,44 @@ public enum LoanProjectionEngine {
                     totalOutflow = effectiveBaseInstallment
                 } else if !isLoan,
                           contract.amortizationSystem == .price,
-                          let schedule = contract.scheduledInstallments,
-                          !schedule.isEmpty {
-                    // Financiamento CAIXA TP com cronograma crescente calculado pela média de correção mensal do demonstrativo:
-                    let schedItem = schedule.first(where: { $0.installmentNumber == tx.installmentIndex })
-                    let scheduledTotalPaid = roundCurrency(toDecimal(schedItem?.amount ?? tx.amount) * installmentReductionScale)
-                    let scheduledBase: Decimal = {
-                        if let p = schedItem?.principalAmount, p > 0 {
-                            return roundCurrency(toDecimal(p) * installmentReductionScale)
-                        }
-                        return max(.zero, roundCurrency(scheduledTotalPaid - currentInsuranceFee - fixedAdminFee))
-                    }()
+                          ((contract.averageMonthlyInstallmentGrowth ?? 0) > 0 || !(contract.scheduledInstallments?.isEmpty ?? true) || tx.projectedInstallmentCorrectionAmount != nil) {
+                    // Financiamento CAIXA TP com aumento projetado pela média do demonstrativo:
+                    // REGRA CRÍTICA: O aumento projetado (especulação de juros/correção) impacta APENAS o fluxo de caixa do mês (`totalOutflow`),
+                    // NUNCA alterando a amortização real do principal nem o Saldo Devedor para quitação (ex: R$ 324.737,86).
                     let calcInterest = roundCurrency(correctedBalance * monthlyRateDecimal)
                     interest = calcInterest
-                    let rawNormalAmortization = max(.zero, scheduledBase - calcInterest)
+                    let rawBaseInstallment = currentBaseInstallment
+                    let rawNormalAmortization = max(.zero, rawBaseInstallment - calcInterest)
+
+                    // Calcula o aumento especulativo projetado para esta parcela futura
+                    let stepIndex = max(1, (tx.installmentIndex ?? (contract.pastInstallmentsElapsedAtCreation + activeInstallmentsCount + 1)) - contract.pastInstallmentsElapsedAtCreation)
+                    let speculativeIncreaseDec: Decimal = {
+                        if let explicitProj = tx.projectedInstallmentCorrectionAmount, explicitProj > 0 {
+                            return roundCurrency(toDecimal(explicitProj) * installmentReductionScale)
+                        }
+                        if let avgG = contract.averageMonthlyInstallmentGrowth, avgG > 0 {
+                            return roundCurrency(Decimal(stepIndex) * toDecimal(avgG) * installmentReductionScale)
+                        }
+                        if let schedItem = contract.scheduledInstallments?.first(where: { $0.installmentNumber == tx.installmentIndex }),
+                           let j = schedItem.interestAmount, j > 0 {
+                            return roundCurrency(toDecimal(j) * installmentReductionScale)
+                        }
+                        let baseReg = toDecimal(tx.baseInstallmentRegisteredAmount ?? contract.installmentAmount)
+                        let txDec = toDecimal(tx.amount)
+                        return max(.zero, roundCurrency((txDec - baseReg) * installmentReductionScale))
+                    }()
+
+                    let baseRegisteredOutflowDec = roundCurrency(toDecimal(tx.baseInstallmentRegisteredAmount ?? contract.installmentAmount) * installmentReductionScale)
 
                     if rawNormalAmortization >= correctedBalance {
                         effectiveNormalAmortization = correctedBalance
                         effectiveBaseInstallment = effectiveNormalAmortization + calcInterest
-                        totalOutflow = roundCurrency(effectiveBaseInstallment + currentInsuranceFee + fixedAdminFee)
+                        totalOutflow = roundCurrency(effectiveBaseInstallment + currentInsuranceFee + fixedAdminFee + speculativeIncreaseDec)
                     } else {
                         effectiveNormalAmortization = rawNormalAmortization
-                        effectiveBaseInstallment = scheduledBase
-                        totalOutflow = scheduledTotalPaid
+                        effectiveBaseInstallment = rawBaseInstallment
+                        totalOutflow = roundCurrency(baseRegisteredOutflowDec + speculativeIncreaseDec)
                     }
-                    currentBaseInstallment = effectiveBaseInstallment
                     newBalance = max(.zero, roundCurrency(correctedBalance - effectiveNormalAmortization))
                 } else {
                     let calcInterest = roundCurrency(correctedBalance * monthlyRateDecimal)

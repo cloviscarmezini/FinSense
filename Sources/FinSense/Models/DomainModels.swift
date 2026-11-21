@@ -516,6 +516,9 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
     public var linkedQuotaYearMonthKey: Int?
     public var transactionOrigin: TransactionOrigin?
     public var linkedEntityID: UUID?
+    public var baseInstallmentRegisteredAmount: Double? // Valor cadastrado original da parcela do contrato (sem a especulação de correção futura)
+    public var projectedInstallmentCorrectionAmount: Double? // Aumento projetado com base na média do demonstrativo (especulação que impacta apenas o fechamento do mês)
+    public var confirmedRealInterestCorrectionAmount: Double? // Juros/correção real efetivada na ocasião do pagamento da parcela
     public var createdAt: Date
 
     public init(
@@ -547,6 +550,9 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         linkedQuotaYearMonthKey: Int? = nil,
         transactionOrigin: TransactionOrigin? = nil,
         linkedEntityID: UUID? = nil,
+        baseInstallmentRegisteredAmount: Double? = nil,
+        projectedInstallmentCorrectionAmount: Double? = nil,
+        confirmedRealInterestCorrectionAmount: Double? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -577,6 +583,9 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         self.linkedQuotaYearMonthKey = linkedQuotaYearMonthKey
         self.transactionOrigin = transactionOrigin
         self.linkedEntityID = linkedEntityID ?? linkedContractId ?? linkedInvestmentId ?? linkedDebtId ?? linkedQuotaId
+        self.baseInstallmentRegisteredAmount = baseInstallmentRegisteredAmount.map { abs($0) }
+        self.projectedInstallmentCorrectionAmount = projectedInstallmentCorrectionAmount
+        self.confirmedRealInterestCorrectionAmount = confirmedRealInterestCorrectionAmount
         self.createdAt = createdAt
     }
 
@@ -1188,6 +1197,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
     public var estimatedMonthlyTR: Double? // TR mensal estimada em percentual (ex: 0.10 representa 0,10% a.m. ou 0.001)
     public var lastFGTSUsageDate: Date? // Data do último uso de FGTS no contrato (validação de interstício de 24 meses)
     public var scheduledInstallments: [ContractInstallmentScheduleItem]? // Cronograma individual de parcelas com VLR. PARC decrescente (ex: Santander DDC)
+    public var averageMonthlyInstallmentGrowth: Double? // Média mensal de crescimento/correção da parcela extraída do demonstrativo (ex: Caixa TP +R$ 4,08/mês)
 
     /// Dia efetivo de vencimento/liquidação no banco (para cálculos pró-rata e ciclo de competência bancária)
     public var effectiveBankDueDay: Int {
@@ -1233,7 +1243,8 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         maturityDate: Date? = nil,
         estimatedMonthlyTR: Double? = nil,
         lastFGTSUsageDate: Date? = nil,
-        scheduledInstallments: [ContractInstallmentScheduleItem]? = nil
+        scheduledInstallments: [ContractInstallmentScheduleItem]? = nil,
+        averageMonthlyInstallmentGrowth: Double? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -1275,6 +1286,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         self.estimatedMonthlyTR = estimatedMonthlyTR
         self.lastFGTSUsageDate = lastFGTSUsageDate
         self.scheduledInstallments = scheduledInstallments
+        self.averageMonthlyInstallmentGrowth = averageMonthlyInstallmentGrowth
 
         if kind == .financing && self.financingDetails == nil {
             let effAnnual = annualNominalInterestRate ?? (monthlyInterestRate > 0 ? monthlyInterestRate * 12.0 : 8.51)
@@ -1437,7 +1449,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         case isSettled, settledAmount, settledDate, settledAccountId, notes, createdAt
         case annualNominalInterestRate, indexationRate, adminFee, insuranceFee
         case baseInstallmentAmount, financingDetails, loanDetails
-        case bankDueDay, referenceDate, maturityDate, estimatedMonthlyTR, lastFGTSUsageDate, scheduledInstallments
+        case bankDueDay, referenceDate, maturityDate, estimatedMonthlyTR, lastFGTSUsageDate, scheduledInstallments, averageMonthlyInstallmentGrowth
     }
 
     public init(from decoder: Decoder) throws {
@@ -1518,6 +1530,8 @@ public struct CreditContract: Identifiable, Codable, Hashable {
             ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("last_fgts_usage_date")))
         self.scheduledInstallments = (try? c.decodeIfPresent([ContractInstallmentScheduleItem].self, forKey: AnyKey("scheduledInstallments")))
             ?? (try? c.decodeIfPresent([ContractInstallmentScheduleItem].self, forKey: AnyKey("scheduled_installments")))
+        self.averageMonthlyInstallmentGrowth = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("averageMonthlyInstallmentGrowth")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("average_monthly_installment_growth")))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1561,6 +1575,7 @@ public struct CreditContract: Identifiable, Codable, Hashable {
         try c.encodeIfPresent(estimatedMonthlyTR, forKey: .estimatedMonthlyTR)
         try c.encodeIfPresent(lastFGTSUsageDate, forKey: .lastFGTSUsageDate)
         try c.encodeIfPresent(scheduledInstallments, forKey: .scheduledInstallments)
+        try c.encodeIfPresent(averageMonthlyInstallmentGrowth, forKey: .averageMonthlyInstallmentGrowth)
     }
 
     public var subtypeDisplayName: String {
@@ -1590,6 +1605,31 @@ public struct CreditContract: Identifiable, Codable, Hashable {
 }
 
 // MARK: - Cronograma Individual de Parcela (VLR. PARC decrescente extraído do demonstrativo)
+
+public struct InstallmentCorrectionBreakdown: Hashable {
+    public let baseRegisteredAmount: Double       // Valor cadastrado correto da parcela (ex: R$ 2.658,06)
+    public let projectedCorrectionAmount: Double  // Aumento projetado com base na média do documento (ex: +R$ 4,08 no mês 1, +R$ 48,95 no mês 12)
+    public let confirmedRealCorrectionAmount: Double? // Juros/correção efetivada na ocasião do pagamento
+    public let effectiveTotalAmount: Double       // Valor total considerado no fechamento do mês (Projetado enquanto não pago, ou Real quando pago)
+    public let averageMonthlyGrowth: Double       // Média mensal extraída do documento (ex: +R$ 4,08/mês)
+    public let futureMonthStep: Int               // Mês futuro relativo (1 = 1ª futura, 12 = daqui a 1 ano, etc.)
+
+    public init(
+        baseRegisteredAmount: Double,
+        projectedCorrectionAmount: Double,
+        confirmedRealCorrectionAmount: Double?,
+        effectiveTotalAmount: Double,
+        averageMonthlyGrowth: Double,
+        futureMonthStep: Int
+    ) {
+        self.baseRegisteredAmount = baseRegisteredAmount
+        self.projectedCorrectionAmount = projectedCorrectionAmount
+        self.confirmedRealCorrectionAmount = confirmedRealCorrectionAmount
+        self.effectiveTotalAmount = effectiveTotalAmount
+        self.averageMonthlyGrowth = averageMonthlyGrowth
+        self.futureMonthStep = futureMonthStep
+    }
+}
 
 public struct ContractInstallmentScheduleItem: Identifiable, Codable, Hashable {
     public var id: Int { installmentNumber }

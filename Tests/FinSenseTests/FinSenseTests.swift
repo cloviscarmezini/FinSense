@@ -5405,7 +5405,10 @@ final class FinSenseTests: XCTestCase {
         // Verifica o crescimento médio mensal extraído do documento:
         // Parcela 17 (05/12/2025): Pago = 2.613,19 -> Parcela 28 (05/11/2026): Pago = 2.658,06
         // Diferença acumulada em 11 meses = R$ 44,87 -> Média mensal = 44,87 / 11 = R$ 4,07909... (~R$ 4,08/mês)
+        // O valor cadastrado da parcela deve ser o valor base correto do documento (R$ 2.658,06),
+        // enquanto todas as 332 parcelas futuras contêm a projeção acumulada de longo prazo!
         let expectedAvgGrowth = (2658.06 - 2613.19) / 11.0
+        XCTAssertEqual(caixaDoc.installmentAmount, 2658.06, accuracy: 0.01, "O valor cadastrado deve ser o valor base correto da parcela no documento (R$ 2.658,06)")
         XCTAssertEqual(caixaDoc.averageMonthlyInstallmentGrowth ?? 0, expectedAvgGrowth, accuracy: 0.001, "Deve calcular a média mensal de crescimento de R$ 44,87 / 11 (~R$ 4,08/mês)")
         XCTAssertEqual(caixaDoc.scheduledInstallments.count, 332, "Deve projetar as 332 parcelas futuras (29 a 360) com o crescimento médio mensal")
         XCTAssertEqual(caixaDoc.scheduledInstallments[0].installmentNumber, 29)
@@ -5416,10 +5419,16 @@ final class FinSenseTests: XCTestCase {
         XCTAssertEqual(caixaDoc.scheduledInstallments[2].amount, 2670.30, accuracy: 0.01, "Parcela 31/360 = 2.658,06 + 3 * (44,87/11) = 2.670,30")
         XCTAssertEqual(caixaDoc.scheduledInstallments[10].installmentNumber, 39)
         XCTAssertEqual(caixaDoc.scheduledInstallments[10].amount, 2702.93, accuracy: 0.01, "Parcela 39/360 (11 meses após a 28) = 2.658,06 + 44,87 = 2.702,93")
+        XCTAssertEqual(caixaDoc.scheduledInstallments[11].installmentNumber, 40)
+        XCTAssertEqual(caixaDoc.scheduledInstallments[11].amount, 2707.01, accuracy: 0.01, "Parcela 40/360 (daqui a 1 ano / 12 meses) = 2.658,06 + 12 * (44,87/11) = 2.707,01")
         XCTAssertEqual(caixaDoc.scheduledInstallments.last?.installmentNumber, 360)
         XCTAssertEqual(caixaDoc.scheduledInstallments.last?.amount ?? 0, 4012.32, accuracy: 0.01, "Parcela 360/360 = 2.658,06 + 332 * (44,87/11) = 4.012,32")
 
-        // Cria o contrato de financiamento Caixa no store e verifica que todas as 332 transações futuras e a simulação seguem o crescimento médio
+        // Cria o contrato de financiamento Caixa no store e verifica:
+        // 1. O valor cadastrado da parcela no contrato é R$ 2.658,06
+        // 2. O valor para quitar hoje permanece estritamente R$ 324.737,86 (sem qualquer impacto da especulação futura)
+        // 3. Todas as 332 parcelas futuras (inclusive daqui a 1 ano) possuem valor base cadastrado + aumento projetado visível
+        // 4. Ao confirmar o pagamento real de uma parcela no modal (`confirmContractInstallmentPayment`), grava o valor real final e os juros efetivados na ocasião
         let caixaContract = store.createCreditContract(
             kind: .financing,
             name: caixaDoc.name,
@@ -5445,26 +5454,59 @@ final class FinSenseTests: XCTestCase {
             bankDueDay: caixaDoc.bankDueDay,
             documentReferenceDate: caixaDoc.referenceDate,
             maturityDate: caixaDoc.maturityDate,
-            scheduledInstallments: caixaDoc.scheduledInstallments
+            scheduledInstallments: caixaDoc.scheduledInstallments,
+            averageMonthlyInstallmentGrowth: caixaDoc.averageMonthlyInstallmentGrowth
         )
 
-        XCTAssertEqual(store.currentOutstandingBalance(for: caixaContract), 324737.86, accuracy: 0.01, "Saldo devedor teórico deve permanecer R$ 324.737,86")
+        XCTAssertEqual(caixaContract.installmentAmount, 2658.06, accuracy: 0.01, "Valor cadastrado da parcela deve ser R$ 2.658,06")
+        XCTAssertEqual(store.currentOutstandingBalance(for: caixaContract), 324737.86, accuracy: 0.01, "Valor para quitar hoje deve ser estritamente R$ 324.737,86")
+        XCTAssertEqual(store.projectedPayoffAmount(for: caixaContract), 324737.86, accuracy: 0.01, "Projeção para quitar hoje não deve sofrer nenhum impacto da especulação futura")
+
         let caixaFutureTxs = store.transactions
             .filter { $0.linkedContractId == caixaContract.id && $0.installmentIndex != nil }
             .sorted { ($0.installmentIndex ?? 0) < ($1.installmentIndex ?? 0) }
         XCTAssertEqual(caixaFutureTxs.count, 332)
+        XCTAssertEqual(caixaFutureTxs[0].baseInstallmentRegisteredAmount ?? 0, 2658.06, accuracy: 0.01)
+        XCTAssertEqual(caixaFutureTxs[0].projectedInstallmentCorrectionAmount ?? 0, 4.08, accuracy: 0.01)
         XCTAssertEqual(caixaFutureTxs[0].amount, 2662.14, accuracy: 0.01)
         XCTAssertEqual(caixaFutureTxs[1].amount, 2666.22, accuracy: 0.01)
         XCTAssertEqual(caixaFutureTxs[2].amount, 2670.30, accuracy: 0.01)
-        XCTAssertEqual(caixaFutureTxs[10].amount, 2702.93, accuracy: 0.01)
+        // Daqui a 1 ano (12ª parcela futura = Parcela 40/360 em 11/2027):
+        XCTAssertEqual(caixaFutureTxs[11].baseInstallmentRegisteredAmount ?? 0, 2658.06, accuracy: 0.01)
+        XCTAssertEqual(caixaFutureTxs[11].projectedInstallmentCorrectionAmount ?? 0, 48.95, accuracy: 0.01)
+        XCTAssertEqual(caixaFutureTxs[11].amount, 2707.01, accuracy: 0.01)
         XCTAssertEqual(caixaFutureTxs.last?.amount ?? 0, 4012.32, accuracy: 0.01)
 
+        // Verifica que `installmentCorrectionBreakdown` expõe o valor base e a projeção para a UI
+        let breakdownYearAhead = store.installmentCorrectionBreakdown(for: caixaFutureTxs[11])!
+        XCTAssertEqual(breakdownYearAhead.baseRegisteredAmount, 2658.06, accuracy: 0.01)
+        XCTAssertEqual(breakdownYearAhead.projectedCorrectionAmount, 48.95, accuracy: 0.01)
+        XCTAssertEqual(breakdownYearAhead.effectiveTotalAmount, 2707.01, accuracy: 0.01)
+        XCTAssertEqual(breakdownYearAhead.futureMonthStep, 12)
+
+        // Verifica que o motor de projeção mantém todas as 332 parcelas ativas (sem reduzir artificialmente o saldo de quitação pela especulação)
         let caixaProjection = store.loanProjection(for: caixaContract.id)!
+        XCTAssertEqual(LoanProjectionEngine.toDouble(caixaProjection.currentRealBalance), 324737.86, accuracy: 0.01)
+        XCTAssertEqual(caixaProjection.originalRemainingMonths, 332, "A especulação de juros não deve abater o saldo principal nem encurtar o prazo original de 332 meses")
         let regularRows = caixaProjection.timeline.filter { $0.eventKind == .regularInstallment }
         XCTAssertEqual(regularRows.count, 332)
         XCTAssertEqual(LoanProjectionEngine.toDouble(regularRows[0].totalBudgetOutflow), 2662.14, accuracy: 0.01)
         XCTAssertEqual(LoanProjectionEngine.toDouble(regularRows[1].totalBudgetOutflow), 2666.22, accuracy: 0.01)
-        XCTAssertEqual(LoanProjectionEngine.toDouble(regularRows[2].totalBudgetOutflow), 2670.30, accuracy: 0.01)
+        XCTAssertEqual(LoanProjectionEngine.toDouble(regularRows[11].totalBudgetOutflow), 2707.01, accuracy: 0.01)
+
+        // Simula confirmação de pagamento real da 1ª parcela futura pelo modal com valor efetivado na ocasião (ex: R$ 2.663,50)
+        let firstFutureTxId = caixaFutureTxs[0].id
+        let payConfirmed = store.confirmContractInstallmentPayment(
+            transactionId: firstFutureTxId,
+            realPaidAmount: 2663.50,
+            paymentDate: caixaFutureTxs[0].date
+        )
+        XCTAssertTrue(payConfirmed)
+        let paidTx = store.transactions.first(where: { $0.id == firstFutureTxId })!
+        XCTAssertTrue(paidTx.isPaid)
+        XCTAssertEqual(paidTx.amount, 2663.50, accuracy: 0.01)
+        XCTAssertEqual(paidTx.baseInstallmentRegisteredAmount ?? 0, 2658.06, accuracy: 0.01)
+        XCTAssertEqual(paidTx.confirmedRealInterestCorrectionAmount ?? 0, 2663.50 - 2658.06, accuracy: 0.01, "Deve registrar o juros/correção real efetivado na ocasião (R$ 5,44)")
     }
 
     func testThreeLayerAmortizationPlanningShadowingExpirationAndConfirmation() {

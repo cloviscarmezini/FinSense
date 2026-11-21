@@ -21,6 +21,7 @@ public struct TransactionsView: View {
     @State private var transactionPendingDeletion: FinancialTransaction? = nil
     @State private var recurringTransactionPendingCancellation: FinancialTransaction? = nil
     @State private var transactionPendingPaymentToggle: FinancialTransaction? = nil
+    @State private var installmentPendingRealPaymentConfirmation: FinancialTransaction? = nil
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -609,6 +610,9 @@ public struct TransactionsView: View {
         .sheet(isPresented: $showProvisionsSheet) {
             MonthlyProvisionsSheet(store: store)
         }
+        .sheet(item: $installmentPendingRealPaymentConfirmation) { tx in
+            ConfirmInstallmentPaymentModalSheet(store: store, transaction: tx)
+        }
         .alert(
             transactionPendingDeletion?.isPartOfSeries == true
                 ? "Como deseja remover este lançamento?"
@@ -750,7 +754,10 @@ public struct TransactionsView: View {
         let projStatus = store.transactionProjectionStatus(for: tx)
         let effAmt = store.effectiveTransactionAmount(for: tx)
         let isPayoff = store.isPlannedAmortizationFullPayoff(tx)
-        return "\(tx.id.uuidString)-\(Int64(tx.date.timeIntervalSince1970))-\(String(format: "%.2f", tx.amount))-\(String(format: "%.2f", effAmt))-\(tx.isPaid)-\(tx.name)-\(tx.details)-\(tx.categoryId.uuidString)-\(tx.accountId.uuidString)-\(tx.ignoreInConsolidated)-\(projStatus.rawValue)-\(isPayoff)-\(store.dataRevision)"
+        let corrKey = tx.confirmedRealInterestCorrectionAmount.map { String(format: "%.2f", $0) }
+            ?? tx.projectedInstallmentCorrectionAmount.map { String(format: "%.2f", $0) }
+            ?? "0"
+        return "\(tx.id.uuidString)-\(Int64(tx.date.timeIntervalSince1970))-\(String(format: "%.2f", tx.amount))-\(String(format: "%.2f", effAmt))-\(corrKey)-\(tx.isPaid)-\(tx.name)-\(tx.details)-\(tx.categoryId.uuidString)-\(tx.accountId.uuidString)-\(tx.ignoreInConsolidated)-\(projStatus.rawValue)-\(isPayoff)-\(store.dataRevision)"
     }
 
     @ViewBuilder
@@ -763,6 +770,7 @@ public struct TransactionsView: View {
         let isPlannedAmort = projStatus == .pendingAmortization
         let isPayoffPlannedAmort = !isShadowed && store.isPlannedAmortizationFullPayoff(tx)
         let effectiveAmount = store.effectiveTransactionAmount(for: tx)
+        let correctionBreakdown = store.installmentCorrectionBreakdown(for: tx)
 
         HStack(spacing: 14) {
             CategoryBadgeView(category: cat, size: 40)
@@ -781,6 +789,32 @@ public struct TransactionsView: View {
                             .padding(.vertical, 2)
                             .background(Capsule().fill(Color.blue.opacity(0.15)))
                             .foregroundStyle(.blue)
+                    }
+
+                    if !isShadowed, let cb = correctionBreakdown {
+                        if tx.isPaid, let realCorr = cb.confirmedRealCorrectionAmount {
+                            let sign = realCorr >= 0 ? "+" : ""
+                            Label(
+                                "Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) • Juros/Correção Efetivada: \(sign)\(BRLFormatters.currency(realCorr))",
+                                systemImage: "checkmark.seal.fill"
+                            )
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
+                            .foregroundStyle(Color(hex: "#10B981"))
+                        } else if cb.projectedCorrectionAmount > 0.001 {
+                            Label(
+                                "Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) • Projeção (+\(cb.futureMonthStep)m): +\(BRLFormatters.currency(cb.projectedCorrectionAmount))",
+                                systemImage: "chart.line.uptrend.xyaxis"
+                            )
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color(hex: "#8B5CF6").opacity(0.16)))
+                            .foregroundStyle(Color(hex: "#8B5CF6"))
+                            .help("Valor cadastrado da parcela: \(BRLFormatters.currency(cb.baseRegisteredAmount)). Aumento projetado pela média do documento (+\(BRLFormatters.currency(cb.averageMonthlyGrowth))/mês × \(cb.futureMonthStep)m = +\(BRLFormatters.currency(cb.projectedCorrectionAmount))) para o fechamento do mês, sem impacto no valor de quitação.")
+                        }
                     }
 
                     if isShadowed {
@@ -883,13 +917,17 @@ public struct TransactionsView: View {
 
             Spacer()
 
-            // Paid / Received Status Toggle (com confirmação; pagar no futuro move para hoje)
+            // Paid / Received Status Toggle (com modal de confirmação de valor real final para parcelas com correção projetada)
             Button {
-                transactionPendingPaymentToggle = tx
+                if !tx.isPaid && correctionBreakdown != nil {
+                    installmentPendingRealPaymentConfirmation = tx
+                } else {
+                    transactionPendingPaymentToggle = tx
+                }
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: tx.isPaid ? "checkmark.circle.fill" : (isPayoffPlannedAmort ? "checkmark.seal.fill" : (isPlannedAmort ? "checkmark.seal.fill" : (isFuture ? "calendar.badge.clock" : "clock.badge.exclamationmark"))))
-                    Text(tx.isPaid ? (tx.type == .expense ? "Pago" : "Recebido") : (isPayoffPlannedAmort ? "Confirmar Liquidação" : (isPlannedAmort ? "Confirmar Pagamento" : (tx.type == .expense ? "Não Pago" : "Não Recebido"))))
+                    Text(tx.isPaid ? (tx.type == .expense ? "Pago" : "Recebido") : (isPayoffPlannedAmort ? "Confirmar Liquidação" : (isPlannedAmort ? "Confirmar Pagamento" : (correctionBreakdown != nil ? "Confirmar Valor & Pagar" : (tx.type == .expense ? "Não Pago" : "Não Recebido")))))
                         .font(.caption.weight(.semibold))
                 }
                 .padding(.horizontal, 9)
@@ -902,7 +940,7 @@ public struct TransactionsView: View {
             }
             .buttonStyle(.plain)
             .disabled(isShadowed)
-            .help(isPayoffPlannedAmort ? "Confirmar pagamento desta liquidação planejada e quitar o contrato" : (isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (isFuture && !tx.isPaid ? "Pagar agora (a transação será movida para a data de hoje)" : "Alternar status de Pago / Recebido")))
+            .help(isPayoffPlannedAmort ? "Confirmar pagamento desta liquidação planejada e quitar o contrato" : (isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (!tx.isPaid && correctionBreakdown != nil ? "Abrir modal para confirmar o valor real final da parcela e os juros efetivados na ocasião" : (isFuture && !tx.isPaid ? "Pagar agora (a transação será movida para a data de hoje)" : "Alternar status de Pago / Recebido"))))
 
             // Amount
             VStack(alignment: .trailing, spacing: 1) {
@@ -918,9 +956,20 @@ public struct TransactionsView: View {
                         .font(.caption2)
                         .strikethrough(true, color: .secondary)
                         .foregroundStyle(.secondary)
+                } else if let cb = correctionBreakdown {
+                    if tx.isPaid, let realCorr = cb.confirmedRealCorrectionAmount {
+                        let sign = realCorr >= 0 ? "+" : ""
+                        Text("Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) (\(sign)\(BRLFormatters.currency(realCorr)) real)")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color(hex: "#10B981"))
+                    } else if cb.projectedCorrectionAmount > 0.001 {
+                        Text("Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) (+\(BRLFormatters.currency(cb.projectedCorrectionAmount)) proj.)")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Color(hex: "#8B5CF6"))
+                    }
                 }
             }
-            .frame(minWidth: 115, alignment: .trailing)
+            .frame(minWidth: 145, alignment: .trailing)
 
             // Context actions
             HStack(spacing: 4) {
@@ -1811,6 +1860,199 @@ public struct StatementImportSheet: View {
                 filterMode: filterMode,
                 store: store
             )
+        }
+    }
+}
+
+// MARK: - Modal de Confirmação do Valor Real Final ao Pagar Parcela de Financiamento com Correção Projetada
+
+public struct ConfirmInstallmentPaymentModalSheet: View {
+    @ObservedObject public var store: FinancialDataStore
+    @Environment(\.dismiss) private var dismiss
+
+    public let transaction: FinancialTransaction
+
+    @State private var realPaidAmountText: String = ""
+    @State private var paymentDate: Date = Date()
+    @State private var errorMsg: String? = nil
+
+    public init(store: FinancialDataStore, transaction: FinancialTransaction) {
+        self.store = store
+        self.transaction = transaction
+    }
+
+    public var body: some View {
+        let breakdown = store.installmentCorrectionBreakdown(for: transaction)
+        let baseRegistered = breakdown?.baseRegisteredAmount ?? transaction.baseInstallmentRegisteredAmount ?? transaction.amount
+        let projectedCorrection = breakdown?.projectedCorrectionAmount ?? transaction.projectedInstallmentCorrectionAmount ?? 0.0
+        let projectedTotal = ((baseRegistered + projectedCorrection) * 100.0).rounded() / 100.0
+        let avgMonthlyGrowth = breakdown?.averageMonthlyGrowth ?? 0.0
+        let step = breakdown?.futureMonthStep ?? 1
+
+        let typedRealAmount = BRLFormatters.parseAmount(realPaidAmountText) ?? projectedTotal
+        let effectiveRealInterestCorrection = ((typedRealAmount - baseRegistered) * 100.0).rounded() / 100.0
+        let diffFromProjection = ((typedRealAmount - projectedTotal) * 100.0).rounded() / 100.0
+
+        VStack(alignment: .leading, spacing: 18) {
+            // Header
+            HStack(spacing: 12) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.title)
+                    .foregroundStyle(Color(hex: "#10B981"))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Confirmar Valor Real Final da Parcela")
+                        .font(.title3.bold())
+                    Text(transaction.name)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            Form {
+                Section("Previsibilidade da Parcela (Valor Cadastrado vs. Especulação Projetada)") {
+                    HStack {
+                        Text("Valor Cadastrado da Parcela (Base):")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(BRLFormatters.currency(baseRegistered))
+                            .fontWeight(.semibold)
+                            .monospacedDigit()
+                    }
+                    HStack {
+                        Text("Aumento Projetado (Média Doc +\(BRLFormatters.currency(avgMonthlyGrowth))/mês × \(step)m):")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("+ " + BRLFormatters.currency(projectedCorrection))
+                            .fontWeight(.semibold)
+                            .foregroundStyle(Color(hex: "#8B5CF6"))
+                            .monospacedDigit()
+                    }
+                    HStack {
+                        Text("Valor Projetado no Fechamento do Mês:")
+                            .fontWeight(.semibold)
+                        Spacer()
+                        Text(BRLFormatters.currency(projectedTotal))
+                            .fontWeight(.bold)
+                            .foregroundStyle(Color(hex: "#8B5CF6"))
+                            .monospacedDigit()
+                    }
+                }
+
+                Section("Valor Efetivado na Ocasião do Pagamento") {
+                    BRLCurrencyTextField(
+                        label: "Valor Real Final Pago (R$)",
+                        text: $realPaidAmountText
+                    )
+
+                    HStack(spacing: 8) {
+                        Text("Preencher rápido:")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Usar Projetado (\(BRLFormatters.currency(projectedTotal)))") {
+                            realPaidAmountText = BRLFormatters.currency(projectedTotal)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+
+                        Button("Usar Valor Base (\(BRLFormatters.currency(baseRegistered)))") {
+                            realPaidAmountText = BRLFormatters.currency(baseRegistered)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+
+                    DatePicker("Data Efetiva do Pagamento", selection: $paymentDate, displayedComponents: [.date])
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Juros / Correção Efetivada na Ocasião:")
+                                .fontWeight(.semibold)
+                            Spacer()
+                            let sign = effectiveRealInterestCorrection >= 0 ? "+ " : ""
+                            Text(sign + BRLFormatters.currency(effectiveRealInterestCorrection))
+                                .fontWeight(.bold)
+                                .foregroundStyle(effectiveRealInterestCorrection > 0 ? Color(hex: "#D97706") : Color(hex: "#10B981"))
+                                .monospacedDigit()
+                        }
+
+                        HStack {
+                            Text("Diferença frente à Projeção do Mês:")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            if abs(diffFromProjection) < 0.005 {
+                                Text("R$ 0,00 (Igual à projeção)")
+                                    .fontWeight(.medium)
+                                    .foregroundStyle(Color(hex: "#10B981"))
+                            } else {
+                                let diffSign = diffFromProjection > 0 ? "+ " : ""
+                                Text("\(diffSign)\(BRLFormatters.currency(diffFromProjection))")
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(diffFromProjection > 0 ? Color(hex: "#EF4444") : Color(hex: "#10B981"))
+                                    .monospacedDigit()
+                            }
+                        }
+
+                        Divider()
+
+                        HStack(spacing: 6) {
+                            Image(systemName: "shield.lefthalf.filled.badge.checkmark")
+                                .foregroundStyle(Color(hex: "#10B981"))
+                            Text("O juros/correção efetivado atualiza apenas o valor real pago no fechamento deste mês, sem impactar o valor de quitação do financiamento.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.caption)
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.03)))
+                }
+            }
+            .formStyle(.grouped)
+
+            if let errorMsg {
+                Text(errorMsg)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("Cancelar") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button {
+                    guard let finalPaid = BRLFormatters.parseAmount(realPaidAmountText), finalPaid > 0 else {
+                        errorMsg = "Informe um valor real final válido maior que zero."
+                        return
+                    }
+                    store.confirmContractInstallmentPayment(
+                        transactionId: transaction.id,
+                        realPaidAmount: finalPaid,
+                        paymentDate: paymentDate
+                    )
+                    dismiss()
+                } label: {
+                    Label("Confirmar Valor Real e Pagar Parcela", systemImage: "checkmark.circle.fill")
+                        .fontWeight(.semibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(hex: "#10B981"))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 560, height: 540)
+        .onAppear {
+            realPaidAmountText = BRLFormatters.currency(projectedTotal)
+            if store.isDateInFuture(transaction.date, referenceNow: store.effectiveCurrentDate) {
+                paymentDate = store.effectiveCurrentDate
+            } else {
+                paymentDate = transaction.date
+            }
         }
     }
 }

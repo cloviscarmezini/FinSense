@@ -313,11 +313,19 @@ public struct LoansAndFinancingsView: View {
                         valueColor: Color(hex: "#EF4444")
                     )
                     detailCell(label: "Valor Total Contratado", value: BRLFormatters.currency(contract.totalContractedAmount))
-                    detailCell(label: "Parcela Total Devida", value: BRLFormatters.currency(contract.installmentAmount))
+                    detailCell(label: "Valor Cadastrado da Parcela", value: BRLFormatters.currency(contract.installmentAmount))
 
                     detailCell(label: "Parcela Base Price", value: BRLFormatters.currency(contract.effectiveBaseInstallmentPrice))
                     detailCell(label: "Seguros MIP/DFI", value: BRLFormatters.currency(contract.effectiveInsuranceFee))
                     detailCell(label: "Taxa de Administração", value: BRLFormatters.currency(contract.effectiveAdminFee))
+
+                    if let avgGrowth = contract.averageMonthlyInstallmentGrowth, avgGrowth > 0.001 {
+                        detailCell(
+                            label: "Projeção Mensal (Média Doc)",
+                            value: "+\(BRLFormatters.currency(avgGrowth))/mês (1ª: \(BRLFormatters.currency(contract.installmentAmount + avgGrowth)))",
+                            valueColor: Color(hex: "#8B5CF6")
+                        )
+                    }
 
                     detailCell(
                         label: "Taxa Nominal Anual",
@@ -1798,7 +1806,8 @@ public struct ImportCreditContractDocumentSheet: View {
             bankDueDay: bankDueDay,
             documentReferenceDate: referenceDate,
             maturityDate: maturityDate,
-            scheduledInstallments: parsedDoc?.scheduledInstallments
+            scheduledInstallments: parsedDoc?.scheduledInstallments,
+            averageMonthlyInstallmentGrowth: parsedDoc?.averageMonthlyInstallmentGrowth
         )
         onCompleteImport?()
         dismiss()
