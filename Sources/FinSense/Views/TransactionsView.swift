@@ -22,6 +22,8 @@ public struct TransactionsView: View {
     @State private var recurringTransactionPendingCancellation: FinancialTransaction? = nil
     @State private var transactionPendingPaymentToggle: FinancialTransaction? = nil
     @State private var installmentPendingRealPaymentConfirmation: FinancialTransaction? = nil
+    @State private var selectedTransactionIds: Set<UUID> = []
+    @State private var showBulkPaymentConfirmation: Bool = false
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -524,11 +526,34 @@ public struct TransactionsView: View {
                 Toggle("Agrupar por dia", isOn: $groupByDay)
                     .toggleStyle(.checkbox)
 
+                if !visiblePendingTransactions.isEmpty {
+                    let allPendingSelected = Set(visiblePendingTransactions.map(\.id)).isSubset(of: selectedTransactionIds)
+                    Button {
+                        if allPendingSelected {
+                            selectedTransactionIds.subtract(visiblePendingTransactions.map(\.id))
+                        } else {
+                            selectedTransactionIds.formUnion(visiblePendingTransactions.map(\.id))
+                        }
+                    } label: {
+                        Label(
+                            allPendingSelected ? "Desmarcar Pendentes" : "Selecionar Pendentes (\(visiblePendingTransactions.count))",
+                            systemImage: allPendingSelected ? "checkmark.square.fill" : "checklist"
+                        )
+                        .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                }
+
                 Spacer()
 
                 Text("\(filteredMonthTransactions.count) lançamento(s)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            // MARK: - Bulk Action Bar (Pagamento / Recebimento em Massa)
+            if !selectedPendingTransactions.isEmpty {
+                bulkSelectionActionBar
             }
 
             // MARK: - Transactions List
@@ -575,6 +600,10 @@ public struct TransactionsView: View {
         .padding(24)
         .onChange(of: store.selectedTransactionsSubmenu) { _, _ in
             selectedCategoryFilter = nil
+            selectedTransactionIds.removeAll()
+        }
+        .onChange(of: store.selectedMonth) { _, _ in
+            selectedTransactionIds.removeAll()
         }
         .sheet(isPresented: $showCreateExpenseSheet) {
             TransactionEditorSheet(
@@ -695,6 +724,121 @@ public struct TransactionsView: View {
         } message: { tx in
             Text(paymentAlertMessage(for: tx))
         }
+        .alert(
+            bulkPaymentAlertTitle,
+            isPresented: $showBulkPaymentConfirmation
+        ) {
+            Button(bulkActionButtonTitle) {
+                _ = store.markTransactionsPaid(Array(selectedTransactionIds))
+                selectedTransactionIds.removeAll()
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text(bulkPaymentAlertMessage)
+        }
+    }
+
+    // MARK: - Seleção em Massa (Desktop)
+
+    private var visiblePendingTransactions: [FinancialTransaction] {
+        filteredMonthTransactions.filter {
+            !$0.isPaid && store.transactionProjectionStatus(for: $0) != .shadowed
+        }
+    }
+
+    private var selectedPendingTransactions: [FinancialTransaction] {
+        visiblePendingTransactions.filter { selectedTransactionIds.contains($0.id) }
+    }
+
+    private var selectedPendingTotalAmount: Double {
+        selectedPendingTransactions.reduce(0.0) { $0 + store.effectiveTransactionAmount(for: $1) }
+    }
+
+    private var bulkActionButtonTitle: String {
+        let items = selectedPendingTransactions
+        let hasExpenses = items.contains { $0.type == .expense }
+        let hasIncomes = items.contains { $0.type == .income }
+        if hasExpenses && !hasIncomes {
+            return "Confirmar Pagamento (\(items.count))"
+        } else if hasIncomes && !hasExpenses {
+            return "Confirmar Recebimento (\(items.count))"
+        }
+        return "Confirmar Liquidação (\(items.count))"
+    }
+
+    private var bulkPaymentAlertTitle: String {
+        let items = selectedPendingTransactions
+        let hasExpenses = items.contains { $0.type == .expense }
+        let hasIncomes = items.contains { $0.type == .income }
+        if hasExpenses && !hasIncomes {
+            return "Confirmar Pagamento em Massa?"
+        } else if hasIncomes && !hasExpenses {
+            return "Confirmar Recebimento em Massa?"
+        }
+        return "Confirmar Liquidação em Massa?"
+    }
+
+    private var bulkPaymentAlertMessage: String {
+        let items = selectedPendingTransactions
+        let total = BRLFormatters.currency(selectedPendingTotalAmount)
+        let hasFuture = items.contains { store.isDateInFuture($0.date) }
+        var msg = "\(items.count) transação(ões) pendente(s) selecionada(s) • Total: \(total)."
+        if hasFuture {
+            msg += "\n\nTransações agendadas para o futuro serão movidas para a data de hoje (\(BRLFormatters.shortDate(Date())))."
+        }
+        msg += "\n\nTransações já pagas ou recebidas são ignoradas automaticamente. Deseja finalizar?"
+        return msg
+    }
+
+    private func toggleBulkSelection(for tx: FinancialTransaction) {
+        guard !tx.isPaid && store.transactionProjectionStatus(for: tx) != .shadowed else { return }
+        if selectedTransactionIds.contains(tx.id) {
+            selectedTransactionIds.remove(tx.id)
+        } else {
+            selectedTransactionIds.insert(tx.id)
+        }
+    }
+
+    @ViewBuilder
+    private var bulkSelectionActionBar: some View {
+        let count = selectedPendingTransactions.count
+        HStack(spacing: 12) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(Color(hex: "#10B981"))
+
+            Text("\(count) transação(ões) pendente(s) selecionada(s)")
+                .font(.subheadline.weight(.semibold))
+
+            Text("• Total: \(BRLFormatters.currency(selectedPendingTotalAmount))")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(Color(hex: "#10B981"))
+
+            Spacer()
+
+            Button("Limpar Seleção") {
+                selectedTransactionIds.removeAll()
+            }
+            .buttonStyle(.bordered)
+
+            Button {
+                showBulkPaymentConfirmation = true
+            } label: {
+                Label(bulkActionButtonTitle, systemImage: "checkmark.seal.fill")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(hex: "#10B981"))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(hex: "#10B981").opacity(0.10))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color(hex: "#10B981").opacity(0.35), lineWidth: 1)
+                )
+        )
     }
 
     private func paymentAlertTitle(for tx: FinancialTransaction) -> String {
@@ -771,8 +915,27 @@ public struct TransactionsView: View {
         let isPayoffPlannedAmort = !isShadowed && store.isPlannedAmortizationFullPayoff(tx)
         let effectiveAmount = store.effectiveTransactionAmount(for: tx)
         let correctionBreakdown = store.installmentCorrectionBreakdown(for: tx)
+        let isEligibleForBulk = !tx.isPaid && !isShadowed
+        let isBulkSelected = isEligibleForBulk && selectedTransactionIds.contains(tx.id)
 
         HStack(spacing: 14) {
+            Button {
+                toggleBulkSelection(for: tx)
+            } label: {
+                Image(systemName: isEligibleForBulk
+                      ? (isBulkSelected ? "checkmark.square.fill" : "square")
+                      : (tx.isPaid ? "checkmark.square.fill" : "minus.square"))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(isEligibleForBulk
+                                     ? (isBulkSelected ? Color(hex: "#10B981") : Color.secondary.opacity(0.75))
+                                     : Color.secondary.opacity(0.28))
+            }
+            .buttonStyle(.plain)
+            .disabled(!isEligibleForBulk)
+            .help(isEligibleForBulk
+                  ? "Selecionar para pagamento/recebimento em massa"
+                  : (tx.isPaid ? "Transação já liquidada (ignorada no pagamento em massa)" : "Transação suprimida"))
+
             CategoryBadgeView(category: cat, size: 40)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -917,7 +1080,7 @@ public struct TransactionsView: View {
 
             Spacer()
 
-            // Paid / Received Status Toggle (com modal de confirmação de valor real final para parcelas com correção projetada)
+            // Paid / Received Status & Action Button (com confirmação explícita)
             Button {
                 if !tx.isPaid && correctionBreakdown != nil {
                     installmentPendingRealPaymentConfirmation = tx
@@ -925,22 +1088,47 @@ public struct TransactionsView: View {
                     transactionPendingPaymentToggle = tx
                 }
             } label: {
+                let buttonLabel: String = {
+                    if tx.isPaid {
+                        return tx.type == .expense ? "Pago" : "Recebido"
+                    }
+                    if isPayoffPlannedAmort { return "Confirmar Liquidação" }
+                    if isPlannedAmort { return "Confirmar Pagamento" }
+                    if correctionBreakdown != nil { return "Confirmar Valor & Pagar" }
+                    return tx.type == .expense ? "Pagar" : "Receber"
+                }()
+                let buttonIcon: String = {
+                    if tx.isPaid { return "checkmark.circle.fill" }
+                    if isPayoffPlannedAmort || isPlannedAmort { return "checkmark.seal.fill" }
+                    return tx.type == .expense ? "creditcard.fill" : "arrow.down.circle.fill"
+                }()
+                let buttonTint: Color = {
+                    if tx.isPaid { return .green }
+                    if isPayoffPlannedAmort { return Color(hex: "#10B981") }
+                    if isPlannedAmort { return Color(hex: "#6366F1") }
+                    return tx.type == .expense ? Color(hex: "#0284C7") : Color(hex: "#10B981")
+                }()
+
                 HStack(spacing: 5) {
-                    Image(systemName: tx.isPaid ? "checkmark.circle.fill" : (isPayoffPlannedAmort ? "checkmark.seal.fill" : (isPlannedAmort ? "checkmark.seal.fill" : (isFuture ? "calendar.badge.clock" : "clock.badge.exclamationmark"))))
-                    Text(tx.isPaid ? (tx.type == .expense ? "Pago" : "Recebido") : (isPayoffPlannedAmort ? "Confirmar Liquidação" : (isPlannedAmort ? "Confirmar Pagamento" : (correctionBreakdown != nil ? "Confirmar Valor & Pagar" : (tx.type == .expense ? "Não Pago" : "Não Recebido")))))
-                        .font(.caption.weight(.semibold))
+                    Image(systemName: buttonIcon)
+                    Text(buttonLabel)
+                        .font(.caption.weight(.bold))
                 }
-                .padding(.horizontal, 9)
+                .padding(.horizontal, 10)
                 .padding(.vertical, 5)
                 .background(
                     Capsule()
-                        .fill(tx.isPaid ? Color.green.opacity(0.14) : (isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.20) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.16) : Color.amberWarning.opacity(0.16))))
+                        .fill(tx.isPaid ? Color.green.opacity(0.14) : buttonTint.opacity(0.16))
+                        .overlay(
+                            Capsule()
+                                .stroke(tx.isPaid ? Color.clear : buttonTint.opacity(0.45), lineWidth: 1)
+                        )
                 )
-                .foregroundStyle(tx.isPaid ? Color.green : (isPayoffPlannedAmort ? Color(hex: "#10B981") : (isPlannedAmort ? Color(hex: "#6366F1") : Color.amberWarning)))
+                .foregroundStyle(buttonTint)
             }
             .buttonStyle(.plain)
             .disabled(isShadowed)
-            .help(isPayoffPlannedAmort ? "Confirmar pagamento desta liquidação planejada e quitar o contrato" : (isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (!tx.isPaid && correctionBreakdown != nil ? "Abrir modal para confirmar o valor real final da parcela e os juros efetivados na ocasião" : (isFuture && !tx.isPaid ? "Pagar agora (a transação será movida para a data de hoje)" : "Alternar status de Pago / Recebido"))))
+            .help(isPayoffPlannedAmort ? "Confirmar pagamento desta liquidação planejada e quitar o contrato" : (isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (!tx.isPaid && correctionBreakdown != nil ? "Abrir modal para confirmar o valor real final da parcela e os juros efetivados na ocasião" : (tx.isPaid ? "Clique para desfazer liquidação (com confirmação)" : (isFuture ? "Pagar/Receber agora (a transação será movida para hoje após confirmação)" : (tx.type == .expense ? "Pagar transação (com confirmação)" : "Receber transação (com confirmação)"))))))
 
             // Amount
             VStack(alignment: .trailing, spacing: 1) {

@@ -2679,6 +2679,58 @@ public final class FinancialDataStore: ObservableObject {
         return true
     }
 
+    /// Marca múltiplas transações pendentes como pagas/recebidas em massa,
+    /// ignorando automaticamente transações já pagas ou suprimidas.
+    @discardableResult
+    public func markTransactionsPaid(_ ids: [UUID], referenceNow: Date? = nil) -> (processedCount: Int, ignoredAlreadyPaidCount: Int) {
+        let now = referenceNow ?? effectiveCurrentDate
+        let uniqueIds = Set(ids)
+        var processedIds: [UUID] = []
+        var ignoredAlreadyPaidCount = 0
+
+        for id in uniqueIds {
+            guard let idx = transactions.firstIndex(where: { $0.id == id }) else { continue }
+            if transactions[idx].isPaid {
+                ignoredAlreadyPaidCount += 1
+                continue
+            }
+            if transactionProjectionStatus(for: transactions[idx]) == .shadowed {
+                continue
+            }
+            if transactions[idx].transactionOrigin == .plannedAmortization {
+                let payDate = isDateInFuture(transactions[idx].date, referenceNow: now)
+                    ? now
+                    : transactions[idx].date
+                if confirmPlannedAmortizationByTransactionId(id, paymentDate: payDate) {
+                    processedIds.append(id)
+                }
+                continue
+            }
+            if isDateInFuture(transactions[idx].date, referenceNow: now) {
+                transactions[idx].date = now
+            }
+            if let baseReg = transactions[idx].baseInstallmentRegisteredAmount,
+               transactions[idx].confirmedRealInterestCorrectionAmount == nil {
+                transactions[idx].confirmedRealInterestCorrectionAmount = ((transactions[idx].amount - baseReg) * 100.0).rounded() / 100.0
+            }
+            transactions[idx].isPaid = true
+            processedIds.append(id)
+        }
+
+        if !processedIds.isEmpty {
+            sortTransactions()
+            invalidateDerivedCaches()
+            save()
+            for id in processedIds {
+                if let tx = transactions.first(where: { $0.id == id }) {
+                    cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .upsert, entity: tx)
+                }
+            }
+        }
+
+        return (processedIds.count, ignoredAlreadyPaidCount)
+    }
+
     /// Confirma o pagamento real de uma parcela de contrato (ex: Financiamento CAIXA TP com aumento projetado),
     /// gravando o valor final efetivamente pago na ocasião e os juros/correção reais efetivados,
     /// sem alterar o Saldo Devedor de quitação do financiamento.
