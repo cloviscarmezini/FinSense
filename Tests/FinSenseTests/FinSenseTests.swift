@@ -5599,4 +5599,168 @@ final class FinSenseTests: XCTestCase {
         let autoProj = store.loanProjection(for: finContract.id)!
         XCTAssertEqual(autoProj.projectedFinalBalanceAfterPlan, .zero, "Planejamento automático deve levar o saldo projetado até a quitação (R$ 0,00)")
     }
+
+    func testDraftSaveAmortizationLifecyclePayoffClampingLiquidationDescriptionAndRealTimeDateEdit() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let cal = store.calendar
+        let baseNow = cal.date(from: DateComponents(year: 2026, month: 11, day: 11))!
+        store.simulatedCurrentDate = baseNow
+        store.selectedMonth = baseNow
+
+        let bank = BankAccount(id: UUID(), name: "Conta Principal", initialBalance: 120000.0)
+        store.accounts = [bank]
+
+        let santanderDoc = ContractDocumentImportService.parseContractDocumentText(
+            SampleContractDocumentsData.santanderLoanOCRText,
+            expectedKind: .loan
+        )
+        let contract = store.createCreditContract(
+            kind: .loan,
+            name: santanderDoc.name,
+            contractNumber: santanderDoc.contractNumber,
+            loanSubtype: .consignado,
+            amortizationSystem: .price,
+            totalContractedAmount: santanderDoc.totalContractedAmount,
+            outstandingBalance: santanderDoc.outstandingBalance,
+            installmentAmount: santanderDoc.installmentAmount,
+            billingDay: 1,
+            totalInstallments: santanderDoc.totalInstallments,
+            monthlyInterestRate: santanderDoc.monthlyInterestRate,
+            startDate: santanderDoc.startDate,
+            accountId: bank.id,
+            referenceDate: baseNow,
+            overridePastInstallmentsCount: santanderDoc.paidInstallmentsCount,
+            overrideFirstFutureBillingDate: santanderDoc.firstFutureBillingDate,
+            bankDueDay: santanderDoc.bankDueDay,
+            documentReferenceDate: santanderDoc.referenceDate,
+            maturityDate: santanderDoc.maturityDate,
+            scheduledInstallments: santanderDoc.scheduledInstallments
+        )
+
+        // 1. Inicialmente não possui planejamento salvo ("Planejar Amortização")
+        XCTAssertFalse(store.hasSavedAmortizationPlan(for: contract.id))
+
+        // 2. Simulação em Rascunho (não persiste nem cria transações até clicar em "Salvar Planejamento")
+        let amortDate1 = cal.date(from: DateComponents(year: 2026, month: 11, day: 26))!
+        let amortDate2 = cal.date(from: DateComponents(year: 2026, month: 12, day: 26))!
+        let amortDate3 = cal.date(from: DateComponents(year: 2027, month: 1, day: 26))!
+
+        let draftItem1 = PlannedAmortization(
+            contractId: contract.id,
+            date: amortDate1,
+            amount: Decimal(50000),
+            source: .cash,
+            mode: .reduceTerm,
+            status: .pending
+        )
+        // Tenta colocar um valor maior que o saldo restante no segundo aporte (ex: 80.000) e um 3º aporte adicional após a quitação
+        let draftItem2Over = PlannedAmortization(
+            contractId: contract.id,
+            date: amortDate2,
+            amount: Decimal(80000),
+            source: .cash,
+            mode: .reduceTerm,
+            status: .pending
+        )
+        let draftItem3Redundant = PlannedAmortization(
+            contractId: contract.id,
+            date: amortDate3,
+            amount: Decimal(10000),
+            source: .cash,
+            mode: .reduceTerm,
+            status: .pending
+        )
+
+        let draftPlan = AmortizationPlan(
+            contractId: contract.id,
+            generationMode: .manual,
+            billingDay: 26,
+            incomeCommitmentPercentage: Decimal(30),
+            defaultRecalculationMode: .reduceTerm,
+            estimatedMonthlyTR: .zero,
+            items: [draftItem1, draftItem2Over, draftItem3Redundant]
+        )
+
+        let previewProj = store.simulateAmortizationPlanPreview(for: contract.id, draftPlan: draftPlan)!
+        XCTAssertTrue(previewProj.doesPlanAchieveFullPayoff)
+        // Como ainda é apenas rascunho, nenhuma transação .plannedAmortization foi criada no store!
+        XCTAssertTrue(store.transactions.filter { $0.transactionOrigin == .plannedAmortization }.isEmpty)
+
+        // 3. Visibilidade do Saldo Esperado para o Final do Mês na data selecionada (ajusta conforme aumenta o aporte)
+        let cashBeforeTyping = store.expectedMonthEndCashBalance(
+            for: amortDate1,
+            contractId: contract.id,
+            draftPlan: nil,
+            draftProjection: nil,
+            additionalTypingOutflow: 0.0
+        )
+        let cashAfter15k = store.expectedMonthEndCashBalance(
+            for: amortDate1,
+            contractId: contract.id,
+            draftPlan: nil,
+            draftProjection: nil,
+            additionalTypingOutflow: 15000.0
+        )
+        XCTAssertEqual(cashBeforeTyping - cashAfter15k, 15000.0, accuracy: 0.01, "O saldo esperado no fim do mês deve ajustar exatamente conforme o aporte digitado aumenta")
+
+        // 4. Salvar Planejamento ("Salvar Planejamento" -> muda estado para "Ver Planejamento", aplica clamping e bloqueia aportes excedentes)
+        let savedPlan = store.saveAmortizationPlan(
+            contractId: contract.id,
+            generationMode: .manual,
+            billingDay: 26,
+            incomeCommitmentPercentage: Decimal(30),
+            defaultRecalculationMode: .reduceTerm,
+            estimatedMonthlyTR: .zero,
+            draftItems: [draftItem1, draftItem2Over, draftItem3Redundant]
+        )!
+        XCTAssertTrue(store.hasSavedAmortizationPlan(for: contract.id))
+
+        let savedPending = savedPlan.items.filter { $0.status == .pending }
+        XCTAssertEqual(savedPending.count, 2, "O 3º aporte após a quitação deve ser automaticamente impedido/removido")
+        XCTAssertTrue(savedPending[1].amount < Decimal(80000), "O 2º aporte deve ser limitado exatamente ao saldo restante para quitação")
+
+        // Quando já quitado, o saldo máximo disponível para novos aportes adicionais deve ser 0,00
+        let maxAfterPayoff = store.maxAvailableLoanBalanceToAmortize(
+            for: contract.id,
+            draftItems: savedPending,
+            onDate: amortDate3
+        )
+        XCTAssertEqual(maxAfterPayoff, 0.0, accuracy: 0.01, "Não deve permitir adicionar novos aportes quando o empréstimo já estaria quitado")
+
+        // 5. Transação final de "Amortização Planejada" que leva à quitação deve conter descrição de Liquidação e flag de destaque
+        let plannedTxs = store.transactions
+            .filter { $0.linkedContractId == contract.id && $0.transactionOrigin == .plannedAmortization }
+            .sorted { $0.date < $1.date }
+        XCTAssertEqual(plannedTxs.count, 2)
+        XCTAssertFalse(store.isPlannedAmortizationFullPayoff(plannedTxs[0]))
+        XCTAssertTrue(store.isPlannedAmortizationFullPayoff(plannedTxs[1]), "A última amortização planejada que quita o contrato deve ser marcada como Liquidação Total")
+        XCTAssertTrue(plannedTxs[1].name.localizedCaseInsensitiveContains("Liquidação"), "O título da transação final deve indicar Liquidação")
+        XCTAssertTrue(plannedTxs[1].details.localizedCaseInsensitiveContains("Liquidação Total"), "A descrição da transação final deve indicar Liquidação Total")
+
+        // 6. Edição de data de transação em tempo real (inclusive para data futura) preserva a nova data e incrementa dataRevision
+        let expCat = store.fallbackCategoryId(for: .expense)
+        var singleTx = store.createTransaction(
+            name: "Conta de Energia",
+            amount: 250.0,
+            date: baseNow,
+            type: .expense,
+            isPaid: true,
+            categoryId: expCat,
+            accountId: bank.id,
+            referenceNow: baseNow
+        ).first!
+
+        let revBeforeEdit = store.dataRevision
+        let futureDateInMonth = cal.date(from: DateComponents(year: 2026, month: 11, day: 25))!
+        singleTx.date = futureDateInMonth
+        store.updateTransaction(singleTx, scope: .onlyThis, referenceNow: baseNow)
+
+        let updatedSingleTx = store.transactions.first(where: { $0.id == singleTx.id })!
+        XCTAssertTrue(cal.isDate(updatedSingleTx.date, inSameDayAs: futureDateInMonth), "Editar a data de uma transação para o futuro deve preservar a nova data escolhida")
+        XCTAssertGreaterThan(store.dataRevision, revBeforeEdit, "dataRevision deve incrementar imediatamente para atualizar os componentes em real time")
+    }
 }

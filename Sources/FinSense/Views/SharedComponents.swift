@@ -186,11 +186,22 @@ public struct CategoryBadgeView: View {
         .frame(width: size, height: size)
     }
 
+    private static let symbolCacheLock = NSLock()
+    private static var validatedSymbolsCache: [String: String] = [:]
+
     private func validSymbolName(_ name: String) -> String {
-        if NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil {
-            return name
+        Self.symbolCacheLock.lock()
+        if let cached = Self.validatedSymbolsCache[name] {
+            Self.symbolCacheLock.unlock()
+            return cached
         }
-        return "tag.fill"
+        Self.symbolCacheLock.unlock()
+
+        let resolved = NSImage(systemSymbolName: name, accessibilityDescription: nil) != nil ? name : "tag.fill"
+        Self.symbolCacheLock.lock()
+        Self.validatedSymbolsCache[name] = resolved
+        Self.symbolCacheLock.unlock()
+        return resolved
     }
 }
 

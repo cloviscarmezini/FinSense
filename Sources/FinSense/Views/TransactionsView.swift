@@ -135,15 +135,6 @@ public struct TransactionsView: View {
 
                 Spacer()
 
-                Picker("Cenário", selection: $store.budgetProjectionScenario) {
-                    ForEach(BudgetProjectionScenario.allCases) { scenario in
-                        Text(scenario.rawValue).tag(scenario)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 240)
-                .help("Alterne entre a visão contratual base (Real) e a projeção com planejamento de amortização")
-
                 DashboardPeriodNavigatorBar(store: store)
             }
 
@@ -566,11 +557,13 @@ public struct TransactionsView: View {
                                 dayGroupHeader(day: group.day, items: group.items)
                                 ForEach(group.items) { tx in
                                     transactionRow(tx)
+                                        .id(transactionRenderKey(for: tx))
                                 }
                             }
                         } else {
                             ForEach(filteredMonthTransactions) { tx in
                                 transactionRow(tx)
+                                    .id(transactionRenderKey(for: tx))
                             }
                         }
                     }
@@ -753,14 +746,22 @@ public struct TransactionsView: View {
         .padding(.bottom, 2)
     }
 
+    private func transactionRenderKey(for tx: FinancialTransaction) -> String {
+        let projStatus = store.transactionProjectionStatus(for: tx)
+        let effAmt = store.effectiveTransactionAmount(for: tx)
+        let isPayoff = store.isPlannedAmortizationFullPayoff(tx)
+        return "\(tx.id.uuidString)-\(Int64(tx.date.timeIntervalSince1970))-\(String(format: "%.2f", tx.amount))-\(String(format: "%.2f", effAmt))-\(tx.isPaid)-\(tx.name)-\(tx.details)-\(tx.categoryId.uuidString)-\(tx.accountId.uuidString)-\(tx.ignoreInConsolidated)-\(projStatus.rawValue)-\(isPayoff)-\(store.dataRevision)"
+    }
+
     @ViewBuilder
     private func transactionRow(_ tx: FinancialTransaction) -> some View {
         let cat = store.category(for: tx.categoryId)
         let acc = store.account(for: tx.accountId)
-        let isFuture = store.isDateInFuture(tx.date)
+        let isFuture = store.isDateInFuture(tx.date, referenceNow: store.effectiveCurrentDate)
         let projStatus = store.transactionProjectionStatus(for: tx)
         let isShadowed = projStatus == .shadowed
         let isPlannedAmort = projStatus == .pendingAmortization
+        let isPayoffPlannedAmort = isPlannedAmort && store.isPlannedAmortizationFullPayoff(tx)
         let effectiveAmount = store.effectiveTransactionAmount(for: tx)
 
         HStack(spacing: 14) {
@@ -769,7 +770,8 @@ public struct TransactionsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(tx.name)
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 14, weight: isPayoffPlannedAmort ? .bold : .semibold))
+                        .foregroundStyle(isPayoffPlannedAmort ? Color(hex: "#059669") : .primary)
                         .strikethrough(tx.ignoreInConsolidated || isShadowed, color: .secondary)
 
                     if let badge = tx.installmentBadge {
@@ -790,7 +792,14 @@ public struct TransactionsView: View {
                             .foregroundStyle(.secondary)
                     }
 
-                    if isPlannedAmort {
+                    if isPayoffPlannedAmort {
+                        Label("Liquidação Planejada (Quitação Total)", systemImage: "checkmark.seal.fill")
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2.5)
+                            .background(Capsule().fill(Color(hex: "#10B981").opacity(0.22)))
+                            .foregroundStyle(Color(hex: "#10B981"))
+                    } else if isPlannedAmort {
                         Label("Amortização Planejada", systemImage: "wand.and.stars")
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 8)
@@ -879,21 +888,21 @@ public struct TransactionsView: View {
                 transactionPendingPaymentToggle = tx
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: tx.isPaid ? "checkmark.circle.fill" : (isPlannedAmort ? "checkmark.seal.fill" : (isFuture ? "calendar.badge.clock" : "clock.badge.exclamationmark")))
-                    Text(tx.isPaid ? (tx.type == .expense ? "Pago" : "Recebido") : (isPlannedAmort ? "Confirmar Pagamento" : (tx.type == .expense ? "Não Pago" : "Não Recebido")))
+                    Image(systemName: tx.isPaid ? "checkmark.circle.fill" : (isPayoffPlannedAmort ? "checkmark.seal.fill" : (isPlannedAmort ? "checkmark.seal.fill" : (isFuture ? "calendar.badge.clock" : "clock.badge.exclamationmark"))))
+                    Text(tx.isPaid ? (tx.type == .expense ? "Pago" : "Recebido") : (isPayoffPlannedAmort ? "Confirmar Liquidação" : (isPlannedAmort ? "Confirmar Pagamento" : (tx.type == .expense ? "Não Pago" : "Não Recebido"))))
                         .font(.caption.weight(.semibold))
                 }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
                 .background(
                     Capsule()
-                        .fill(tx.isPaid ? Color.green.opacity(0.14) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.16) : Color.amberWarning.opacity(0.16)))
+                        .fill(tx.isPaid ? Color.green.opacity(0.14) : (isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.20) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.16) : Color.amberWarning.opacity(0.16))))
                 )
-                .foregroundStyle(tx.isPaid ? Color.green : (isPlannedAmort ? Color(hex: "#6366F1") : Color.amberWarning))
+                .foregroundStyle(tx.isPaid ? Color.green : (isPayoffPlannedAmort ? Color(hex: "#10B981") : (isPlannedAmort ? Color(hex: "#6366F1") : Color.amberWarning)))
             }
             .buttonStyle(.plain)
             .disabled(isShadowed)
-            .help(isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (isFuture && !tx.isPaid ? "Pagar agora (a transação será movida para a data de hoje)" : "Alternar status de Pago / Recebido"))
+            .help(isPayoffPlannedAmort ? "Confirmar pagamento desta liquidação planejada e quitar o contrato" : (isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (isFuture && !tx.isPaid ? "Pagar agora (a transação será movida para a data de hoje)" : "Alternar status de Pago / Recebido")))
 
             // Amount
             VStack(alignment: .trailing, spacing: 1) {
@@ -902,7 +911,7 @@ public struct TransactionsView: View {
                     .foregroundStyle(
                         (tx.ignoreInConsolidated || isShadowed)
                             ? Color.secondary
-                            : (isPlannedAmort ? Color(hex: "#6366F1") : (tx.type == .expense ? Color(hex: "#EF4444") : Color(hex: "#10B981")))
+                            : (isPayoffPlannedAmort ? Color(hex: "#10B981") : (isPlannedAmort ? Color(hex: "#6366F1") : (tx.type == .expense ? Color(hex: "#EF4444") : Color(hex: "#10B981"))))
                     )
                 if isShadowed || abs(effectiveAmount - tx.amount) > 0.01 {
                     Text(BRLFormatters.currency(tx.amount))
@@ -952,11 +961,11 @@ public struct TransactionsView: View {
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isPlannedAmort ? Color(hex: "#6366F1").opacity(0.06) : Color(nsColor: .controlBackgroundColor))
+                .fill(isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.10) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.06) : Color(nsColor: .controlBackgroundColor)))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isPlannedAmort ? Color(hex: "#6366F1").opacity(0.28) : Color.primary.opacity(0.06), lineWidth: 1)
+                .stroke(isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.50) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.28) : Color.primary.opacity(0.06)), lineWidth: isPayoffPlannedAmort ? 1.5 : 1)
         )
     }
 }
@@ -1081,8 +1090,8 @@ public struct TransactionEditorSheet: View {
 
                         DatePicker("Data", selection: $date, displayedComponents: [.date])
                             .onChange(of: date) { oldDate, newDate in
-                                // Sugere "não pago" ao mover uma data de hoje/passado para o futuro (o usuário ainda pode marcar como pago)
-                                if store.isDateInFuture(newDate) && !store.isDateInFuture(oldDate) {
+                                // Ao alterar a data para o futuro, desmarca "pago" automaticamente para preservar a nova data escolhida
+                                if store.isDateInFuture(newDate, referenceNow: store.effectiveCurrentDate) && !store.calendar.isDate(oldDate, inSameDayAs: newDate) {
                                     isPaid = false
                                 }
                             }
@@ -1339,11 +1348,17 @@ public struct TransactionEditorSheet: View {
             return
         }
 
-        // Regra: é permitido pagar/receber com data no futuro, mas a transação é movida para a data atual
+        let now = store.effectiveCurrentDate
         let effectivePaid = isPaid
-        let effectiveDate = (isPaid && store.isDateInFuture(date)) ? Date() : date
 
         if var existing = existingTransaction {
+            let didChangeDate = !store.calendar.isDate(date, inSameDayAs: existing.date)
+            let effectiveDate: Date
+            if didChangeDate {
+                effectiveDate = date
+            } else {
+                effectiveDate = (isPaid && !existing.isPaid && store.isDateInFuture(date, referenceNow: now)) ? now : date
+            }
             existing.name = trimmedName
             existing.details = details.trimmingCharacters(in: .whitespacesAndNewlines)
             existing.amount = parsedAmount
@@ -1360,10 +1375,11 @@ public struct TransactionEditorSheet: View {
                 pendingSeriesUpdateTransaction = existing
                 return
             } else {
-                store.updateTransaction(existing, scope: .onlyThis)
+                store.updateTransaction(existing, scope: .onlyThis, referenceNow: now)
                 dismiss()
             }
         } else {
+            let effectiveDate = (isPaid && store.isDateInFuture(date, referenceNow: now)) ? now : date
             store.createTransaction(
                 name: trimmedName,
                 details: details.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1378,7 +1394,8 @@ public struct TransactionEditorSheet: View {
                 ignoreInConsolidated: ignoreInConsolidated,
                 recurrenceMode: recurrenceMode,
                 installmentsOrMonthsCount: installmentsOrMonthsCount,
-                recurrenceFrequency: recurrenceFrequency
+                recurrenceFrequency: recurrenceFrequency,
+                referenceNow: now
             )
             dismiss()
         }

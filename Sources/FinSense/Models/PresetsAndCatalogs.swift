@@ -720,7 +720,18 @@ public enum BRLFormatters {
 }
 
 extension Color {
+    private static let hexCacheLock = NSLock()
+    private static var hexColorCache: [String: Color] = [:]
+
     public init(hex: String) {
+        Self.hexCacheLock.lock()
+        if let cached = Self.hexColorCache[hex] {
+            Self.hexCacheLock.unlock()
+            self = cached
+            return
+        }
+        Self.hexCacheLock.unlock()
+
         let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
         var int: UInt64 = 0
         Scanner(string: cleaned).scanHexInt64(&int)
@@ -735,12 +746,16 @@ extension Color {
         default:
             (a, r, g, b) = (255, 59, 130, 246)
         }
-        self.init(
+        let computed = Color(
             .sRGB,
             red: Double(r) / 255,
             green: Double(g) / 255,
             blue: Double(b) / 255,
             opacity: Double(a) / 255
         )
+        Self.hexCacheLock.lock()
+        Self.hexColorCache[hex] = computed
+        Self.hexCacheLock.unlock()
+        self = computed
     }
 }

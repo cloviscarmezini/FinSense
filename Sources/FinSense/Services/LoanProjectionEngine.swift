@@ -980,6 +980,129 @@ public enum LoanProjectionEngine {
 
         return generatedItems
     }
+
+    /// Calcula o saldo devedor exato disponível para amortizar em uma data específica (`onDate`),
+    /// levando em conta as parcelas normais até aquela data e todos os aportes planejados anteriores (ou no mesmo dia).
+    /// Se o empréstimo já estiver quitado antes ou nessa data pelos demais aportes, retorna `.zero`.
+    public static func maxAvailableLoanBalanceToAmortize(
+        contract: CreditContract,
+        unpaidInstallmentTransactions: [FinancialTransaction],
+        currentRealBalanceDouble: Double,
+        existingItems: [PlannedAmortization],
+        onDate: Date,
+        excludingItemId: UUID? = nil,
+        estimatedMonthlyTR: Decimal = .zero,
+        calendar: Calendar = .current
+    ) -> Decimal {
+        let filteredItems = existingItems.filter {
+            $0.status == .pending && $0.id != excludingItemId && $0.amount > .zero
+        }
+
+        // Verifica primeiro se os itens existentes por si sós já quitam o contrato em data <= onDate
+        let basePlan = AmortizationPlan(
+            contractId: contract.id,
+            generationMode: .manual,
+            billingDay: contract.billingDay,
+            incomeCommitmentPercentage: Decimal(30),
+            defaultRecalculationMode: .reduceTerm,
+            estimatedMonthlyTR: estimatedMonthlyTR,
+            items: filteredItems
+        )
+        let baseSim = simulate(
+            contract: contract,
+            unpaidInstallmentTransactions: unpaidInstallmentTransactions,
+            currentRealBalanceDouble: currentRealBalanceDouble,
+            plan: basePlan,
+            calendar: calendar
+        )
+        if baseSim.doesPlanAchieveFullPayoff && excludingItemId == nil {
+            return .zero
+        }
+
+        let probeId = UUID()
+        let probeItem = PlannedAmortization(
+            id: probeId,
+            contractId: contract.id,
+            date: onDate,
+            amount: toDecimal(max(currentRealBalanceDouble * 2.0, 1_000_000.0)),
+            source: .cash,
+            mode: .reduceTerm,
+            status: .pending,
+            createdAt: Date.distantFuture
+        )
+        let probePlan = AmortizationPlan(
+            contractId: contract.id,
+            generationMode: .manual,
+            billingDay: contract.billingDay,
+            incomeCommitmentPercentage: Decimal(30),
+            defaultRecalculationMode: .reduceTerm,
+            estimatedMonthlyTR: estimatedMonthlyTR,
+            items: filteredItems + [probeItem]
+        )
+        let simResult = simulate(
+            contract: contract,
+            unpaidInstallmentTransactions: unpaidInstallmentTransactions,
+            currentRealBalanceDouble: currentRealBalanceDouble,
+            plan: probePlan,
+            calendar: calendar
+        )
+        guard let probeOutcome = simResult.plannedItemOutcomes[probeId] else {
+            return .zero
+        }
+        return roundCurrency(max(.zero, probeOutcome.balanceBefore))
+    }
+
+    /// Sanitiza e limita (`clamp`) uma lista de aportes planejados em ordem cronológica para impedir que:
+    /// 1. Qualquer aporte tenha valor maior que o saldo devedor restante naquela data.
+    /// 2. Existam aportes adicionais após o contrato já ter atingido a quitação total (R$ 0,00).
+    public static func clampAndSanitizePlannedItems(
+        _ items: [PlannedAmortization],
+        contract: CreditContract,
+        unpaidInstallmentTransactions: [FinancialTransaction],
+        currentRealBalanceDouble: Double,
+        estimatedMonthlyTR: Decimal = .zero,
+        calendar: Calendar = .current
+    ) -> [PlannedAmortization] {
+        let nonPending = items.filter { $0.status != .pending }
+        let sortedPending = items
+            .filter { $0.status == .pending && $0.amount > .zero }
+            .sorted { a, b in
+                let dA = calendar.startOfDay(for: a.date)
+                let dB = calendar.startOfDay(for: b.date)
+                if dA == dB { return a.createdAt < b.createdAt }
+                return dA < dB
+            }
+
+        var acceptedPending: [PlannedAmortization] = []
+
+        for var candidate in sortedPending {
+            let maxAllowed = maxAvailableLoanBalanceToAmortize(
+                contract: contract,
+                unpaidInstallmentTransactions: unpaidInstallmentTransactions,
+                currentRealBalanceDouble: currentRealBalanceDouble,
+                existingItems: acceptedPending,
+                onDate: candidate.date,
+                excludingItemId: candidate.id,
+                estimatedMonthlyTR: estimatedMonthlyTR,
+                calendar: calendar
+            )
+            guard maxAllowed > Decimal(string: "0.01")! else {
+                // O empréstimo já estaria quitado nesta data; impede aportes adicionais após a quitação
+                break
+            }
+            if candidate.amount > maxAllowed {
+                candidate.amount = maxAllowed
+            }
+            acceptedPending.append(candidate)
+
+            if candidate.amount >= maxAllowed {
+                // Atingiu a quitação total neste aporte; encerra aqui
+                break
+            }
+        }
+
+        return (nonPending + acceptedPending).sorted { $0.date < $1.date }
+    }
 }
 
 // MARK: - Validador Temporal de Expiração (`PlanExpirationValidator`)

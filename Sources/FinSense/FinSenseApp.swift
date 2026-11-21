@@ -290,8 +290,85 @@ public struct MainContentView: View {
     }
 }
 
+// MARK: - AppKit Delegate para Prevenção de Hibernação (App Nap) e Reabertura Instantânea pelo Dock
+
+public final class FinSenseAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private var appNapActivity: NSObjectProtocol?
+    private weak var mainAppWindow: NSWindow?
+
+    public func applicationDidFinishLaunching(_ notification: Notification) {
+        // Impede que o macOS coloque o app em estado de "hibernação" (App Nap) quando a janela é fechada ou minimizada
+        appNapActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Manter motor financeiro FinSense responsivo ao reabrir pelo Dock"
+        )
+        DispatchQueue.main.async { [weak self] in
+            self?.registerMainWindows()
+        }
+    }
+
+    public func registerMainWindows() {
+        for window in NSApplication.shared.windows {
+            guard window.sheetParent == nil, !(window is NSPanel) else { continue }
+            if mainAppWindow == nil {
+                mainAppWindow = window
+            }
+            if window.delegate !== self {
+                window.delegate = self
+            }
+            window.isReleasedWhenClosed = false
+        }
+    }
+
+    /// Ao clicar no botão vermelho de fechar (✕) da janela principal, oculta a janela (`orderOut`) em vez de
+    /// destruir a cena raiz do SwiftUI, garantindo que clicar no ícone do Dock reabra a janela instantaneamente.
+    public func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender.sheetParent == nil && !(sender is NSPanel) {
+            mainAppWindow = sender
+            sender.orderOut(nil)
+            return false
+        }
+        return true
+    }
+
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        restoreMainWindowIfNeeded()
+        return true
+    }
+
+    public func applicationDidBecomeActive(_ notification: Notification) {
+        registerMainWindows()
+        let hasVisibleMain = NSApplication.shared.windows.contains {
+            $0.isVisible && !$0.isMiniaturized && $0.sheetParent == nil && !($0 is NSPanel)
+        }
+        if !hasVisibleMain {
+            restoreMainWindowIfNeeded()
+        }
+    }
+
+    public func restoreMainWindowIfNeeded() {
+        if let window = mainAppWindow ?? NSApplication.shared.windows.first(where: { $0.sheetParent == nil && !($0 is NSPanel) }) {
+            mainAppWindow = window
+            window.isReleasedWhenClosed = false
+            if window.delegate !== self {
+                window.delegate = self
+            }
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+
+    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+}
+
 @main
 public struct FinSenseApp: App {
+    @NSApplicationDelegateAdaptor(FinSenseAppDelegate.self) private var appDelegate
     @StateObject private var store: FinancialDataStore
     @StateObject private var syncService: CloudSyncService
     @StateObject private var llmService = LocalLLMService()
@@ -345,6 +422,9 @@ public struct FinSenseApp: App {
                 .frame(minWidth: 1120, minHeight: 740)
                 .onAppear {
                     NSApplication.shared.activate(ignoringOtherApps: true)
+                    DispatchQueue.main.async {
+                        appDelegate.registerMainWindows()
+                    }
                 }
         }
         .windowResizability(.contentMinSize)
@@ -381,6 +461,43 @@ public struct FinSenseApp: App {
                 .keyboardShortcut("6", modifiers: [.command])
 
                 Divider()
+
+                // Atalho Global no Menu Superior para Alternar entre "Com Planejamento" e "Real (Base)"
+                Button(
+                    store.budgetProjectionScenario == .withPlanning
+                        ? "Alternar Cenário para Real (Base)"
+                        : "Alternar Cenário para Com Planejamento"
+                ) {
+                    store.budgetProjectionScenario = store.budgetProjectionScenario == .withPlanning
+                        ? .realBase
+                        : .withPlanning
+                }
+                .keyboardShortcut("p", modifiers: [.command])
+
+                Button(
+                    store.budgetProjectionScenario == .withPlanning
+                        ? "✓ Cenário Ativo: Com Planejamento"
+                        : "   Cenário: Com Planejamento"
+                ) {
+                    store.budgetProjectionScenario = .withPlanning
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+
+                Button(
+                    store.budgetProjectionScenario == .realBase
+                        ? "✓ Cenário Ativo: Real (Base)"
+                        : "   Cenário: Real (Base)"
+                ) {
+                    store.budgetProjectionScenario = .realBase
+                }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Reabrir Janela Principal") {
+                    appDelegate.restoreMainWindowIfNeeded()
+                }
+                .keyboardShortcut("0", modifiers: [.command])
 
                 Button("Abrir Chat com IA Local") {
                     store.openAIChat()
