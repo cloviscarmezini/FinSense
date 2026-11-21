@@ -13,6 +13,7 @@ public struct FinancialDatabaseSnapshot: Codable {
     public var debts: [DebtItem]
     public var contracts: [CreditContract]
     public var amortizationPlans: [AmortizationPlan]?
+    public var budgetProjectionScenario: BudgetProjectionScenario?
     public var provisions: [CategoryProvision]?
     public var categoryQuotas: [CategoryQuotaRule]?
     public var assets: [ExportedAssetFile]?
@@ -29,6 +30,7 @@ public struct FinancialDatabaseSnapshot: Codable {
         debts: [DebtItem] = [],
         contracts: [CreditContract] = [],
         amortizationPlans: [AmortizationPlan]? = [],
+        budgetProjectionScenario: BudgetProjectionScenario? = nil,
         provisions: [CategoryProvision]? = [],
         categoryQuotas: [CategoryQuotaRule]? = [],
         assets: [ExportedAssetFile]? = nil,
@@ -44,6 +46,7 @@ public struct FinancialDatabaseSnapshot: Codable {
         self.debts = debts
         self.contracts = contracts
         self.amortizationPlans = amortizationPlans
+        self.budgetProjectionScenario = budgetProjectionScenario
         self.provisions = provisions
         self.categoryQuotas = categoryQuotas
         self.assets = assets
@@ -533,6 +536,9 @@ public final class FinancialDataStore: ObservableObject {
             self.debts = decoded.debts
             self.contracts = decoded.contracts
             self.amortizationPlans = decoded.amortizationPlans ?? []
+            if let savedScenario = decoded.budgetProjectionScenario {
+                self.budgetProjectionScenario = savedScenario
+            }
             self.provisions = decoded.provisions ?? []
             self.categoryQuotas = decoded.categoryQuotas ?? []
             self.llmConfig = decoded.llmConfig
@@ -605,6 +611,7 @@ public final class FinancialDataStore: ObservableObject {
             debts: debts,
             contracts: contracts,
             amortizationPlans: amortizationPlans,
+            budgetProjectionScenario: budgetProjectionScenario,
             provisions: provisions,
             categoryQuotas: categoryQuotas,
             llmConfig: llmConfig,
@@ -784,6 +791,8 @@ public final class FinancialDataStore: ObservableObject {
             investments: investments,
             debts: debts,
             contracts: contracts,
+            amortizationPlans: amortizationPlans,
+            budgetProjectionScenario: budgetProjectionScenario,
             provisions: provisions,
             categoryQuotas: categoryQuotas,
             assets: collectExportableAssets(),
@@ -818,6 +827,8 @@ public final class FinancialDataStore: ObservableObject {
                 return targets.contains(.financings)
             }
         }
+        let exportedContractIds = Set(exportedContracts.map(\.id))
+        let exportedPlans = amortizationPlans.filter { exportedContractIds.contains($0.contractId) }
 
         return FinancialDatabaseSnapshot(
             schemaVersion: 2,
@@ -827,6 +838,8 @@ public final class FinancialDataStore: ObservableObject {
             investments: targets.contains(.investments) ? investments : [],
             debts: targets.contains(.debts) ? debts : [],
             contracts: exportedContracts,
+            amortizationPlans: exportedPlans,
+            budgetProjectionScenario: (targets.contains(.loans) || targets.contains(.financings)) ? budgetProjectionScenario : nil,
             provisions: targets.contains(.provisions) ? provisions : [],
             categoryQuotas: targets.contains(.provisions) ? categoryQuotas : [],
             assets: targets.contains(.assets) ? collectExportableAssets() : nil,
@@ -1443,6 +1456,36 @@ public final class FinancialDataStore: ObservableObject {
             }
         }
 
+        // 4.1 Planejamentos de Amortização vinculados aos contratos importados/selecionados
+        var importedPlansCount = 0
+        if selectedTargets.contains(.loans) || selectedTargets.contains(.financings) {
+            var existingPlanIds = Set(amortizationPlans.map(\.id))
+            var existingPlanContractIds = Set(amortizationPlans.map(\.contractId))
+
+            for srcPlan in (snapshot.amortizationPlans ?? []) {
+                let targetContractId = contractIdMap[srcPlan.contractId] ?? srcPlan.contractId
+                guard let targetContract = contracts.first(where: { $0.id == targetContractId }) else { continue }
+                let isSelectedKind = (targetContract.kind == .loan && selectedTargets.contains(.loans)) ||
+                                     (targetContract.kind == .financing && selectedTargets.contains(.financings))
+                guard isSelectedKind else { continue }
+                guard !existingPlanIds.contains(srcPlan.id) && !existingPlanContractIds.contains(targetContractId) else {
+                    continue
+                }
+
+                var newPlan = srcPlan
+                newPlan.contractId = targetContractId
+                newPlan.items = srcPlan.items.map { item in
+                    var mappedItem = item
+                    mappedItem.contractId = targetContractId
+                    return mappedItem
+                }
+                amortizationPlans.append(newPlan)
+                existingPlanIds.insert(newPlan.id)
+                existingPlanContractIds.insert(targetContractId)
+                importedPlansCount += 1
+            }
+        }
+
         // 5. Investimentos
         onProgress?(0.64, "Validando investimentos e dívidas...")
         var investmentIdMap: [UUID: UUID] = [:]
@@ -1617,7 +1660,15 @@ public final class FinancialDataStore: ObservableObject {
         if res.importedTransactions > 0 {
             sortTransactions()
         }
-        if res.totalImportedItems > 0 || res.autoCreatedDependenciesCount > 0 {
+        if importedPlansCount > 0 {
+            if let importedScenario = snapshot.budgetProjectionScenario {
+                budgetProjectionScenario = importedScenario
+            }
+            for plan in amortizationPlans {
+                syncPlannedAmortizationTransactions(for: plan.contractId, saveAfter: false)
+            }
+        }
+        if res.totalImportedItems > 0 || res.autoCreatedDependenciesCount > 0 || importedPlansCount > 0 {
             save()
             cloudSyncService?.enqueueAllLocalData()
             cloudSyncService?.performSync()

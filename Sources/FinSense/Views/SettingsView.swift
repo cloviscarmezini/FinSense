@@ -657,8 +657,16 @@ public struct GeneralSettingsSectionView: View {
         case .accounts: return "\(store.accounts.count)"
         case .categories: return "\(store.categories.count)"
         case .investments: return "\(store.investments.count)"
-        case .loans: return "\(store.contracts.filter { $0.kind == .loan }.count)"
-        case .financings: return "\(store.contracts.filter { $0.kind == .financing }.count)"
+        case .loans:
+            let loanContracts = store.contracts.filter { $0.kind == .loan }
+            let loanIds = Set(loanContracts.map(\.id))
+            let planCount = store.amortizationPlans.filter { loanIds.contains($0.contractId) }.count
+            return planCount > 0 ? "\(loanContracts.count) (\(planCount) plano\(planCount == 1 ? "" : "s"))" : "\(loanContracts.count)"
+        case .financings:
+            let finContracts = store.contracts.filter { $0.kind == .financing }
+            let finIds = Set(finContracts.map(\.id))
+            let planCount = store.amortizationPlans.filter { finIds.contains($0.contractId) }.count
+            return planCount > 0 ? "\(finContracts.count) (\(planCount) plano\(planCount == 1 ? "" : "s"))" : "\(finContracts.count)"
         case .debts: return "\(store.debts.count)"
         case .provisions: return "\(store.provisions.count + store.categoryQuotas.count)"
         case .assets:
@@ -1422,8 +1430,16 @@ public struct ResetFromScratchConfirmationSheet: View {
         case .accounts: return "\(store.accounts.count)"
         case .categories: return "\(store.categories.count)"
         case .investments: return "\(store.investments.count)"
-        case .loans: return "\(store.contracts.filter { $0.kind == .loan }.count)"
-        case .financings: return "\(store.contracts.filter { $0.kind == .financing }.count)"
+        case .loans:
+            let loanContracts = store.contracts.filter { $0.kind == .loan }
+            let loanIds = Set(loanContracts.map(\.id))
+            let planCount = store.amortizationPlans.filter { loanIds.contains($0.contractId) }.count
+            return planCount > 0 ? "\(loanContracts.count) (\(planCount) plano\(planCount == 1 ? "" : "s"))" : "\(loanContracts.count)"
+        case .financings:
+            let finContracts = store.contracts.filter { $0.kind == .financing }
+            let finIds = Set(finContracts.map(\.id))
+            let planCount = store.amortizationPlans.filter { finIds.contains($0.contractId) }.count
+            return planCount > 0 ? "\(finContracts.count) (\(planCount) plano\(planCount == 1 ? "" : "s"))" : "\(finContracts.count)"
         case .debts: return "\(store.debts.count)"
         case .aiModelsAndChat: return "\(store.llmConfig.downloadedModels.count) mod."
         }
