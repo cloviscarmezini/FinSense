@@ -307,4 +307,133 @@ final class AIChatOrchestratorTests: XCTestCase {
         let call4 = AIChatOrchestrator.parseToolCall(from: block4)
         XCTAssertNil(call4)
     }
+
+    // MARK: - 7. Super AI Tools & Loan/Simulation Fixes
+
+    func testSimularPrazoComIAWorksForArbitraryLoanNotJustCaixa() async throws {
+        let (store, tempDir) = createTestStore()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let acc = BankAccount(id: UUID(), name: "Banco Santander", initialBalance: 8500.0)
+        let cat = CategoryItem(id: UUID(), name: "Empréstimos", type: .expense, iconSymbol: "banknote", colorHex: "#DC2626")
+        store.accounts.append(acc)
+        store.categories.append(cat)
+
+        // Cria um EMPRÉSTIMO consignado (não Caixa / não financing)
+        let loan = CreditContract(
+            id: UUID(),
+            kind: .loan,
+            name: "Consignado Folha Banco Pan",
+            contractNumber: "998877",
+            loanSubtype: .consignado,
+            amortizationSystem: .price,
+            totalContractedAmount: 42000.0,
+            outstandingBalance: 35000.0,
+            installmentAmount: 1350.0,
+            billingDay: 2,
+            totalInstallments: 48,
+            originalTotalInstallments: 48,
+            monthlyInterestRate: 1.45,
+            startDate: Date(),
+            accountId: acc.id,
+            categoryId: cat.id,
+            pastInstallmentsElapsedAtCreation: 12
+        )
+        store.contracts.append(loan)
+
+        let orchestrator = AIChatOrchestrator(registry: AIToolRegistry.shared)
+        orchestrator.forceDeterministicFallbackForTesting = true
+
+        let prompt = "[NOVA SIMULAÇÃO DO SISTEMA] Monte um plano de ação completo para eu quitar meu empréstimo \"Consignado Folha Banco Pan\" (ID \(loan.id.uuidString)) no menor prazo possível"
+        let out = await orchestrator.processTurnWithThinking(
+            userPrompt: prompt,
+            store: store,
+            modelLabel: "Qwen 3 8B",
+            isThinkingEnabled: true
+        )
+
+        XCTAssertTrue(out.responseMarkdown.contains("Consignado Folha Banco Pan"))
+        XCTAssertTrue(out.responseMarkdown.contains("Empréstimo"))
+        XCTAssertNotNil(out.thinkingContent)
+
+        let toolMsgs = store.chatHistory.filter { $0.role == .tool }
+        XCTAssertTrue(toolMsgs.contains { $0.toolName == "get_contract_details" && $0.content.contains("Consignado Folha Banco Pan") })
+        XCTAssertTrue(toolMsgs.contains { $0.toolName == "simulate_amortization" && $0.content.contains("\"contractKind\":\"loan\"") })
+    }
+
+    func testNewFullDatabaseAccessToolsAndProjectionEngineTool() async throws {
+        let (store, tempDir) = createTestStore()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let acc = BankAccount(id: UUID(), name: "Nubank", initialBalance: 15000.0)
+        let catSal = CategoryItem(id: UUID(), name: "Salário", type: .income, iconSymbol: "banknote", colorHex: "#10B981")
+        let catMarket = CategoryItem(id: UUID(), name: "Mercado", type: .expense, iconSymbol: "cart", colorHex: "#F59E0B")
+        store.accounts.append(acc)
+        store.categories.append(contentsOf: [catSal, catMarket])
+
+        let now = store.selectedMonth
+        store.transactions.append(contentsOf: [
+            FinancialTransaction(name: "Salário", amount: 14000.0, date: now, type: .income, isPaid: true, categoryId: catSal.id, accountId: acc.id),
+            FinancialTransaction(name: "Supermercado", amount: 2200.0, date: now, type: .expense, isPaid: true, categoryId: catMarket.id, accountId: acc.id)
+        ])
+        store.investments.append(InvestmentItem(name: "Reserva Liquidez", groupName: "Renda Fixa", investmentAccountId: acc.id, balance: 45000.0, showInConsolidated: true))
+        store.debts.append(DebtItem(name: "Cartão Acordo", originalAmount: 6000.0))
+
+        let registry = AIToolRegistry()
+        registry.register(GetFinancialOverviewTool(store: store))
+        registry.register(AggregateTransactionsTool(store: store))
+        registry.register(GetInvestmentsSummaryTool(store: store))
+        registry.register(AnalyzeDebtPayoffStrategyTool(store: store))
+
+        let overview = try await registry.execute(name: "get_financial_overview", parameters: [:])
+        XCTAssertEqual(overview["status"] as? String, "success")
+        let summary = overview["summary"] as? [String: Any]
+        XCTAssertEqual(summary?["totalInvestmentsConsolidated"] as? Double, 45000.0)
+
+        let agg = try await registry.execute(name: "aggregate_transactions", parameters: ["type": "expense", "groupBy": "category"])
+        XCTAssertEqual(agg["status"] as? String, "success")
+        XCTAssertEqual(agg["grandTotalAmount"] as? Double, 2200.0)
+
+        let inv = try await registry.execute(name: "get_investments_summary", parameters: [:])
+        XCTAssertEqual(inv["totalInvestmentsConsolidated"] as? Double, 45000.0)
+
+        let debtPlan = try await registry.execute(name: "analyze_debt_payoff_strategy", parameters: ["nameOrQuery": "Acordo"])
+        XCTAssertEqual(debtPlan["status"] as? String, "success")
+        XCTAssertEqual(debtPlan["matchedSpecifically"] as? Bool, true)
+    }
+
+    func testThinkTagStreamExtractorAndGGUFValidationAndConfigCompatibility() throws {
+        // 1. Streaming de tags <think> fragmentadas em chunks pequenos
+        var extractor = ThinkTagStreamExtractor()
+        var collectedThink = ""
+        var collectedContent = ""
+        let chunks = ["<thi", "nk>Analisando saldo ", "real em caixa...", "</thi", "nk>\n\nAqui está ", "sua resposta."]
+        for chunk in chunks {
+            let (t, c) = extractor.feedContentDelta(chunk)
+            collectedThink += t
+            collectedContent += c
+        }
+        let (tTail, cTail) = extractor.finish()
+        collectedThink += tTail
+        collectedContent += cTail
+
+        XCTAssertEqual(collectedThink, "Analisando saldo real em caixa...")
+        XCTAssertEqual(collectedContent, "\n\nAqui está sua resposta.")
+
+        // 2. Rejeição de manifesto antigo fake vs arquivo GGUF válido
+        let fakeURL = FileManager.default.temporaryDirectory.appendingPathComponent("fake_\(UUID().uuidString).gguf")
+        try "{\"repoId\":\"test\"}".write(to: fakeURL, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: fakeURL) }
+
+        let fakeModel = LocalLLMModelInfo(id: "test/fake", displayName: "Fake", fileName: "fake.gguf", localPath: fakeURL.path, sizeBytes: 1_800_000_000)
+        XCTAssertFalse(fakeModel.hasValidGGUFBinary, "Arquivo apenas manifesto < 10MB nunca deve ser aceito como binário GGUF válido")
+
+        // 3. Decodificação retrocompatível de LLMConfiguration antigo sem campos isThinkingModeEnabled/contextWindowSize
+        let legacyJson = """
+        {"huggingFaceToken":"hf_123","selectedModelId":"qwen","downloadedModels":[],"localEndpointURL":""}
+        """
+        let decodedConfig = try JSONDecoder().decode(LLMConfiguration.self, from: Data(legacyJson.utf8))
+        XCTAssertTrue(decodedConfig.isThinkingModeEnabled)
+        XCTAssertEqual(decodedConfig.contextWindowSize, 16384)
+    }
 }

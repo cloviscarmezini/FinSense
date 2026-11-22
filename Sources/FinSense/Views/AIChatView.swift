@@ -8,14 +8,17 @@ public struct AIChatSheetView: View {
     @State private var inputPrompt: String = ""
     @State private var showClearHistoryConfirmation: Bool = false
     @State private var expandedAgentSteps: Set<UUID> = []
+    @State private var expandedThinkingIds: Set<UUID> = []
+    @State private var isLiveThinkingExpanded: Bool = true
+    @State private var pulseAnimation: Bool = false
 
     private let suggestedPrompts: [String] = [
-        "Se eu continuar gastando no ritmo que eu gastei neste mês, ao final do mês terei quanto?",
-        "Reserve R$ 500 para gasolina este mês",
-        "Quanto ainda posso gastar com lanches em novembro?",
-        "Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro",
-        "Usando como referência o meu modo de gastar e receitas, em quanto tempo devo pagar a dívida Cartão Mercado Pago?",
-        "Qual é o panorama completo das minhas dívidas, empréstimos, investimentos e maiores despesas?"
+        "Qual é o panorama completo das minhas contas, investimentos, dívidas e contratos?",
+        "Se eu continuar gastando no ritmo deste mês, ao final do mês terei quanto?",
+        "Analise meu plano de amortização atual e me diga quanto estou economizando de juros",
+        "Onde posso cortar gastos variáveis para sobrar mais dinheiro todo mês?",
+        "Analise meus próximos 12 meses e diga se há risco de caixa negativo",
+        "Quais são minhas maiores categorias de despesa nos últimos meses?"
     ]
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
@@ -23,10 +26,14 @@ public struct AIChatSheetView: View {
         self.llmService = llmService
     }
 
+    private var activeBackend: LocalLLMBackendKind {
+        LocalLLMRuntime.shared.resolveActiveBackend(for: store)
+    }
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             // Top bar
-            HStack {
+            HStack(spacing: 10) {
                 HStack(spacing: 10) {
                     ZStack {
                         Circle()
@@ -38,14 +45,14 @@ public struct AIChatSheetView: View {
                                 )
                             )
                             .frame(width: 38, height: 38)
-                        Image(systemName: "sparkles.bubble.fill")
+                        Image(systemName: "brain.head.profile")
                             .foregroundStyle(.white)
                     }
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Assistente Financeiro com LLM Local")
+                        Text("Super Agente Financeiro Local")
                             .font(.title3.bold())
-                        Text("100% focado em finanças • Acesso em tempo real a todas as suas contas, transações, dívidas e contratos")
+                        Text("Acesso irrestrito ao banco local • 100% das regras do FinSense • Conversação contínua")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -53,16 +60,57 @@ public struct AIChatSheetView: View {
 
                 Spacer()
 
-                if let model = store.llmConfig.selectedModel {
-                    Label(model.displayName, systemImage: "cpu.fill")
-                        .font(.caption.bold())
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color.green.opacity(0.15)))
-                        .foregroundStyle(.green)
+                // Toggle explícito da opção "Pensando"
+                Button {
+                    store.llmConfig.isThinkingModeEnabled.toggle()
+                    store.save()
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: store.llmConfig.isThinkingModeEnabled ? "brain.filled.head.profile" : "bolt.fill")
+                            .font(.caption)
+                        Text(store.llmConfig.isThinkingModeEnabled ? "Pensando: ON" : "Modo Rápido")
+                            .font(.caption.bold())
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule().fill(
+                            store.llmConfig.isThinkingModeEnabled
+                                ? Color(hex: "#6366F1").opacity(0.18)
+                                : Color.secondary.opacity(0.14)
+                        )
+                    )
+                    .overlay(
+                        Capsule().stroke(
+                            store.llmConfig.isThinkingModeEnabled
+                                ? Color(hex: "#6366F1").opacity(0.55)
+                                : Color.clear,
+                            lineWidth: 1
+                        )
+                    )
+                    .foregroundStyle(store.llmConfig.isThinkingModeEnabled ? Color(hex: "#6366F1") : .secondary)
                 }
+                .buttonStyle(.plain)
+                .help(
+                    store.llmConfig.isThinkingModeEnabled
+                        ? "Modo Pensando ativado: extrai 100% do raciocínio da IA, realiza múltiplas consultas ao banco e valida cada cálculo antes de responder (pode levar mais segundos)."
+                        : "Modo Rápido: respostas mais curtas e diretas com menor latência."
+                )
 
-                Button("Limpar Histórico") {
+                // Badge do motor neural ativo
+                HStack(spacing: 5) {
+                    Image(systemName: "cpu.fill")
+                        .font(.caption2)
+                    Text(activeBackend.displayBadge)
+                        .font(.caption.bold())
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(Color.green.opacity(0.15)))
+                .foregroundStyle(.green)
+
+                Button("Limpar") {
                     showClearHistoryConfirmation = true
                 }
                 .buttonStyle(.bordered)
@@ -72,6 +120,29 @@ public struct AIChatSheetView: View {
                     dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
+            }
+
+            // Aviso não-bloqueante se o modelo selecionado ainda tiver arquivo incompleto (apenas manifesto antigo)
+            if let selected = store.llmConfig.selectedModel,
+               !selected.isBuiltInAppleIntelligence,
+               !selected.hasValidGGUFBinary,
+               store.llmConfig.localEndpointURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("O modelo '\(selected.displayName)' possui apenas o manifesto antigo (\(selected.formattedSize)). \(LocalLLMRuntime.isAppleIntelligenceAvailable ? "Usando Apple Intelligence Nativo automaticamente no momento." : "") Baixe o arquivo GGUF completo em Configurações > Modelos IA para extrair 32K de contexto.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Configurar IA") {
+                        dismiss()
+                        store.navigateToLLMInstallSettings()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
             }
 
             Divider()
@@ -97,6 +168,7 @@ public struct AIChatSheetView: View {
                             .foregroundStyle(Color(hex: "#6366F1"))
                         }
                         .buttonStyle(.plain)
+                        .disabled(llmService.isProcessingChat)
                     }
                 }
             }
@@ -112,16 +184,10 @@ public struct AIChatSheetView: View {
                             }
                         }
 
-                        if llmService.isProcessingChat {
-                            HStack(spacing: 8) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text(llmService.currentAgentStepMessage.isEmpty ? "Analisando base de dados financeira..." : llmService.currentAgentStepMessage)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
-                            }
-                            .padding(10)
+                        // Card ao vivo de "Pensando..." deixando claro que a IA está trabalhando ativamente
+                        if llmService.isProcessingChat && !llmService.isTypingResponse {
+                            liveThinkingWorkingCard
+                                .id("liveThinkingCard")
                         }
 
                         if llmService.isTypingResponse {
@@ -131,9 +197,32 @@ public struct AIChatSheetView: View {
                                         Image(systemName: "cpu.fill")
                                             .font(.caption)
                                             .foregroundStyle(Color(hex: "#6366F1"))
-                                        Text(store.llmConfig.selectedModel?.displayName ?? "Assistente Financeiro Local")
+                                        Text(llmService.activeEngineDescription.isEmpty ? "Super Agente Local" : llmService.activeEngineDescription)
                                             .font(.caption.bold())
                                             .foregroundStyle(.secondary)
+                                        Text(String(format: "• %.1fs", llmService.thinkingElapsedSeconds))
+                                            .font(.caption2.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Button("Parar") {
+                                            llmService.cancelChatGeneration()
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.mini)
+                                    }
+
+                                    if !llmService.liveThinkingText.isEmpty {
+                                        DisclosureGroup("Pensamento concluído (\(llmService.liveThinkingText.count) caracteres)", isExpanded: $isLiveThinkingExpanded) {
+                                            Text(llmService.liveThinkingText)
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .padding(.top, 4)
+                                        }
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(Color(hex: "#8B5CF6"))
+                                        .padding(10)
+                                        .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#8B5CF6").opacity(0.08)))
                                     }
 
                                     Text(LocalizedStringKey(llmService.liveTypingResponseText + " ▌"))
@@ -162,6 +251,9 @@ public struct AIChatSheetView: View {
                 .onChange(of: llmService.isProcessingChat) { _, _ in
                     scrollToBottom(proxy: proxy)
                 }
+                .onChange(of: llmService.liveThinkingText) { _, _ in
+                    proxy.scrollTo("chatBottomAnchor", anchor: .bottom)
+                }
                 .onChange(of: llmService.liveTypingResponseText) { _, _ in
                     proxy.scrollTo("chatBottomAnchor", anchor: .bottom)
                 }
@@ -173,26 +265,42 @@ public struct AIChatSheetView: View {
             // Input Bar
             HStack(spacing: 10) {
                 BorderedTextField(
-                    placeholder: "Pergunte ex: 'Analise os dados de 01/01/2026 até 01/12/2026, faça uma projeção de quando entrarei em débito no futuro'...",
+                    placeholder: "Converse abertamente: pergunte sobre contratos, planejamento, projeções, gastos ou dívidas...",
                     text: $inputPrompt,
                     onCommit: {
                         sendQuestion()
                     }
                 )
 
-                Button {
-                    sendQuestion()
-                } label: {
-                    Label("Enviar", systemImage: "paperplane.fill")
-                        .fontWeight(.semibold)
+                if llmService.isProcessingChat {
+                    Button(role: .destructive) {
+                        llmService.cancelChatGeneration()
+                    } label: {
+                        Label("Parar", systemImage: "stop.circle.fill")
+                            .fontWeight(.semibold)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                } else {
+                    Button {
+                        sendQuestion()
+                    } label: {
+                        Label("Enviar", systemImage: "paperplane.fill")
+                            .fontWeight(.semibold)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#6366F1"))
+                    .disabled(inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#6366F1"))
-                .disabled(inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || llmService.isProcessingChat)
             }
         }
         .padding(22)
-        .frame(width: 820, height: 640)
+        .frame(width: 920, height: 700)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
+                pulseAnimation = true
+            }
+        }
         .onChange(of: llmService.shouldCloseChatSheet) { _, shouldClose in
             if shouldClose {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
@@ -205,7 +313,7 @@ public struct AIChatSheetView: View {
                 store.chatHistory = [
                     ChatMessage(
                         role: .assistant,
-                        content: "Histórico limpo. Faça uma pergunta sobre suas finanças, projeções de débito ou quitação de dívidas!"
+                        content: "Histórico limpo. Estou com acesso completo ao seu banco de dados financeiro — pode perguntar qualquer coisa sobre suas contas, contratos, amortizações ou projeções!"
                     )
                 ]
                 store.save()
@@ -216,9 +324,93 @@ public struct AIChatSheetView: View {
         }
     }
 
+    @ViewBuilder
+    private var liveThinkingWorkingCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color(hex: "#6366F1").opacity(pulseAnimation ? 0.25 : 0.10))
+                        .frame(width: 28, height: 28)
+                    Image(systemName: store.llmConfig.isThinkingModeEnabled ? "brain.head.profile" : "sparkles")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(store.llmConfig.isThinkingModeEnabled ? "Pensando profundamente..." : "Processando...")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(Color(hex: "#6366F1"))
+
+                        Text(String(format: "%.1fs", llmService.thinkingElapsedSeconds))
+                            .font(.caption.monospacedDigit().bold())
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color(hex: "#6366F1").opacity(0.14)))
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                    }
+
+                    Text(
+                        llmService.currentAgentStepMessage.isEmpty
+                            ? "Consultando base de dados financeira local..."
+                            : llmService.currentAgentStepMessage
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                }
+
+                Spacer()
+
+                ProgressView()
+                    .controlSize(.small)
+
+                Button("Parar") {
+                    llmService.cancelChatGeneration()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+            }
+
+            if !llmService.liveThinkingText.isEmpty {
+                DisclosureGroup(
+                    isExpanded: $isLiveThinkingExpanded
+                ) {
+                    ScrollView {
+                        Text(llmService.liveThinkingText)
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 140)
+                    .padding(.top, 4)
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "waveform.path.ecg")
+                            .font(.caption2)
+                        Text("Raciocínio em tempo real")
+                            .font(.caption2.bold())
+                    }
+                    .foregroundStyle(Color(hex: "#8B5CF6"))
+                }
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color(hex: "#6366F1").opacity(0.07))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(Color(hex: "#6366F1").opacity(0.25), lineWidth: 1)
+        )
+    }
+
     private func sendQuestion() {
         let q = inputPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return }
+        guard !q.isEmpty, !llmService.isProcessingChat else { return }
         inputPrompt = ""
         Task {
             await llmService.sendUserQuestion(q, store: store)
@@ -268,9 +460,52 @@ public struct AIChatSheetView: View {
                         Image(systemName: "cpu.fill")
                             .font(.caption)
                             .foregroundStyle(Color(hex: "#6366F1"))
-                        Text(msg.modelUsed ?? "Assistente Financeiro Local")
+                        Text(msg.modelUsed ?? "Super Agente Financeiro Local")
                             .font(.caption.bold())
                             .foregroundStyle(.secondary)
+                        if let duration = msg.thinkingDurationSeconds, duration > 0 {
+                            Text(String(format: "• %.1fs", duration))
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // Seção colapsável do pensamento interno (Thinking Mode)
+                    if let thinking = msg.thinkingContent, !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        DisclosureGroup(
+                            isExpanded: Binding(
+                                get: { expandedThinkingIds.contains(msg.id) },
+                                set: { isExp in
+                                    if isExp {
+                                        expandedThinkingIds.insert(msg.id)
+                                    } else {
+                                        expandedThinkingIds.remove(msg.id)
+                                    }
+                                }
+                            )
+                        ) {
+                            Text(thinking)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .padding(.top, 4)
+                                .padding(.horizontal, 4)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "brain.head.profile")
+                                    .font(.caption2)
+                                let durStr = msg.thinkingDurationSeconds.map { String(format: " (%.1fs)", $0) } ?? ""
+                                Text("Pensamento da IA\(durStr)")
+                                    .font(.caption2.bold())
+                            }
+                            .foregroundStyle(Color(hex: "#8B5CF6"))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(hex: "#8B5CF6").opacity(0.07))
+                        )
                     }
 
                     if let steps = msg.agentSteps, !steps.isEmpty {
@@ -299,7 +534,7 @@ public struct AIChatSheetView: View {
                             HStack(spacing: 5) {
                                 Image(systemName: "gearshape.arrow.triangle.2.circlepath")
                                     .font(.caption2)
-                                Text("Etapas do Agente (\(steps.count))")
+                                Text("Etapas e Consultas ao Banco (\(steps.count))")
                                     .font(.caption2.bold())
                             }
                             .foregroundStyle(Color(hex: "#6366F1"))
@@ -350,6 +585,7 @@ public struct AIChatSheetView: View {
                                             .foregroundStyle(Color(hex: "#6366F1"))
                                         }
                                         .buttonStyle(.plain)
+                                        .disabled(llmService.isProcessingChat)
                                     }
                                 }
                             }

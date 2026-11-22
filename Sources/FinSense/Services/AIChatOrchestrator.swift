@@ -1,44 +1,58 @@
 import Foundation
 
-/// Orquestrador de conversação financeira multi-turno orientado a ferramentas (Agent-First).
+/// Orquestrador de conversação financeira multi-turno orientado a ferramentas (Super Agente ReAct Local).
 @MainActor
 public final class AIChatOrchestrator: ObservableObject {
     public static let shared = AIChatOrchestrator()
 
     public let registry: AIToolRegistry
-    public var maxSlidingWindowMessages: Int = 12
-    public var maxToolExecutionHops: Int = 4
+    public var maxSlidingWindowMessages: Int = 18
+    public var maxToolExecutionHops: Int = 8
+    /// Permite forçar execução determinística pura em testes unitários isolados
+    public var forceDeterministicFallbackForTesting: Bool = false
 
     public init(registry: AIToolRegistry? = nil) {
         self.registry = registry ?? .shared
     }
 
-    /// Registra todas as ferramentas padrão para uma instância de FinancialDataStore
+    /// Registra todas as 13 ferramentas nativas com acesso irrestrito ao banco local para uma instância de FinancialDataStore
     public func registerStandardTools(for store: FinancialDataStore) {
+        registry.register(GetFinancialOverviewTool(store: store))
         registry.register(GetContractDetailsTool(store: store))
         registry.register(SimulateAmortizationTool(store: store))
+        registry.register(GetLoanProjectionAndPlanTool(store: store))
         registry.register(GetMonthlyCashFlowTool(store: store))
         registry.register(GetProjectedCashFlowRangeTool(store: store))
         registry.register(AnalyzeDiscretionarySpendingTool(store: store))
         registry.register(GetBudgetCapsStatusTool(store: store))
         registry.register(QueryTransactionsTool(store: store))
+        registry.register(AggregateTransactionsTool(store: store))
+        registry.register(GetInvestmentsSummaryTool(store: store))
+        registry.register(AnalyzeDebtPayoffStrategyTool(store: store))
         registry.register(UnsupportedCapabilityTool(registry: registry))
     }
 
     // MARK: - Ciclo de Execução Multi-Turno
 
-    /// Executa o ciclo completo de um turno conversacional:
-    /// 1. Adiciona a mensagem do usuário
-    /// 2. Aplica janela deslizante no histórico
-    /// 3. Avalia ferramentas determinísticas necessárias (ou detecta chamada estruturada)
-    /// 4. Executa a tool nativa e appenda o resultado no histórico com role `.tool`
-    /// 5. Gera a resposta final em Markdown e sugestões de follow-up
-    public func processTurn(
+    public struct TurnOutput: Sendable {
+        public let responseMarkdown: String
+        public let thinkingContent: String?
+        public let executedSteps: [String]
+        public let followUps: [String]
+        public let shouldClose: Bool
+        public let engineUsed: String
+    }
+
+    /// Versão completa com suporte a Thinking Mode e Streaming em tempo real
+    public func processTurnWithThinking(
         userPrompt: String,
         store: FinancialDataStore,
         modelLabel: String,
-        onStepUpdate: ((String) -> Void)? = nil
-    ) async -> (responseMarkdown: String, executedSteps: [String], followUps: [String], shouldClose: Bool) {
+        isThinkingEnabled: Bool,
+        onStepUpdate: ((String) -> Void)? = nil,
+        onThinkingUpdate: ((String) -> Void)? = nil,
+        onContentUpdate: ((String) -> Void)? = nil
+    ) async -> TurnOutput {
         registerStandardTools(for: store)
 
         var executedSteps: [String] = []
@@ -48,21 +62,398 @@ public final class AIChatOrchestrator: ObservableObject {
         }
 
         let cleanPrompt = userPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        logStep("💬 Orquestrador: Processando turno multi-turno para '\(cleanPrompt.prefix(45))...'")
+        logStep("💬 Orquestrador: Analisando solicitação '\(cleanPrompt.prefix(50))\(cleanPrompt.count > 50 ? "..." : "")'")
 
-        // Garante System Prompt com documentação de Tools
-        ensureSystemPromptWithTools(store: store)
+        // 1. Verifica encerramento educado imediato
+        if isPoliteClosingIntent(cleanPrompt) {
+            let goodbye = """
+            Por nada! Fico à disposição sempre que precisar analisar seus números, simular amortizações ou planejar seu fluxo de caixa. Conversa encerrada com sucesso.
+            """
+            return TurnOutput(
+                responseMarkdown: goodbye,
+                thinkingContent: nil,
+                executedSteps: executedSteps,
+                followUps: [],
+                shouldClose: true,
+                engineUsed: modelLabel
+            )
+        }
 
-        // 1. Aplica política de janela deslizante (Sliding Window) para modelos locais GGUF
+        // 2. Determina se há backend neural configurado no store (ou se estamos em teste/fallback determinístico)
+        let hasConfiguredAI = store.hasInstalledLLMModel || !store.llmConfig.localEndpointURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let backend = LocalLLMRuntime.shared.resolveActiveBackend(for: store)
+
+        if !forceDeterministicFallbackForTesting,
+           hasConfiguredAI,
+           case .deterministicFallback = backend {
+            // Nenhum modelo nem Apple Intelligence disponível mesmo após tentativa
+            logStep("⚠️ Nenhuma runtime neural local ativa; utilizando motor determinístico.")
+        }
+
+        if !forceDeterministicFallbackForTesting, hasConfiguredAI {
+            if case .deterministicFallback = backend {
+                // cai para determinístico abaixo
+            } else {
+                do {
+                    return try await runNeuralReActLoop(
+                        userPrompt: cleanPrompt,
+                        store: store,
+                        backend: backend,
+                        isThinkingEnabled: isThinkingEnabled,
+                        initialSteps: executedSteps,
+                        logStep: logStep,
+                        onStepUpdate: onStepUpdate,
+                        onThinkingUpdate: onThinkingUpdate,
+                        onContentUpdate: onContentUpdate
+                    )
+                } catch is CancellationError {
+                    return TurnOutput(
+                        responseMarkdown: "_Geração interrompida pelo usuário._",
+                        thinkingContent: nil,
+                        executedSteps: executedSteps,
+                        followUps: ["Continuar análise", "Fazer outra pergunta"],
+                        shouldClose: false,
+                        engineUsed: backend.displayBadge
+                    )
+                } catch {
+                    logStep("⚠️ Falha na inferência neural (\(error.localizedDescription)); acionando contingência determinística.")
+                }
+            }
+        }
+
+        // 3. Fallback determinístico (também usado em testes unitários sem modelo instalado)
+        let det = await runDeterministicFallback(
+            userPrompt: cleanPrompt,
+            store: store,
+            modelLabel: modelLabel,
+            initialSteps: executedSteps,
+            logStep: logStep,
+            onStepUpdate: onStepUpdate
+        )
+        return TurnOutput(
+            responseMarkdown: det.responseMarkdown,
+            thinkingContent: isThinkingEnabled ? "Modo determinístico local acionado (sem runtime neural carregada)." : nil,
+            executedSteps: det.executedSteps,
+            followUps: det.followUps,
+            shouldClose: det.shouldClose,
+            engineUsed: modelLabel
+        )
+    }
+
+    /// Compatibilidade retroativa com assinatura anterior (mantém testes unitários 100% compatíveis)
+    public func processTurn(
+        userPrompt: String,
+        store: FinancialDataStore,
+        modelLabel: String,
+        onStepUpdate: ((String) -> Void)? = nil
+    ) async -> (responseMarkdown: String, executedSteps: [String], followUps: [String], shouldClose: Bool) {
+        let out = await processTurnWithThinking(
+            userPrompt: userPrompt,
+            store: store,
+            modelLabel: modelLabel,
+            isThinkingEnabled: store.llmConfig.isThinkingModeEnabled,
+            onStepUpdate: onStepUpdate
+        )
+        return (out.responseMarkdown, out.executedSteps, out.followUps, out.shouldClose)
+    }
+
+    // MARK: - Loop Agêntico ReAct Neural Real (Multi-Hop + Tools Ilimitadas + Thinking)
+
+    private func runNeuralReActLoop(
+        userPrompt: String,
+        store: FinancialDataStore,
+        backend: LocalLLMBackendKind,
+        isThinkingEnabled: Bool,
+        initialSteps: [String],
+        logStep: (String) -> Void,
+        onStepUpdate: ((String) -> Void)?,
+        onThinkingUpdate: ((String) -> Void)?,
+        onContentUpdate: ((String) -> Void)?
+    ) async throws -> TurnOutput {
+        var collectedSteps = initialSteps
+        func record(_ text: String) {
+            collectedSteps.append(text)
+            logStep(text)
+        }
+        let compactMode = !backend.supportsDeepContext
+        let toolsDoc = compactMode ? registry.generateCompactToolsDocumentation() : registry.generateToolsDocumentation()
+        let masterSystemPrompt = FinSenseBusinessKnowledge.buildMasterSystemPrompt(
+            store: store,
+            toolsDocumentation: toolsDoc,
+            isThinkingEnabled: isThinkingEnabled,
+            compactMode: compactMode
+        )
+
+        ensureSystemPrompt(masterSystemPrompt, store: store)
         applySlidingWindow(store: store)
-        logStep("🗜️ Contexto: Janela deslizante aplicada (preservando System Prompt e últimas interações)")
+        record("🧠 Motor ativo: \(backend.displayBadge) • Pensamento: \(isThinkingEnabled ? "Ativado" : "Direto")")
 
-        // 2. Extrai tool calls explicitamente emitidas ou analisa intenção determinística
-        guard let plannedCalls = planToolCalls(for: cleanPrompt, store: store, history: store.chatHistory) else {
-            // Encaminha para o motor agêntico RAG padrão quando não há ferramenta específica
-            logStep("🤖 Acionando Agentes de Síntese RAG da base local...")
+        // Aviso informativo transparente se o modelo selecionado tiver arquivo GGUF incompleto
+        if let sel = store.llmConfig.selectedModel,
+           !sel.isBuiltInAppleIntelligence,
+           !sel.hasValidGGUFBinary,
+           case .appleFoundationModels = backend {
+            record("ℹ️ Arquivo local de '\(sel.displayName)' é apenas manifesto. Usando Apple Intelligence Nativo como motor neural.")
+        }
+
+        // Constrói histórico base de mensagens para o turno
+        var loopMessages: [LLMChatCompletionMessage] = [
+            LLMChatCompletionMessage(role: "system", content: masterSystemPrompt)
+        ]
+
+        let nonSystem = store.chatHistory.filter { $0.role != .system }
+        // Evita duplicar a última mensagem se já estiver em store.chatHistory
+        let historySlice = Array(nonSystem.suffix(compactMode ? 8 : 16))
+        for msg in historySlice {
+            loopMessages.append(
+                LLMChatCompletionMessage(
+                    role: msg.role.rawValue,
+                    content: msg.content,
+                    toolCallId: msg.toolCallId,
+                    toolName: msg.toolName,
+                    toolCalls: msg.toolCalls
+                )
+            )
+        }
+        // Garante que a pergunta atual esteja no final (caso `processTurnWithThinking` seja chamado sem apendar antes)
+        if historySlice.last?.role != .user || historySlice.last?.content != userPrompt {
+            loopMessages.append(LLMChatCompletionMessage(role: "user", content: userPrompt))
+        }
+
+        var accumulatedThinkingParts: [String] = []
+        var liveThinkingAccumulator = ""
+        var executedCallSignatures: Set<String> = []
+        var usedToolsNames: [String] = []
+        var finalMarkdown = ""
+
+        for hop in 0..<maxToolExecutionHops {
+            if Task.isCancelled { throw CancellationError() }
+
+            let isLastPossibleHop = (hop == maxToolExecutionHops - 1)
+            let toolsForHop: [any AIToolProtocol] = isLastPossibleHop ? [] : registry.allTools
+            let stepPrefix = isThinkingEnabled ? "🧠 Pensando e avaliando dados" : "⚡ Processando consulta"
+            record("\(stepPrefix) (Etapa \(hop + 1))...")
+
+            // Para evitar que chamadas JSON de ferramenta vazem no streaming visual da resposta final,
+            // encaminhamos deltas de conteúdo apenas se não parecerem um bloco JSON de tool call.
+            var hopRawContentBuffer = ""
+            var suppressLiveContentStreaming = false
+
+            let llmResult = try await LocalLLMRuntime.shared.generateCompletion(
+                backend: backend,
+                messages: loopMessages,
+                tools: toolsForHop,
+                isThinkingEnabled: isThinkingEnabled,
+                contextSize: store.llmConfig.contextWindowSize,
+                modelIdForEndpoint: store.llmConfig.selectedModelId,
+                onStatus: { status in
+                    onStepUpdate?(status)
+                },
+                onThinkingDelta: { delta in
+                    liveThinkingAccumulator += delta
+                    onThinkingUpdate?(liveThinkingAccumulator)
+                },
+                onContentDelta: { delta in
+                    hopRawContentBuffer += delta
+                    let trimmedCheck = hopRawContentBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmedCheck.hasPrefix("{") || trimmedCheck.hasPrefix("```") || trimmedCheck.contains("<tool_call>") {
+                        suppressLiveContentStreaming = true
+                    }
+                    if !suppressLiveContentStreaming && !trimmedCheck.isEmpty {
+                        onContentUpdate?(hopRawContentBuffer)
+                    }
+                }
+            )
+
+            if !llmResult.thinkingText.isEmpty {
+                let header = hop > 0 ? "\n\n**[Etapa \(hop + 1) — Raciocínio após consultar ferramentas]**\n" : ""
+                accumulatedThinkingParts.append(header + llmResult.thinkingText)
+            }
+
+            // Detecta chamadas de ferramenta (nativas OpenAI OU JSON no texto)
+            var calls = llmResult.toolCalls
+            if calls.isEmpty {
+                calls = Self.parseAllToolCalls(from: llmResult.contentText)
+            }
+
+            if !calls.isEmpty && !isLastPossibleHop {
+                loopMessages.append(
+                    LLMChatCompletionMessage(
+                        role: "assistant",
+                        content: llmResult.contentText,
+                        toolCalls: calls
+                    )
+                )
+
+                var anyNewCallExecuted = false
+                for call in calls {
+                    let sig = "\(call.name)::\(call.argumentsJson)"
+                    if executedCallSignatures.contains(sig) {
+                        loopMessages.append(
+                            LLMChatCompletionMessage(
+                                role: "tool",
+                                content: "{\"status\": \"already_executed\", \"hint\": \"Esta exata chamada já foi feita. Utilize os dados recebidos acima ou chame outra ferramenta ou responda ao usuário.\"}",
+                                toolCallId: call.id,
+                                toolName: call.name
+                            )
+                        )
+                        continue
+                    }
+
+                    executedCallSignatures.insert(sig)
+                    anyNewCallExecuted = true
+                    usedToolsNames.append(call.name)
+
+                    record("🔧 Consultando banco local via `\(call.name)`...")
+                    let resultJson: String
+                    do {
+                        let outputDict = try await registry.execute(name: call.name, parameters: call.parsedArguments)
+                        let result = AIToolResult(toolCallId: call.id, toolName: call.name, result: outputDict)
+                        resultJson = compactToolJsonIfNeeded(result.resultJson, compactMode: compactMode)
+                        store.chatHistory.append(
+                            ChatMessage(
+                                role: .tool,
+                                content: resultJson,
+                                timestamp: Date(),
+                                modelUsed: backend.displayBadge,
+                                toolName: call.name,
+                                toolCallId: call.id
+                            )
+                        )
+                        record("✅ `\(call.name)` concluída com dados reais.")
+                    } catch {
+                        resultJson = "{\"error\": \"\(error.localizedDescription.replacingOccurrences(of: "\"", with: "\\\""))\"}"
+                        record("⚠️ Erro em `\(call.name)`: \(error.localizedDescription)")
+                    }
+
+                    loopMessages.append(
+                        LLMChatCompletionMessage(
+                            role: "tool",
+                            content: resultJson,
+                            toolCallId: call.id,
+                            toolName: call.name
+                        )
+                    )
+                }
+
+                // Se houve apenas chamada repetida, força síntese no próximo hop
+                if !anyNewCallExecuted {
+                    loopMessages.append(
+                        LLMChatCompletionMessage(
+                            role: "user",
+                            content: "Com base nos dados já consultados acima, responda diretamente ao usuário de forma clara e completa."
+                        )
+                    )
+                }
+                continue
+            }
+
+            // Sem novas tool calls: esta é a resposta conclusiva!
+            finalMarkdown = stripResidualControlTags(from: llmResult.contentText)
+            if !finalMarkdown.isEmpty {
+                onContentUpdate?(finalMarkdown)
+            }
+            break
+        }
+
+        let finalThinking = accumulatedThinkingParts
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if finalMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            finalMarkdown = "Concluí a análise dos dados consultados, porém não recebi um texto final do modelo. Tente reformular ou perguntar novamente."
+        }
+
+        let followUps = generateSmartFollowUps(
+            prompt: userPrompt,
+            usedTools: usedToolsNames,
+            store: store
+        )
+
+        return TurnOutput(
+            responseMarkdown: finalMarkdown,
+            thinkingContent: finalThinking.isEmpty ? nil : finalThinking,
+            executedSteps: collectedSteps,
+            followUps: followUps,
+            shouldClose: false,
+            engineUsed: backend.displayBadge
+        )
+    }
+
+    private func compactToolJsonIfNeeded(_ json: String, compactMode: Bool) -> String {
+        let limit = compactMode ? 1800 : 12000
+        if json.count <= limit { return json }
+        return String(json.prefix(limit)) + "...\"_truncated_for_context\":true}"
+    }
+
+    private func stripResidualControlTags(from raw: String) -> String {
+        var text = ThinkTagStreamExtractor.splitThinkingAndContent(from: raw).content
+        // Remove possíveis wrappers <tool_call> residuais caso o modelo tenha emitido texto vazio
+        if let start = text.range(of: "<tool_call>"),
+           let end = text.range(of: "</tool_call>", range: start.upperBound..<text.endIndex) {
+            text.removeSubrange(start.lowerBound..<end.upperBound)
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func isPoliteClosingIntent(_ prompt: String) -> Bool {
+        let norm = prompt.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let exactPhrases = [
+            "obrigado, pode encerrar", "pode encerrar", "encerrar conversa",
+            "obrigado, tchau", "valeu, pode fechar", "tchau", "encerrar chat"
+        ]
+        return exactPhrases.contains { norm == $0 || norm.hasSuffix($0) }
+    }
+
+    private func generateSmartFollowUps(
+        prompt: String,
+        usedTools: [String],
+        store: FinancialDataStore
+    ) -> [String] {
+        var suggestions: [String] = []
+        if usedTools.contains("simulate_amortization") || usedTools.contains("get_loan_projection_and_plan") || usedTools.contains("get_contract_details") {
+            suggestions.append("Como esse valor afeta minha sobra líquida e saldo do mês?")
+            suggestions.append("Onde posso cortar gastos para acelerar ainda mais a quitação?")
+        } else if usedTools.contains("analyze_debt_payoff_strategy") {
+            suggestions.append("Quais despesas posso reduzir este mês para quitar mais rápido?")
+            suggestions.append("Tenho reserva suficiente em investimentos para negociar à vista?")
+        } else if usedTools.contains("get_monthly_cash_flow") || usedTools.contains("aggregate_transactions") {
+            suggestions.append("Faça uma projeção dos meus próximos 12 meses")
+            suggestions.append("Como estão meus contratos e dívidas em relação a esse saldo?")
+        } else {
+            if let firstContract = store.contracts.first(where: { !$0.isSettled }) {
+                suggestions.append("Analise a projeção e planejamento do contrato \"\(firstContract.name)\"")
+            }
+            suggestions.append("Qual o resumo do meu saldo e despesas neste mês?")
+        }
+        suggestions.append("Obrigado, pode encerrar")
+        return Array(suggestions.prefix(3))
+    }
+
+    // MARK: - Fallback Determinístico (Testes & Execução Headless sem LLM)
+
+    private func runDeterministicFallback(
+        userPrompt: String,
+        store: FinancialDataStore,
+        modelLabel: String,
+        initialSteps: [String],
+        logStep: (String) -> Void,
+        onStepUpdate: ((String) -> Void)?
+    ) async -> (responseMarkdown: String, executedSteps: [String], followUps: [String], shouldClose: Bool) {
+        var collectedSteps = initialSteps
+        func record(_ text: String) {
+            collectedSteps.append(text)
+            logStep(text)
+        }
+        ensureSystemPromptWithTools(store: store)
+        applySlidingWindow(store: store)
+        record("🗜️ Contexto: Janela deslizante aplicada (preservando System Prompt e últimas interações)")
+
+        guard let plannedCalls = planToolCalls(for: userPrompt, store: store, history: store.chatHistory) else {
+            record("🤖 Acionando Agentes de Síntese RAG da base local...")
             let agentOutput = AgenticFinancialEngine.runAgentLoop(
-                prompt: cleanPrompt,
+                prompt: userPrompt,
                 store: store,
                 modelLabel: modelLabel,
                 onStepUpdate: onStepUpdate
@@ -78,14 +469,13 @@ public final class AIChatOrchestrator: ObservableObject {
         var toolResults: [AIToolResult] = []
 
         for call in plannedCalls {
-            logStep("🔧 Invocando ferramenta nativa: `\(call.name)`...")
+            record("🔧 Invocando ferramenta nativa: `\(call.name)`...")
             do {
                 let params = call.parsedArguments
                 let outputDict = try await registry.execute(name: call.name, parameters: params)
                 let result = AIToolResult(toolCallId: call.id, toolName: call.name, result: outputDict)
                 toolResults.append(result)
 
-                // Salva a mensagem no histórico como role .tool
                 let toolMsg = ChatMessage(
                     role: .tool,
                     content: result.resultJson,
@@ -95,7 +485,7 @@ public final class AIChatOrchestrator: ObservableObject {
                     toolCallId: call.id
                 )
                 store.chatHistory.append(toolMsg)
-                logStep("✅ Ferramenta `\(call.name)` concluída com sucesso.")
+                record("✅ Ferramenta `\(call.name)` concluída com sucesso.")
             } catch {
                 let errResult = AIToolResult(toolCallId: call.id, toolName: call.name, result: [:], error: error.localizedDescription)
                 toolResults.append(errResult)
@@ -108,14 +498,13 @@ public final class AIChatOrchestrator: ObservableObject {
                     toolCallId: call.id
                 )
                 store.chatHistory.append(toolMsg)
-                logStep("⚠️ Erro na execução de `\(call.name)`: \(error.localizedDescription)")
+                record("⚠️ Erro na execução de `\(call.name)`: \(error.localizedDescription)")
             }
         }
 
-        // 3. Sintetiza a resposta analítica conclusiva utilizando os dados das ferramentas e o histórico
-        logStep("✍️ Orquestrador: Sintetizando resposta analítica final orientada aos dados determinísticos...")
+        record("✍️ Orquestrador: Sintetizando resposta analítica final orientada aos dados determinísticos...")
         let finalSynthesis = synthesizeAssistantResponse(
-            prompt: cleanPrompt,
+            prompt: userPrompt,
             toolResults: toolResults,
             store: store,
             history: store.chatHistory
@@ -123,13 +512,13 @@ public final class AIChatOrchestrator: ObservableObject {
 
         return (
             finalSynthesis.markdown,
-            executedSteps,
+            collectedSteps,
             finalSynthesis.followUps,
             finalSynthesis.shouldClose
         )
     }
 
-    // MARK: - Planejamento e Roteamento de Ferramentas (Agent-First)
+    // MARK: - Planejamento e Roteamento Determinístico de Fallback
 
     private func planToolCalls(
         for prompt: String,
@@ -138,12 +527,10 @@ public final class AIChatOrchestrator: ObservableObject {
     ) -> [AIToolCall]? {
         let norm = prompt.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
 
-        // A. Se o próprio prompt contém JSON de tool_call explícito (ex: de teste ou gerado pela LLM)
         if let explicitCall = Self.parseToolCall(from: prompt) {
             return [explicitCall]
         }
 
-        // B. Verificação de Fallback Obrigatório (unsupported_capability)
         if isUnsupportedQuery(norm: norm) {
             let (requested, reason, reqData) = resolveUnsupportedCapabilityDetails(norm: norm)
             let args: [String: Any] = [
@@ -155,13 +542,11 @@ public final class AIChatOrchestrator: ObservableObject {
             return [AIToolCall(name: "unsupported_capability", argumentsJson: argsJson)]
         }
 
-        // C. Multi-Turn Anaphoric Continuity ("no plano onde amortizo 2 mil...", "como consigo esse valor?", "e no plano 3?")
         if isMultiTurnBudgetOptimizationFollowUp(norm: norm, history: history) {
             let targetAmount = extractTargetAmount(from: norm) ?? extractTargetAmountFromHistory(history: history) ?? 2000.0
             var calls: [AIToolCall] = []
 
-            let cashFlowArgs: [String: Any] = [:]
-            let cashFlowJson = (try? String(data: JSONSerialization.data(withJSONObject: cashFlowArgs), encoding: .utf8)) ?? "{}"
+            let cashFlowJson = "{}"
             calls.append(AIToolCall(name: "get_monthly_cash_flow", argumentsJson: cashFlowJson))
 
             let discArgs: [String: Any] = ["targetExtraPayment": targetAmount]
@@ -171,65 +556,109 @@ public final class AIChatOrchestrator: ObservableObject {
             return calls
         }
 
-        // D. Turno 1 de Financiamento / Amortização / Quitação
-        if norm.contains("quitar") || norm.contains("amortizar") || norm.contains("plano de acao") || norm.contains("financiamento") {
-            let contractQuery = extractContractName(from: norm) ?? "caixa"
-            var calls: [AIToolCall] = []
+        // Turno de Financiamento / Empréstimo / Amortização / Quitação (dinâmico para QUALQUER contrato)
+        if norm.contains("quitar") || norm.contains("amortizar") || norm.contains("plano de acao") || norm.contains("financiamento") || norm.contains("emprestimo") {
+            let resolvedContract = matchBestContract(in: norm, store: store)
+            if let contract = resolvedContract {
+                var calls: [AIToolCall] = []
+                let detailsArgs: [String: Any] = [
+                    "contractId": contract.id.uuidString,
+                    "nameOrQuery": contract.name,
+                    "kind": contract.kind.rawValue
+                ]
+                let detailsJson = (try? String(data: JSONSerialization.data(withJSONObject: detailsArgs), encoding: .utf8)) ?? "{}"
+                calls.append(AIToolCall(name: "get_contract_details", argumentsJson: detailsJson))
 
-            let detailsArgs: [String: Any] = [
-                "nameOrQuery": contractQuery,
-                "kind": "financing"
-            ]
-            let detailsJson = (try? String(data: JSONSerialization.data(withJSONObject: detailsArgs), encoding: .utf8)) ?? "{}"
-            calls.append(AIToolCall(name: "get_contract_details", argumentsJson: detailsJson))
+                for val in [500.0, 1000.0, 2000.0] {
+                    let simArgs: [String: Any] = [
+                        "contractId": contract.id.uuidString,
+                        "nameOrQuery": contract.name,
+                        "extraPayment": val,
+                        "mode": "reduce_term"
+                    ]
+                    let simJson = (try? String(data: JSONSerialization.data(withJSONObject: simArgs), encoding: .utf8)) ?? "{}"
+                    calls.append(AIToolCall(name: "simulate_amortization", argumentsJson: simJson))
+                }
+                return calls
+            } else {
+                // Fallback quando há nome explícito na base de teste ou consulta genérica
+                let contractQuery = extractContractName(from: norm) ?? ""
+                if !contractQuery.isEmpty {
+                    var calls: [AIToolCall] = []
+                    let detailsArgs: [String: Any] = ["nameOrQuery": contractQuery, "kind": "any"]
+                    let detailsJson = (try? String(data: JSONSerialization.data(withJSONObject: detailsArgs), encoding: .utf8)) ?? "{}"
+                    calls.append(AIToolCall(name: "get_contract_details", argumentsJson: detailsJson))
 
-            // Cenário 1: 500
-            let sim1Args: [String: Any] = ["nameOrQuery": contractQuery, "extraPayment": 500.0, "mode": "reduce_term"]
-            let sim1Json = (try? String(data: JSONSerialization.data(withJSONObject: sim1Args), encoding: .utf8)) ?? "{}"
-            calls.append(AIToolCall(name: "simulate_amortization", argumentsJson: sim1Json))
-
-            // Cenário 2: 1000
-            let sim2Args: [String: Any] = ["nameOrQuery": contractQuery, "extraPayment": 1000.0, "mode": "reduce_term"]
-            let sim2Json = (try? String(data: JSONSerialization.data(withJSONObject: sim2Args), encoding: .utf8)) ?? "{}"
-            calls.append(AIToolCall(name: "simulate_amortization", argumentsJson: sim2Json))
-
-            // Cenário 3: 2000
-            let sim3Args: [String: Any] = ["nameOrQuery": contractQuery, "extraPayment": 2000.0, "mode": "reduce_term"]
-            let sim3Json = (try? String(data: JSONSerialization.data(withJSONObject: sim3Args), encoding: .utf8)) ?? "{}"
-            calls.append(AIToolCall(name: "simulate_amortization", argumentsJson: sim3Json))
-
-            return calls
+                    for val in [500.0, 1000.0, 2000.0] {
+                        let simArgs: [String: Any] = ["nameOrQuery": contractQuery, "extraPayment": val, "mode": "reduce_term"]
+                        let simJson = (try? String(data: JSONSerialization.data(withJSONObject: simArgs), encoding: .utf8)) ?? "{}"
+                        calls.append(AIToolCall(name: "simulate_amortization", argumentsJson: simJson))
+                    }
+                    return calls
+                }
+            }
         }
 
-        // E. Projeções de Caixa / Débito Futuro
         if norm.contains("projecao") || norm.contains("quando entrarei em debito") || norm.contains("futuro") {
             let projArgs: [String: Any] = ["numberOfMonths": 12]
             let projJson = (try? String(data: JSONSerialization.data(withJSONObject: projArgs), encoding: .utf8)) ?? "{}"
             return [AIToolCall(name: "get_projected_cash_flow_range", argumentsJson: projJson)]
         }
 
-        // F. Fluxo de Caixa / Ritmo de Gastos / Saldo no Fim do Mês
         if norm.contains("ritmo") || norm.contains("final do mes") || norm.contains("terei quanto") || norm.contains("saldo disponivel") {
-            let cashArgs: [String: Any] = [:]
-            let cashJson = (try? String(data: JSONSerialization.data(withJSONObject: cashArgs), encoding: .utf8)) ?? "{}"
-            return [AIToolCall(name: "get_monthly_cash_flow", argumentsJson: cashJson)]
+            return [AIToolCall(name: "get_monthly_cash_flow", argumentsJson: "{}")]
         }
 
-        // G. Tetos e Cotas
         if norm.contains("teto") || norm.contains("cota") || norm.contains("envelope") || norm.contains("lanches") || norm.contains("gasolina") {
-            let capsArgs: [String: Any] = [:]
-            let capsJson = (try? String(data: JSONSerialization.data(withJSONObject: capsArgs), encoding: .utf8)) ?? "{}"
-            return [AIToolCall(name: "get_budget_caps_status", argumentsJson: capsJson)]
+            return [AIToolCall(name: "get_budget_caps_status", argumentsJson: "{}")]
         }
 
-        // H. Transações Recentes / Últimos Lançamentos
         if (norm.contains("ultimas") && norm.contains("transacoes")) || norm.contains("gastos recentes") {
             let txArgs: [String: Any] = ["limit": 10]
             let txJson = (try? String(data: JSONSerialization.data(withJSONObject: txArgs), encoding: .utf8)) ?? "{}"
             return [AIToolCall(name: "query_transactions", argumentsJson: txJson)]
         }
 
-        // I. Consultas gerais ou de encerramento são delegadas ao motor de síntese RAG
+        return nil
+    }
+
+    private func matchBestContract(in normPrompt: String, store: FinancialDataStore) -> CreditContract? {
+        let active = store.contracts.filter { !$0.isSettled }
+        guard !active.isEmpty else { return nil }
+
+        // 1. Correspondência direta pelo nome completo normalizado do contrato
+        if let exact = active.first(where: {
+            let cNorm = $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            return !cNorm.isEmpty && normPrompt.contains(cNorm)
+        }) {
+            return exact
+        }
+
+        // 2. Pontuação por tokens
+        var best: CreditContract?
+        var bestScore = 0
+        for c in active {
+            let cNorm = "\(c.name) \(c.subtypeDisplayName) \(c.contractNumber ?? "")"
+                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            let tokens = cNorm.split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count >= 3 }
+            let score = tokens.filter { normPrompt.contains($0) }.count
+            if score > bestScore {
+                bestScore = score
+                best = c
+            }
+        }
+        if bestScore > 0 { return best }
+
+        // 3. Se só há 1 contrato do tipo citado, retorna ele
+        if normPrompt.contains("emprestimo") {
+            let loans = active.filter { $0.kind == .loan }
+            if loans.count == 1 { return loans.first }
+        }
+        if normPrompt.contains("financiamento") {
+            let fins = active.filter { $0.kind == .financing }
+            if fins.count == 1 { return fins.first }
+        }
+        if active.count == 1 { return active.first }
         return nil
     }
 
@@ -274,12 +703,10 @@ public final class AIChatOrchestrator: ObservableObject {
     }
 
     private func isMultiTurnBudgetOptimizationFollowUp(norm: String, history: [ChatMessage]) -> Bool {
-        // Verifica se a pergunta expressa "como consigo esse valor?", "onde cortar?", "no plano onde amortizo..."
         let triggers = ["como consigo", "onde cortar", "como arranjar", "no plano", "plano 3", "2 mil", "como pagar esse valor", "como economizar"]
         let hasTrigger = triggers.contains { norm.contains($0) }
         guard hasTrigger else { return false }
 
-        // Verifica se no histórico há discussão sobre plano de amortização
         let recentHistoryText = history.suffix(6).map(\.content).joined(separator: " ").lowercased()
         return recentHistoryText.contains("plano de ação") ||
                recentHistoryText.contains("cenário") ||
@@ -289,18 +716,10 @@ public final class AIChatOrchestrator: ObservableObject {
 
     private func extractTargetAmount(from text: String) -> Double? {
         let norm = text.lowercased()
-        if norm.contains("2 mil") || norm.contains("2.000") || norm.contains("2000") {
-            return 2000.0
-        }
-        if norm.contains("1 mil") || norm.contains("1.000") || norm.contains("1000") {
-            return 1000.0
-        }
-        if norm.contains("500") {
-            return 500.0
-        }
-        if norm.contains("3 mil") || norm.contains("3.000") || norm.contains("3000") {
-            return 3000.0
-        }
+        if norm.contains("2 mil") || norm.contains("2.000") || norm.contains("2000") { return 2000.0 }
+        if norm.contains("1 mil") || norm.contains("1.000") || norm.contains("1000") { return 1000.0 }
+        if norm.contains("500") { return 500.0 }
+        if norm.contains("3 mil") || norm.contains("3.000") || norm.contains("3000") { return 3000.0 }
         return nil
     }
 
@@ -331,7 +750,6 @@ public final class AIChatOrchestrator: ObservableObject {
         store: FinancialDataStore,
         history: [ChatMessage]
     ) -> (markdown: String, followUps: [String], shouldClose: Bool) {
-        // Caso de Fallback: unsupported_capability
         if let fallbackResult = toolResults.first(where: { $0.toolName == "unsupported_capability" }) {
             let req = (fallbackResult.result["requestedCapability"] as? String) ?? "Ação solicitada"
             let reason = (fallbackResult.result["reason"] as? String) ?? "Capacidade não suportada no momento."
@@ -363,14 +781,14 @@ public final class AIChatOrchestrator: ObservableObject {
             )
         }
 
-        // Caso de Amortização / Quitação (Turno 1)
         if let contractTool = toolResults.first(where: { $0.toolName == "get_contract_details" }),
            toolResults.contains(where: { $0.toolName == "simulate_amortization" }) {
             let contractsList = (contractTool.result["contracts"] as? [[String: Any]]) ?? []
-            let cName = (contractsList.first?["name"] as? String) ?? "Financiamento Imobiliário"
+            let cName = (contractsList.first?["name"] as? String) ?? "Contrato de Crédito"
             let cBalance = (contractsList.first?["outstandingBalance"] as? Double) ?? 0.0
             let cRemaining = (contractsList.first?["remainingInstallments"] as? Int) ?? 0
             let cInstallment = (contractsList.first?["installmentAmount"] as? Double) ?? 0.0
+            let cKind = (contractsList.first?["kind"] as? String) ?? "financing"
 
             let allSims = toolResults.filter { $0.toolName == "simulate_amortization" }
             let sim500 = allSims.first(where: { (($0.result["grossPayment"] as? Double) ?? 0) == 500.0 })?.result
@@ -386,20 +804,21 @@ public final class AIChatOrchestrator: ObservableObject {
                 return "• **Cenário (+ \(BRLFormatters.currency(val))/mês):** Elimina **\(elim) parcelas** (\(savedTime) poupados), reduzindo o prazo restante para **\(newRem) meses** e economizando **\(BRLFormatters.currency(saved))** em juros futuros."
             }
 
+            let systemLabel = cKind == "loan" ? "Empréstimo" : "Tabela Price"
             let md = """
             ### Plano de Ação para Quitação no Menor Prazo: \(cName)
 
             Analisando os dados reais do seu contrato com **Saldo Devedor Atual de \(BRLFormatters.currency(cBalance))** (\(cRemaining) parcelas restantes de \(BRLFormatters.currency(cInstallment))):
 
-            #### 🎯 Simulação de Prazo e Economia de Juros (Tabela Price):
+            #### 🎯 Simulação de Prazo e Economia de Juros (\(systemLabel)):
             \(descSim(sim500, val: 500.0))
             \(descSim(sim1000, val: 1000.0))
             \(descSim(sim2000, val: 2000.0))
 
             #### ⚡ Efeito Bola de Neve:
-            Ao amortizar com redução de prazo, 100% do aporte extra abate o saldo devedor puro, desintegrando os juros compostos que seriam cobrados pelos próximos anos.
+            Ao amortizar com redução de prazo, 100% do aporte extra abate o saldo devedor puro, desintegrando os juros compostos que seriam cobrados pelos próximos meses e anos.
 
-            No cenário de maior aceleração (+R$ 2.000,00/mês), você economiza dezenas de milhares de reais em juros bancários.
+            No cenário de maior aceleração (+R$ 2.000,00/mês), você reduz drasticamente o prazo e os encargos bancários.
             """
 
             return (
@@ -413,7 +832,6 @@ public final class AIChatOrchestrator: ObservableObject {
             )
         }
 
-        // Caso de Otimização de Gastos Discricionários (Turno 2 - "como consigo esse valor?")
         if let discTool = toolResults.first(where: { $0.toolName == "analyze_discretionary_spending" }) {
             let discRes = discTool.result
             let targetAnalysis = (discRes["targetPaymentAnalysis"] as? [String: Any]) ?? [:]
@@ -464,7 +882,6 @@ public final class AIChatOrchestrator: ObservableObject {
             )
         }
 
-        // Caso de Projeção de Caixa
         if let projTool = toolResults.first(where: { $0.toolName == "get_projected_cash_flow_range" }) {
             let res = projTool.result
             let hasRisk = (res["hasRunwayRisk"] as? Bool) ?? false
@@ -501,7 +918,6 @@ public final class AIChatOrchestrator: ObservableObject {
             )
         }
 
-        // Caso de Fluxo de Caixa Mensal Padrão
         if let cashTool = toolResults.first(where: { $0.toolName == "get_monthly_cash_flow" }) {
             let res = cashTool.result
             let mRef = (res["monthReference"] as? String) ?? ""
@@ -533,7 +949,6 @@ public final class AIChatOrchestrator: ObservableObject {
             )
         }
 
-        // Caso padrão amigável
         return (
             "Consulta financeira processada com base nos dados determinísticos locais do seu FinSense.",
             ["Qual o saldo disponível nas minhas contas?", "Como estão meus contratos?", "Obrigado, pode encerrar"],
@@ -546,14 +961,11 @@ public final class AIChatOrchestrator: ObservableObject {
     public func applySlidingWindow(store: FinancialDataStore) {
         guard store.chatHistory.count > maxSlidingWindowMessages else { return }
 
-        // Preserva a mensagem de sistema na posição 0
         let systemMessage = store.chatHistory.first(where: { $0.role == .system })
         let nonSystemMessages = store.chatHistory.filter { $0.role != .system }
 
-        // Mantém as últimas N mensagens não-sistema
         var kept = Array(nonSystemMessages.suffix(maxSlidingWindowMessages))
 
-        // Trunca saídas de tools antigas muito extensas (preservando apenas as últimas 2 intactas)
         let limit = max(0, kept.count - 2)
         for i in 0..<limit {
             if kept[i].role == .tool && kept[i].content.count > 300 {
@@ -569,6 +981,16 @@ public final class AIChatOrchestrator: ObservableObject {
         store.chatHistory = newHistory
     }
 
+    private func ensureSystemPrompt(_ content: String, store: FinancialDataStore) {
+        if store.chatHistory.isEmpty {
+            store.chatHistory.append(ChatMessage(role: .system, content: content))
+        } else if store.chatHistory.first?.role != .system {
+            store.chatHistory.insert(ChatMessage(role: .system, content: content), at: 0)
+        } else {
+            store.chatHistory[0] = ChatMessage(role: .system, content: content)
+        }
+    }
+
     private func ensureSystemPromptWithTools(store: FinancialDataStore) {
         let toolsDoc = registry.generateToolsDocumentation()
         let fullSystemPrompt = """
@@ -578,50 +1000,63 @@ public final class AIChatOrchestrator: ObservableObject {
         \(toolsDoc)
         ================================================================================
         """
-
-        if store.chatHistory.isEmpty {
-            store.chatHistory.append(ChatMessage(role: .system, content: fullSystemPrompt))
-        } else if store.chatHistory.first?.role != .system {
-            store.chatHistory.insert(ChatMessage(role: .system, content: fullSystemPrompt), at: 0)
-        } else {
-            store.chatHistory[0] = ChatMessage(role: .system, content: fullSystemPrompt)
-        }
+        ensureSystemPrompt(fullSystemPrompt, store: store)
     }
 
     // MARK: - Parsing Resiliente de Chamadas de Ferramenta
 
     public static func parseToolCall(from rawText: String) -> AIToolCall? {
-        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        parseAllToolCalls(from: rawText).first
+    }
 
-        // 1. Bloco de código markdown ```json ... ```
-        if let jsonRange = trimmed.range(of: "```json"),
-           let endRange = trimmed[jsonRange.upperBound...].range(of: "```") {
+    public static func parseAllToolCalls(from rawText: String) -> [AIToolCall] {
+        let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var found: [AIToolCall] = []
+
+        // 1. Tags <tool_call> ... </tool_call> (padrão Qwen / Hermes / DeepSeek)
+        var searchStart = trimmed.startIndex
+        while let openTag = trimmed.range(of: "<tool_call>", range: searchStart..<trimmed.endIndex),
+              let closeTag = trimmed.range(of: "</tool_call>", range: openTag.upperBound..<trimmed.endIndex) {
+            let inner = String(trimmed[openTag.upperBound..<closeTag.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let call = parseJsonToolCall(inner) {
+                found.append(call)
+            }
+            searchStart = closeTag.upperBound
+        }
+        if !found.isEmpty { return found }
+
+        // 2. Bloco ```json ... ```
+        var blockStart = trimmed.startIndex
+        while let jsonRange = trimmed.range(of: "```json", range: blockStart..<trimmed.endIndex),
+              let endRange = trimmed.range(of: "```", range: jsonRange.upperBound..<trimmed.endIndex) {
             let jsonString = String(trimmed[jsonRange.upperBound..<endRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
             if let call = parseJsonToolCall(jsonString) {
-                return call
+                found.append(call)
             }
+            blockStart = endRange.upperBound
         }
+        if !found.isEmpty { return found }
 
-        // 2. Bloco genérico de código ``` ... ```
+        // 3. Bloco genérico ``` ... ```
         if let codeRange = trimmed.range(of: "```"),
            let endRange = trimmed[codeRange.upperBound...].range(of: "```") {
             let codeString = String(trimmed[codeRange.upperBound..<endRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
             if let call = parseJsonToolCall(codeString) {
-                return call
+                return [call]
             }
         }
 
-        // 3. Objeto JSON direto no texto { "tool": "..." } ou { "name": "..." }
+        // 4. Objeto JSON direto no texto { "tool": "..." } ou { "name": "..." }
         if let firstBrace = trimmed.firstIndex(of: "{"),
            let lastBrace = trimmed.lastIndex(of: "}"),
            firstBrace <= lastBrace {
             let jsonSubstring = String(trimmed[firstBrace...lastBrace])
             if let call = parseJsonToolCall(jsonSubstring) {
-                return call
+                return [call]
             }
         }
 
-        return nil
+        return []
     }
 
     private static func parseJsonToolCall(_ jsonString: String) -> AIToolCall? {

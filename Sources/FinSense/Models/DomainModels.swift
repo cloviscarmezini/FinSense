@@ -1916,13 +1916,15 @@ public struct AmortizationPlan: Identifiable, Codable, Hashable {
 // MARK: - Local LLM Configuration & Chat
 
 public struct LocalLLMModelInfo: Identifiable, Codable, Hashable {
-    public var id: String // e.g., "Qwen/Qwen2.5-3B-Instruct-GGUF"
+    public var id: String // e.g., "Qwen/Qwen3-8B-GGUF"
     public var displayName: String
     public var fileName: String
     public var localPath: String
     public var sizeBytes: Int64
     public var downloadedAt: Date
     public var quantization: String
+
+    public static let builtInAppleIntelligenceId = "apple/foundation-models-on-device"
 
     public init(
         id: String,
@@ -1942,8 +1944,36 @@ public struct LocalLLMModelInfo: Identifiable, Codable, Hashable {
         self.quantization = quantization
     }
 
+    public var isBuiltInAppleIntelligence: Bool {
+        id == Self.builtInAppleIntelligenceId
+    }
+
+    /// Verifica se o arquivo local é um binário GGUF válido (>10 MB e cabeçalho mágico GGUF)
+    public var hasValidGGUFBinary: Bool {
+        if isBuiltInAppleIntelligence { return false }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: localPath),
+              let attrs = try? fm.attributesOfItem(atPath: localPath),
+              let actualSize = attrs[.size] as? Int64,
+              actualSize > 10_000_000,
+              let handle = FileHandle(forReadingAtPath: localPath) else {
+            return false
+        }
+        defer { try? handle.close() }
+        let header = handle.readData(ofLength: 4)
+        return String(data: header, encoding: .ascii) == "GGUF"
+    }
+
     public var formattedSize: String {
-        ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
+        if isBuiltInAppleIntelligence {
+            return "Integrado (macOS)"
+        }
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: localPath),
+           let actualSize = attrs[.size] as? Int64,
+           actualSize > 0 {
+            return ByteCountFormatter.string(fromByteCount: actualSize, countStyle: .file)
+        }
+        return ByteCountFormatter.string(fromByteCount: sizeBytes, countStyle: .file)
     }
 }
 
@@ -1952,17 +1982,42 @@ public struct LLMConfiguration: Codable, Hashable {
     public var selectedModelId: String?
     public var downloadedModels: [LocalLLMModelInfo]
     public var localEndpointURL: String
+    public var isThinkingModeEnabled: Bool
+    public var contextWindowSize: Int
+
+    enum CodingKeys: String, CodingKey {
+        case huggingFaceToken
+        case selectedModelId
+        case downloadedModels
+        case localEndpointURL
+        case isThinkingModeEnabled
+        case contextWindowSize
+    }
 
     public init(
         huggingFaceToken: String = "",
         selectedModelId: String? = nil,
         downloadedModels: [LocalLLMModelInfo] = [],
-        localEndpointURL: String = ""
+        localEndpointURL: String = "",
+        isThinkingModeEnabled: Bool = true,
+        contextWindowSize: Int = 16384
     ) {
         self.huggingFaceToken = huggingFaceToken
         self.selectedModelId = selectedModelId
         self.downloadedModels = downloadedModels
         self.localEndpointURL = localEndpointURL
+        self.isThinkingModeEnabled = isThinkingModeEnabled
+        self.contextWindowSize = contextWindowSize
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.huggingFaceToken = try container.decodeIfPresent(String.self, forKey: .huggingFaceToken) ?? ""
+        self.selectedModelId = try container.decodeIfPresent(String.self, forKey: .selectedModelId)
+        self.downloadedModels = try container.decodeIfPresent([LocalLLMModelInfo].self, forKey: .downloadedModels) ?? []
+        self.localEndpointURL = try container.decodeIfPresent(String.self, forKey: .localEndpointURL) ?? ""
+        self.isThinkingModeEnabled = try container.decodeIfPresent(Bool.self, forKey: .isThinkingModeEnabled) ?? true
+        self.contextWindowSize = try container.decodeIfPresent(Int.self, forKey: .contextWindowSize) ?? 16384
     }
 
     public var selectedModel: LocalLLMModelInfo? {
@@ -1990,6 +2045,8 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
     public var toolName: String?
     public var toolCallId: String?
     public var toolCalls: [AIToolCall]?
+    public var thinkingContent: String?
+    public var thinkingDurationSeconds: Double?
 
     public init(
         id: UUID = UUID(),
@@ -2002,7 +2059,9 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
         shouldCloseChat: Bool? = nil,
         toolName: String? = nil,
         toolCallId: String? = nil,
-        toolCalls: [AIToolCall]? = nil
+        toolCalls: [AIToolCall]? = nil,
+        thinkingContent: String? = nil,
+        thinkingDurationSeconds: Double? = nil
     ) {
         self.id = id
         self.role = role
@@ -2015,6 +2074,8 @@ public struct ChatMessage: Identifiable, Codable, Hashable {
         self.toolName = toolName
         self.toolCallId = toolCallId
         self.toolCalls = toolCalls
+        self.thinkingContent = thinkingContent
+        self.thinkingDurationSeconds = thinkingDurationSeconds
     }
 }
 

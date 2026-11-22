@@ -129,4 +129,26 @@ public final class AIToolRegistry {
         3. Após receber o retorno da ferramenta (role: tool), use as informações reais fornecidas para formular sua resposta conclusiva, clara e amigável em Markdown.
         """
     }
+
+    /// Documentação compacta das ferramentas para modelos com janela de contexto reduzida (~4K tokens, ex: Apple Intelligence On-Device)
+    public func generateCompactToolsDocumentation() -> String {
+        let tools = allTools
+        guard !tools.isEmpty else { return "" }
+
+        let lines = tools.map { t -> String in
+            let props = (t.parametersSchema["properties"] as? [String: Any])?.keys.sorted().joined(separator: ", ") ?? ""
+            return "- `\(t.name)`(\(props)): \(t.description)"
+        }.joined(separator: "\n")
+
+        return """
+        FERRAMENTAS DO BANCO LOCAL (USE SEMPRE ANTES DE RESPONDER):
+        \(lines)
+
+        Para chamar uma ferramenta, responda APENAS com um bloco JSON:
+        ```json
+        {"tool": "nome_da_ferramenta", "parameters": {"chave": "valor"}}
+        ```
+        Para ações externas impossíveis (ex: B3, PIX, cripto), chame `unsupported_capability`.
+        """
+    }
 }

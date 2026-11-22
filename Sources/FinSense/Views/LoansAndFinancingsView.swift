@@ -605,7 +605,7 @@ public struct LoansAndFinancingsView: View {
 
                     Button {
                         let kindLower = contract.kind == .loan ? "empréstimo" : "financiamento"
-                        let question = "[NOVA SIMULAÇÃO DO SISTEMA] Monte um plano de ação para eu quitar meu \(kindLower) \"\(contract.name)\" no menor prazo possível"
+                        let question = "[NOVA SIMULAÇÃO DO SISTEMA] Monte um plano de ação completo para eu quitar meu \(kindLower) \"\(contract.name)\" (ID \(contract.id.uuidString)) no menor prazo possível, considerando meu saldo devedor atual, meu plano salvo se existir e minha sobra líquida real em caixa."
                         store.requireInstalledLLM(forFeature: "Simular Prazo de '\(contract.name)' com IA Local") {
                             store.isAIChatPresented = true
                             Task {

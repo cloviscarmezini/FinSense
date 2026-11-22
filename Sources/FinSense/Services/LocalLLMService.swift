@@ -9,28 +9,29 @@ public final class LocalLLMService: ObservableObject {
     @Published public var isProcessingChat: Bool = false
     @Published public var isAnalyzingStatement: Bool = false
     @Published public var currentAgentStepMessage: String = ""
+    @Published public var liveThinkingText: String = ""
+    @Published public var isThinkingPhase: Bool = false
+    @Published public var thinkingElapsedSeconds: Double = 0.0
+    @Published public var activeEngineDescription: String = ""
     @Published public var liveTypingResponseText: String = ""
     @Published public var isTypingResponse: Bool = false
     @Published public var shouldCloseChatSheet: Bool = false
 
     public static let systemPrompt: String = """
-    Você é um Agente Financeiro Pessoal de Inteligência Artificial, rodando localmente de forma privada no dispositivo do usuário. Sua missão é ser um consultor financeiro analítico, preciso e altamente contextual.
+    Você é o Super Agente Financeiro do FinSense, um consultor financeiro pessoal rodando localmente de forma privada no Mac do usuário com acesso completo ao banco de dados local.
 
     DIRETIVAS DE CONVERSAÇÃO E MEMÓRIA:
-    1. CONTINUIDADE (MULTI-TURN): O usuário fará perguntas curtas como 'E no cenário 3?', 'quanto gastei nela?', 'como pagar mais rápido?'. Você DEVE analisar o histórico do chat para entender a qual entidade (contrato, dívida, categoria, mês ou simulação) ele está se referindo. Nunca responda 'Não sei a qual cenário você se refere' se isso foi dito nas mensagens anteriores.
-    2. RESET DE CONTEXTO EXPLÍCITO: Se a última mensagem começar com '[NOVA SIMULAÇÃO DO SISTEMA]', esqueça o assunto anterior e concentre-se exclusivamente nos dados desta nova mensagem.
-    3. RESPOSTAS DIRETAS E CONCISAS: Não dê voltas. Responda exatamente o que o usuário perguntou com dados, números e clareza.
-    4. ZERO ALUCINAÇÃO: Baseie-se 100% nos dados fornecidos na tag [CONTEXTO DO BANCO DE DADOS ATUALIZADO]. Se um dado não estiver lá nem no histórico, declare que não possui essa informação.
+    1. CONTINUIDADE (MULTI-TURN): Analise o histórico para entender continuações anafóricas ('e se eu colocar 2 mil?', 'quanto gastei nisso?', 'como pagar mais rápido?') ou mudanças de assunto.
+    2. RESET DE CONTEXTO EXPLÍCITO: Se a última mensagem começar com '[NOVA SIMULAÇÃO DO SISTEMA]', foque imediatamente no contrato ou dívida mencionado nesta solicitação usando todo o contexto financeiro global.
+    3. SOLICITAR MAIS DETALHES: Se houver ambiguidade (ex: múltiplos contratos ativos ou parâmetros não informados), consulte os dados disponíveis, apresente as opções e pergunte objetivamente ao usuário.
+    4. ZERO ALUCINAÇÃO: Baseie-se 100% nos fatos obtidos das ferramentas determinísticas e do estado do banco local.
 
-    DIRETIVAS DE NEGÓCIO E VIABILIDADE (MUITO IMPORTANTE):
-    1. ANÁLISE DE CAIXA REAL: Antes de recomendar amortizações, quitações ou gastos, cruze OBRIGATORIAMENTE o valor sugerido com a 'Sobra Líquida Mensal' e o 'Saldo Disponível' informados no contexto.
-    2. NUNCA SUGIRA O IMPOSSÍVEL: Se o usuário tem Sobra Líquida de R$ 500,00, você JAMAIS pode sugerir uma parcela de amortização de R$ 1.500,00 sem alertar explicitamente de onde esse dinheiro virá (ex: cortar outras despesas ou usar reserva).
-    3. ALERTA DE RUNWAY / QUEIMA DE CAIXA: Se as despesas superam as receitas, ou se a quitação sugerida zerar a reserva de emergência, emita um aviso de risco financeiro em destaque.
+    DIRETIVAS DE NEGÓCIO E VIABILIDADE:
+    1. ANÁLISE DE CAIXA REAL: Sempre cruze recomendações com Sobra Líquida, Saldo Disponível e Cenário Ativo (Real Base vs Com Planejamento).
+    2. NUNCA SUGIRA O IMPOSSÍVEL: Alerte se um aporte sugerido exceder a sobra ou comprometer a reserva de emergência.
 
-    ESTRUTURA DA SUA RESPOSTA:
-    - Use Markdown limpo (títulos # ou ##, listas com bullets e negrito nos valores e métricas chave).
-    - Seja empático, analítico e técnico como um CFO pessoal.
-    - SEMPRE termine com exatamente UMA sugestão ou pergunta de seguimento instigante para manter a conversa fluindo.
+    ESTRUTURA DA RESPOSTA:
+    - Markdown limpo, claro, objetivo e técnico como um CFO pessoal em Português do Brasil.
     """
 
     public static func ensureSystemPromptInjected(store: FinancialDataStore) {
@@ -43,36 +44,65 @@ public final class LocalLLMService: ObservableObject {
 
     public static let suggestedModels: [(id: String, name: String, description: String, sizeEstimate: String)] = [
         (
+            id: "Qwen/Qwen3-8B-GGUF",
+            name: "Qwen 3 8B (Pensando + Ferramentas)",
+            description: "Melhor escolha para Mac M1 16GB: raciocínio profundo (<think>), domínio de português e tool calling avançado.",
+            sizeEstimate: "~5.0 GB"
+        ),
+        (
+            id: "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+            name: "Qwen 3 4B Instruct (Ágil Metal)",
+            description: "Mais rápido mantendo alta capacidade analítica e suporte total à GPU Apple Silicon.",
+            sizeEstimate: "~2.5 GB"
+        ),
+        (
+            id: "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+            name: "DeepSeek-R1 Qwen 7B (Matemática)",
+            description: "Focado em raciocínio lógico, simulações financeiras e cadeia de pensamento passo a passo.",
+            sizeEstimate: "~4.7 GB"
+        ),
+        (
             id: "Qwen/Qwen2.5-3B-Instruct-GGUF",
-            name: "Qwen 2.5 3B Instruct (GGUF)",
-            description: "Excelente em português, categorização bancária e cálculos financeiros para Apple Silicon.",
-            sizeEstimate: "~1.9 GB"
-        ),
-        (
-            id: "mlx-community/Qwen2.5-3B-Instruct-4bit",
-            name: "Qwen 2.5 3B Instruct (MLX 4-bit)",
-            description: "Otimizado para Metal / Apple Silicon no macOS.",
-            sizeEstimate: "~1.8 GB"
-        ),
-        (
-            id: "bartowski/Llama-3.2-3B-Instruct-GGUF",
-            name: "Llama 3.2 3B Instruct (GGUF)",
-            description: "Modelo rápido da Meta para análise de textos e extratos.",
-            sizeEstimate: "~2.0 GB"
-        ),
-        (
-            id: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-            name: "Qwen 2.5 1.5B Instruct (Ultra Leve)",
-            description: "Modelo compacto e veloz para Macs com menor memória livre.",
-            sizeEstimate: "~1.1 GB"
+            name: "Qwen 2.5 3B Instruct (Compacto)",
+            description: "Opção enxuta para menor consumo de memória.",
+            sizeEstimate: "~2.1 GB"
         )
     ]
 
     private var activeDownloadTask: Task<Void, Never>? = nil
+    private var activeDownloader: HFModelBinaryDownloader? = nil
+    private var activeChatTask: Task<AIChatOrchestrator.TurnOutput, Never>? = nil
 
     public init() {}
 
-    // MARK: - Hugging Face Model Download & Management
+    // MARK: - Ativação Rápida do Apple Intelligence Nativo (On-Device macOS)
+
+    public func activateBuiltInAppleIntelligence(in store: FinancialDataStore) {
+        guard LocalLLMRuntime.isAppleIntelligenceAvailable else {
+            lastErrorMessage = "Apple Intelligence não está disponível ou ativado nas Ajustes do Sistema deste Mac."
+            return
+        }
+        let info = LocalLLMModelInfo(
+            id: LocalLLMModelInfo.builtInAppleIntelligenceId,
+            displayName: "Apple Intelligence (macOS Nativo)",
+            fileName: "apple-on-device",
+            localPath: "",
+            sizeBytes: 0,
+            downloadedAt: Date(),
+            quantization: "On-Device ANE"
+        )
+        if let idx = store.llmConfig.downloadedModels.firstIndex(where: { $0.id == info.id }) {
+            store.llmConfig.downloadedModels[idx] = info
+        } else {
+            store.llmConfig.downloadedModels.append(info)
+        }
+        store.llmConfig.selectedModelId = info.id
+        store.save()
+        lastErrorMessage = nil
+        downloadStatusMessage = "Apple Intelligence nativo ativado e selecionado!"
+    }
+
+    // MARK: - Hugging Face Real GGUF Download & Management
 
     public func downloadModel(
         modelRepoId: String,
@@ -81,16 +111,15 @@ public final class LocalLLMService: ObservableObject {
     ) {
         let trimmedRepo = modelRepoId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedRepo.isEmpty else {
-            lastErrorMessage = "Informe o nome do modelo do Hugging Face (ex: Qwen/Qwen2.5-3B-Instruct-GGUF)."
+            lastErrorMessage = "Informe o repositório GGUF do Hugging Face (ex: Qwen/Qwen3-8B-GGUF)."
             return
         }
 
         lastErrorMessage = nil
         isDownloading = true
-        downloadProgress = 0.02
-        downloadStatusMessage = "Conectando ao Hugging Face Hub (\(trimmedRepo))..."
+        downloadProgress = 0.01
+        downloadStatusMessage = "Consultando arquivos no Hugging Face Hub (\(trimmedRepo))..."
 
-        // Save token immediately
         store.llmConfig.huggingFaceToken = huggingFaceToken.trimmingCharacters(in: .whitespacesAndNewlines)
         store.save()
 
@@ -101,6 +130,8 @@ public final class LocalLLMService: ObservableObject {
     }
 
     public func cancelDownload() {
+        activeDownloader?.cancel()
+        activeDownloader = nil
         activeDownloadTask?.cancel()
         isDownloading = false
         downloadProgress = 0.0
@@ -116,108 +147,153 @@ public final class LocalLLMService: ObservableObject {
         let targetDir = store.modelsDirectoryURL.appendingPathComponent(sanitizedFolder, isDirectory: true)
         try? FileManager.default.createDirectory(at: targetDir, withIntermediateDirectories: true)
 
-        // 1. Consulta metadados na API oficial do Hugging Face Hub
-        let apiURLString = "https://huggingface.co/api/models/\(repoId)"
-        var selectedFileName = "model-q4_k_m.gguf"
-        var remoteFileURL: URL? = nil
-        var estimatedBytes: Int64 = 1_950_000_000
+        let apiURLString = "https://huggingface.co/api/models/\(repoId)?blobs=true"
+        guard let apiURL = URL(string: apiURLString) else {
+            self.lastErrorMessage = "Nome de repositório inválido: '\(repoId)'."
+            self.isDownloading = false
+            return
+        }
 
-        if let apiURL = URL(string: apiURLString) {
+        var selectedFileName: String? = nil
+        var expectedSizeBytes: Int64 = 0
+
+        do {
             var request = URLRequest(url: apiURL)
-            request.timeoutInterval = 15
+            request.timeoutInterval = 20
             if !token.isEmpty {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
 
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                if let httpResp = response as? HTTPURLResponse {
-                    if httpResp.statusCode == 401 || httpResp.statusCode == 403 {
-                        self.lastErrorMessage = "Acesso negado pelo Hugging Face (HTTP \(httpResp.statusCode)). Verifique seu Token do Hugging Face."
-                        self.isDownloading = false
-                        return
-                    } else if httpResp.statusCode == 404 {
-                        self.lastErrorMessage = "Modelo '\(repoId)' não encontrado no Hugging Face Hub (HTTP 404)."
-                        self.isDownloading = false
-                        return
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let httpResp = response as? HTTPURLResponse {
+                if httpResp.statusCode == 401 || httpResp.statusCode == 403 {
+                    self.lastErrorMessage = "Acesso negado pelo Hugging Face (HTTP \(httpResp.statusCode)). Para repositórios privados/restritos, informe um Token válido."
+                    self.isDownloading = false
+                    return
+                } else if httpResp.statusCode == 404 {
+                    self.lastErrorMessage = "Modelo '\(repoId)' não encontrado no Hugging Face Hub (HTTP 404)."
+                    self.isDownloading = false
+                    return
+                }
+            }
+
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let siblings = json["siblings"] as? [[String: Any]] {
+                let ggufFiles: [(name: String, size: Int64)] = siblings.compactMap { s in
+                    guard let fname = s["rfilename"] as? String,
+                          fname.lowercased().hasSuffix(".gguf"),
+                          !fname.lowercased().contains("mmproj") else {
+                        return nil
                     }
+                    let sz = (s["size"] as? Int64) ?? (s["size"] as? NSNumber)?.int64Value ?? 0
+                    return (fname, sz)
                 }
 
-                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let siblings = json["siblings"] as? [[String: Any]] {
-                    let fileNames = siblings.compactMap { $0["rfilename"] as? String }
-                    // Prioriza arquivo GGUF Q4_K_M ou safetensors ou config
-                    if let q4 = fileNames.first(where: { $0.lowercased().contains("q4_k_m") && $0.lowercased().hasSuffix(".gguf") }) {
-                        selectedFileName = q4
-                    } else if let anyGguf = fileNames.first(where: { $0.lowercased().hasSuffix(".gguf") }) {
-                        selectedFileName = anyGguf
-                    } else if let safetensors = fileNames.first(where: { $0.lowercased().hasSuffix(".safetensors") }) {
-                        selectedFileName = safetensors
-                    } else if let configJson = fileNames.first(where: { $0 == "config.json" }) {
-                        selectedFileName = configJson
-                    }
-                    remoteFileURL = URL(string: "https://huggingface.co/\(repoId)/resolve/main/\(selectedFileName)")
+                // Prioriza arquivo GGUF único (não particionado em -00001-of-) na quantização Q4_K_M / Q5_K_M / Q4_0
+                let singleFiles = ggufFiles.filter { !$0.name.contains("-0000") }
+                let pool = singleFiles.isEmpty ? ggufFiles : singleFiles
+
+                if let q4km = pool.first(where: { $0.name.lowercased().contains("q4_k_m") && !$0.name.lowercased().contains("imatrix") }) {
+                    selectedFileName = q4km.name
+                    expectedSizeBytes = q4km.size
+                } else if let q4 = pool.first(where: { ($0.name.lowercased().contains("q4_k") || $0.name.lowercased().contains("q4_0")) && !$0.name.lowercased().contains("imatrix") }) {
+                    selectedFileName = q4.name
+                    expectedSizeBytes = q4.size
+                } else if let anyGood = pool.first(where: { !$0.name.lowercased().contains("imatrix") }) {
+                    selectedFileName = anyGood.name
+                    expectedSizeBytes = anyGood.size
                 }
-            } catch {
-                // Caso sem internet no momento ou sandbox, prosseguimos com criação do manifesto local do modelo
-                downloadStatusMessage = "Modo local/offline detectado. Preparando pacote local do modelo \(repoId)..."
             }
+        } catch {
+            self.lastErrorMessage = "Erro ao consultar Hugging Face: \(error.localizedDescription)"
+            self.isDownloading = false
+            return
         }
 
-        // 2. Baixa manifesto/configuração e pesos com atualização de progresso
-        let destinationFileURL = targetDir.appendingPathComponent(selectedFileName.replacingOccurrences(of: "/", with: "_"))
+        guard let chosenFile = selectedFileName else {
+            self.lastErrorMessage = "O repositório '\(repoId)' não possui arquivo .gguf compatível com o motor Metal (llama-server). Utilize um repositório GGUF como 'Qwen/Qwen3-8B-GGUF'."
+            self.isDownloading = false
+            return
+        }
 
+        // Baixa config.json auxiliar se existir
         if let configURL = URL(string: "https://huggingface.co/\(repoId)/resolve/main/config.json") {
             var configReq = URLRequest(url: configURL)
-            configReq.timeoutInterval = 10
+            configReq.timeoutInterval = 15
             if !token.isEmpty {
                 configReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             }
-            if let (cfgData, _) = try? await URLSession.shared.data(for: configReq) {
-                let localCfgURL = targetDir.appendingPathComponent("config.json")
-                try? cfgData.write(to: localCfgURL)
+            if let (cfgData, cfgResp) = try? await URLSession.shared.data(for: configReq),
+               let http = cfgResp as? HTTPURLResponse, http.statusCode == 200 {
+                try? cfgData.write(to: targetDir.appendingPathComponent("config.json"))
             }
         }
 
-        // Simula/executa etapas de preparação e download de tensores para UX fluida e responsiva
-        let stages: [(progress: Double, status: String)] = [
-            (0.18, "Autenticando token e validando repositório \(repoId)..."),
-            (0.38, "Baixando configuração de arquitetura e tokenizer..."),
-            (0.64, "Baixando pesos quantizados (\(selectedFileName))..."),
-            (0.86, "Verificando integridade SHA-256 e otimizando cache Metal (macOS)..."),
-            (1.00, "Modelo \(repoId) pronto para uso local!")
-        ]
-
-        for stage in stages {
-            if Task.isCancelled { return }
-            self.downloadProgress = stage.progress
-            self.downloadStatusMessage = stage.status
-            try? await Task.sleep(nanoseconds: 320_000_000)
+        let safeFileName = (chosenFile as NSString).lastPathComponent
+        let destinationFileURL = targetDir.appendingPathComponent(safeFileName)
+        guard let encodedPath = chosenFile.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let remoteFileURL = URL(string: "https://huggingface.co/\(repoId)/resolve/main/\(encodedPath)") else {
+            self.lastErrorMessage = "URL de download inválida para o arquivo '\(chosenFile)'."
+            self.isDownloading = false
+            return
         }
 
-        // Persiste metadados do modelo no diretório local
-        let manifest: [String: Any] = [
-            "repoId": repoId,
-            "fileName": selectedFileName,
-            "remoteURL": remoteFileURL?.absoluteString ?? "https://huggingface.co/\(repoId)",
-            "downloadedAt": ISO8601DateFormatter().string(from: Date()),
-            "architecture": "Transformer-Instruct-Local-macOS",
-            "quantization": selectedFileName.lowercased().contains("4bit") ? "MLX 4-bit" : "GGUF Q4_K_M"
-        ]
-        if let manifestData = try? JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted]) {
-            try? manifestData.write(to: destinationFileURL)
-            estimatedBytes = max(Int64(manifestData.count), 1_840_000_000)
+        let sizeStr = expectedSizeBytes > 0
+            ? ByteCountFormatter.string(fromByteCount: expectedSizeBytes, countStyle: .file)
+            : "vários GB"
+        self.downloadStatusMessage = "Baixando pesos reais \(safeFileName) (\(sizeStr))..."
+
+        let downloader = HFModelBinaryDownloader(destinationURL: destinationFileURL)
+        self.activeDownloader = downloader
+
+        do {
+            _ = try await downloader.download(from: remoteFileURL, token: token) { [weak self] written, total in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isDownloading else { return }
+                    let effectiveTotal = total > 0 ? total : expectedSizeBytes
+                    if effectiveTotal > 0 {
+                        let pct = min(0.99, Double(written) / Double(effectiveTotal))
+                        self.downloadProgress = max(0.02, pct)
+                        let wStr = ByteCountFormatter.string(fromByteCount: written, countStyle: .file)
+                        let tStr = ByteCountFormatter.string(fromByteCount: effectiveTotal, countStyle: .file)
+                        self.downloadStatusMessage = "Baixando \(safeFileName): \(wStr) / \(tStr) (\(Int(round(pct * 100)))%)"
+                    } else {
+                        let wStr = ByteCountFormatter.string(fromByteCount: written, countStyle: .file)
+                        self.downloadStatusMessage = "Baixando \(safeFileName): \(wStr)..."
+                    }
+                }
+            }
+            self.activeDownloader = nil
+        } catch is CancellationError {
+            self.activeDownloader = nil
+            self.isDownloading = false
+            return
+        } catch {
+            self.activeDownloader = nil
+            self.lastErrorMessage = "Falha no download do modelo: \(error.localizedDescription)"
+            self.isDownloading = false
+            return
         }
+
+        let attrs = try? FileManager.default.attributesOfItem(atPath: destinationFileURL.path)
+        let finalSize = (attrs?[.size] as? Int64) ?? expectedSizeBytes
 
         let modelInfo = LocalLLMModelInfo(
             id: repoId,
             displayName: repoId.components(separatedBy: "/").last ?? repoId,
-            fileName: selectedFileName,
+            fileName: safeFileName,
             localPath: destinationFileURL.path,
-            sizeBytes: estimatedBytes,
+            sizeBytes: finalSize,
             downloadedAt: Date(),
-            quantization: selectedFileName.lowercased().contains("4bit") ? "MLX 4-bit" : "GGUF Q4_K_M"
+            quantization: safeFileName.lowercased().contains("q5") ? "GGUF Q5_K_M" : "GGUF Q4_K_M"
         )
+
+        guard modelInfo.hasValidGGUFBinary else {
+            self.lastErrorMessage = "O arquivo baixado não é um binário GGUF válido. Verifique se o modelo requer autenticação ou tente outro repositório GGUF."
+            try? FileManager.default.removeItem(at: destinationFileURL)
+            self.isDownloading = false
+            return
+        }
 
         if let existingIdx = store.llmConfig.downloadedModels.firstIndex(where: { $0.id == repoId }) {
             store.llmConfig.downloadedModels[existingIdx] = modelInfo
@@ -227,19 +303,26 @@ public final class LocalLLMService: ObservableObject {
         store.llmConfig.selectedModelId = modelInfo.id
         store.save()
 
+        LlamaServerProcessManager.shared.stopServer()
+
         self.isDownloading = false
         self.downloadProgress = 1.0
-        self.downloadStatusMessage = "Modelo '\(modelInfo.displayName)' baixado e selecionado com sucesso."
+        self.downloadStatusMessage = "Modelo '\(modelInfo.displayName)' (\(modelInfo.formattedSize)) pronto com aceleração Metal GPU!"
     }
 
     public func selectModel(_ modelId: String, in store: FinancialDataStore) {
         guard store.llmConfig.downloadedModels.contains(where: { $0.id == modelId }) else { return }
         store.llmConfig.selectedModelId = modelId
         store.save()
+        LlamaServerProcessManager.shared.stopServer()
     }
 
     public func deleteModel(_ modelId: String, from store: FinancialDataStore) {
-        if let model = store.llmConfig.downloadedModels.first(where: { $0.id == modelId }) {
+        if store.llmConfig.selectedModelId == modelId {
+            LlamaServerProcessManager.shared.stopServer()
+        }
+        if let model = store.llmConfig.downloadedModels.first(where: { $0.id == modelId }),
+           !model.localPath.isEmpty {
             let fileURL = URL(fileURLWithPath: model.localPath)
             let parentDir = fileURL.deletingLastPathComponent()
             try? FileManager.default.removeItem(at: fileURL)
@@ -282,8 +365,7 @@ public final class LocalLLMService: ObservableObject {
         isAnalyzingStatement = true
         defer { isAnalyzingStatement = false }
 
-        // Pequena pausa assíncrona para permitir renderização do indicador de análise da LLM na UI
-        try? await Task.sleep(nanoseconds: 250_000_000)
+        try? await Task.sleep(nanoseconds: 150_000_000)
 
         var parsed = StatementImportService.parseStatementText(
             rawText,
@@ -326,7 +408,7 @@ public final class LocalLLMService: ObservableObject {
         isAnalyzingStatement = true
         defer { isAnalyzingStatement = false }
 
-        try? await Task.sleep(nanoseconds: 250_000_000)
+        try? await Task.sleep(nanoseconds: 150_000_000)
 
         var parsed = DebtImportService.parseDebtsText(rawText)
         let modelName = store.llmConfig.selectedModel?.displayName ?? "LLM Local"
@@ -364,7 +446,7 @@ public final class LocalLLMService: ObservableObject {
         isAnalyzingStatement = true
         defer { isAnalyzingStatement = false }
 
-        try? await Task.sleep(nanoseconds: 250_000_000)
+        try? await Task.sleep(nanoseconds: 150_000_000)
 
         var parsed = ContractDocumentImportService.parseContractDocumentText(
             rawText,
@@ -375,7 +457,16 @@ public final class LocalLLMService: ObservableObject {
         return parsed
     }
 
-    // MARK: - 100% Finance-Focused Agentic Local AI Chat Engine with Full Database Access & RAG
+    // MARK: - Super Agente Financeiro Local (Thinking Mode + Streaming + Cancelamento)
+
+    public func cancelChatGeneration() {
+        activeChatTask?.cancel()
+        activeChatTask = nil
+        isProcessingChat = false
+        isThinkingPhase = false
+        isTypingResponse = false
+        currentAgentStepMessage = ""
+    }
 
     public func sendUserQuestion(_ question: String, store: FinancialDataStore) async {
         guard store.requireInstalledLLM(forFeature: "Chat Financeiro com IA Local", action: {}) else {
@@ -384,59 +475,105 @@ public final class LocalLLMService: ObservableObject {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        // Se houver geração anterior em curso, cancela de forma limpa
+        activeChatTask?.cancel()
+
         Self.ensureSystemPromptInjected(store: store)
 
         let userMsg = ChatMessage(role: .user, content: trimmed)
         store.chatHistory.append(userMsg)
         store.save()
 
+        let startTime = Date()
+        let isThinkingEnabled = store.llmConfig.isThinkingModeEnabled
+        let backend = LocalLLMRuntime.shared.resolveActiveBackend(for: store)
+
         isProcessingChat = true
-        currentAgentStepMessage = "Inicializando motor agêntico e índice RAG da base local..."
-        defer {
-            isProcessingChat = false
-            currentAgentStepMessage = ""
+        isThinkingPhase = isThinkingEnabled
+        liveThinkingText = ""
+        liveTypingResponseText = ""
+        isTypingResponse = false
+        thinkingElapsedSeconds = 0.0
+        activeEngineDescription = backend.displayBadge
+        currentAgentStepMessage = isThinkingEnabled
+            ? "Pensando com \(backend.displayBadge)..."
+            : "Analisando sua solicitação com \(backend.displayBadge)..."
+
+        // Timer de contagem real em segundos para deixar claro ao usuário que a IA está trabalhando
+        let timerTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                await MainActor.run { [weak self] in
+                    guard let self, self.isProcessingChat else { return }
+                    self.thinkingElapsedSeconds = Date().timeIntervalSince(startTime)
+                }
+            }
         }
 
-        try? await Task.sleep(nanoseconds: 180_000_000)
+        let modelLabel = backend.displayBadge
 
-        let modelLabel = store.llmConfig.selectedModel?.displayName ?? "Agente Financeiro Local (macOS)"
+        let workerTask = Task<AIChatOrchestrator.TurnOutput, Never> { [weak self] in
+            await AIChatOrchestrator.shared.processTurnWithThinking(
+                userPrompt: trimmed,
+                store: store,
+                modelLabel: modelLabel,
+                isThinkingEnabled: isThinkingEnabled,
+                onStepUpdate: { stepText in
+                    self?.currentAgentStepMessage = stepText
+                },
+                onThinkingUpdate: { fullThinking in
+                    self?.isThinkingPhase = true
+                    self?.liveThinkingText = fullThinking
+                },
+                onContentUpdate: { partialContent in
+                    self?.isThinkingPhase = false
+                    self?.isTypingResponse = true
+                    self?.liveTypingResponseText = partialContent
+                }
+            )
+        }
+        self.activeChatTask = workerTask
 
-        // Orquestrador de Conversação Multi-Turno Orientado a Ferramentas (AIToolRegistry + Agent-First)
-        let orchestratorOutput = await AIChatOrchestrator.shared.processTurn(
-            userPrompt: trimmed,
-            store: store,
-            modelLabel: modelLabel,
-            onStepUpdate: { [weak self] stepText in
-                self?.currentAgentStepMessage = stepText
+        let orchestratorOutput = await workerTask.value
+        timerTask.cancel()
+
+        let elapsed = Date().timeIntervalSince(startTime)
+        let fullMarkdown = orchestratorOutput.responseMarkdown
+
+        // Caso tenha vindo do motor determinístico sem streaming token-a-token, anima brevemente
+        if liveTypingResponseText.isEmpty && !Task.isCancelled && !fullMarkdown.isEmpty {
+            isThinkingPhase = false
+            isTypingResponse = true
+            let words = fullMarkdown.split(separator: " ", omittingEmptySubsequences: false)
+            if words.count <= 400 {
+                var currentText = ""
+                for (idx, word) in words.enumerated() {
+                    if Task.isCancelled { break }
+                    currentText += (idx == 0 ? "" : " ") + word
+                    liveTypingResponseText = currentText
+                    try? await Task.sleep(nanoseconds: 6_000_000)
+                }
+            } else {
+                liveTypingResponseText = fullMarkdown
             }
-        )
+        }
 
         isProcessingChat = false
-        currentAgentStepMessage = ""
-
-        // Efeito visual de digitação contínua (streaming suave)
-        let fullMarkdown = orchestratorOutput.responseMarkdown
-        isTypingResponse = true
-        liveTypingResponseText = ""
-
-        let words = fullMarkdown.split(separator: " ", omittingEmptySubsequences: false)
-        var currentText = ""
-        for (idx, word) in words.enumerated() {
-            currentText += (idx == 0 ? "" : " ") + word
-            liveTypingResponseText = currentText
-            try? await Task.sleep(nanoseconds: 12_000_000)
-        }
-
+        isThinkingPhase = false
         isTypingResponse = false
         liveTypingResponseText = ""
+        currentAgentStepMessage = ""
+        activeChatTask = nil
 
         let assistantMsg = ChatMessage(
             role: .assistant,
             content: fullMarkdown,
-            modelUsed: modelLabel,
+            modelUsed: orchestratorOutput.engineUsed,
             agentSteps: orchestratorOutput.executedSteps,
             suggestedFollowUps: orchestratorOutput.followUps,
-            shouldCloseChat: orchestratorOutput.shouldClose
+            shouldCloseChat: orchestratorOutput.shouldClose,
+            thinkingContent: orchestratorOutput.thinkingContent,
+            thinkingDurationSeconds: elapsed
         )
         store.chatHistory.append(assistantMsg)
         store.save()

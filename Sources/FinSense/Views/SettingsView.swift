@@ -1464,7 +1464,7 @@ public struct LLMInstallRequiredSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var hfTokenInput: String = ""
-    @State private var modelNameInput: String = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+    @State private var modelNameInput: String = "Qwen/Qwen3-8B-GGUF"
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -1588,6 +1588,18 @@ public struct LLMInstallRequiredSheet: View {
                 }
                 .buttonStyle(.bordered)
 
+                if LocalLLMRuntime.isAppleIntelligenceAvailable && !store.hasInstalledLLMModel {
+                    Button {
+                        llmService.activateBuiltInAppleIntelligence(in: store)
+                        dismiss()
+                    } label: {
+                        Label("Usar Apple Intelligence Nativo (Instantâneo)", systemImage: "sparkles")
+                            .fontWeight(.semibold)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Color(hex: "#8B5CF6"))
+                }
+
                 if store.hasInstalledLLMModel {
                     Button("Concluir e Continuar") {
                         dismiss()
@@ -1612,30 +1624,140 @@ public struct LLMConfigurationSectionView: View {
     @ObservedObject public var llmService: LocalLLMService
 
     @State private var hfTokenInput: String = ""
-    @State private var modelNameInput: String = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+    @State private var modelNameInput: String = "Qwen/Qwen3-8B-GGUF"
+    @State private var localEndpointInput: String = ""
     @State private var showTokenPlain: Bool = false
     @State private var modelPendingDeletion: LocalLLMModelInfo? = nil
 
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Card 1: Hugging Face Token & Download Model
+                // Card 0: Motor Neural, Modo Pensando & Contexto
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Image(systemName: "brain.head.profile")
+                            .font(.title2)
+                            .foregroundStyle(Color(hex: "#8B5CF6"))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Super Agente Financeiro Local • Motor & Pensamento")
+                                .font(.title3.bold())
+                            Text("Configure o raciocínio profundo (Pensando), janela de contexto e integração com llama.cpp Metal / Apple Intelligence.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        let active = LocalLLMRuntime.shared.resolveActiveBackend(for: store)
+                        Text(active.displayBadge)
+                            .font(.caption.bold())
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(Color(hex: "#10B981").opacity(0.15)))
+                            .foregroundStyle(Color(hex: "#10B981"))
+                    }
+
+                    Divider()
+
+                    HStack(spacing: 16) {
+                        Toggle(isOn: Binding(
+                            get: { store.llmConfig.isThinkingModeEnabled },
+                            set: { newValue in
+                                store.llmConfig.isThinkingModeEnabled = newValue
+                                store.save()
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Modo Pensando (Extrair 100% da Inteligência)")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Permite que a IA raciocine em etapas (<think>), cruze múltiplas tabelas e simule cenários antes de responder, mesmo que leve alguns segundos a mais.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.switch)
+
+                        Spacer()
+
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text("Janela de Contexto:")
+                                .font(.caption.bold())
+                                .foregroundStyle(.secondary)
+                            Picker("", selection: Binding(
+                                get: { store.llmConfig.contextWindowSize },
+                                set: { newVal in
+                                    store.llmConfig.contextWindowSize = newVal
+                                    store.save()
+                                    LlamaServerProcessManager.shared.stopServer()
+                                }
+                            )) {
+                                Text("8.192 tokens").tag(8192)
+                                Text("16.384 tokens (Recomendado)").tag(16384)
+                                Text("32.768 tokens (Máximo)").tag(32768)
+                            }
+                            .frame(width: 210)
+                        }
+                    }
+
+                    HStack(spacing: 12) {
+                        let llamaPath = LlamaServerProcessManager.locateLlamaServerBinary()
+                        HStack(spacing: 6) {
+                            Image(systemName: llamaPath != nil ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                                .foregroundStyle(llamaPath != nil ? Color(hex: "#10B981") : .orange)
+                            Text(llamaPath != nil
+                                ? "Motor llama-server (Metal GPU Apple Silicon) detectado em \(llamaPath!)"
+                                : "llama-server não encontrado no PATH (instale via 'brew install llama.cpp' ou use Apple Intelligence Nativo)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if LocalLLMRuntime.isAppleIntelligenceAvailable {
+                            Button {
+                                llmService.activateBuiltInAppleIntelligence(in: store)
+                            } label: {
+                                Label("Ativar Apple Intelligence Nativo", systemImage: "sparkles")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Endpoint OpenAI Local Opcional (ex: Ollama / LM Studio — deixe vazio para usar llama.cpp automático)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            BorderedTextField(
+                                placeholder: "Opcional: http://127.0.0.1:11434/v1",
+                                text: $localEndpointInput
+                            )
+                            Button("Salvar Endpoint") {
+                                store.llmConfig.localEndpointURL = localEndpointInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                                store.save()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                .padding(20)
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+
+                // Card 1: Hugging Face Token & Download Model (Real GGUF)
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         Image(systemName: "cpu.fill")
                             .font(.title2)
                             .foregroundStyle(Color(hex: "#6366F1"))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Configuração e Download da LLM Local (Hugging Face)")
+                            Text("Download Real de Modelos GGUF (Hugging Face)")
                                 .font(.title3.bold())
-                            Text("Informe seu token do Hugging Face e o nome do repositório do modelo para baixá-lo para o seu Mac.")
+                            Text("Baixe os pesos reais (.gguf Q4_K_M) para rodar na GPU Metal do seu Mac com contexto completo e raciocínio profundo.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Token do Hugging Face (hf_...)")
+                        Text("Token do Hugging Face (hf_... — opcional para modelos públicos)")
                             .font(.subheadline.weight(.semibold))
                         HStack(spacing: 10) {
                             BorderedTextField(
@@ -1660,11 +1782,11 @@ public struct LLMConfigurationSectionView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Nome do Modelo no Hugging Face")
+                        Text("Repositório GGUF no Hugging Face")
                             .font(.subheadline.weight(.semibold))
                         HStack(spacing: 10) {
                             BorderedTextField(
-                                placeholder: "Ex: Qwen/Qwen2.5-3B-Instruct-GGUF",
+                                placeholder: "Ex: Qwen/Qwen3-8B-GGUF",
                                 text: $modelNameInput
                             )
 
@@ -1683,7 +1805,7 @@ public struct LLMConfigurationSectionView: View {
                                         into: store
                                     )
                                 } label: {
-                                    Label("Baixar Modelo", systemImage: "arrow.down.circle.fill")
+                                    Label("Baixar Pesos GGUF", systemImage: "arrow.down.circle.fill")
                                         .fontWeight(.semibold)
                                 }
                                 .buttonStyle(.borderedProminent)
@@ -1692,16 +1814,18 @@ public struct LLMConfigurationSectionView: View {
                         }
 
                         // Quick Model Suggestions
-                        HStack(spacing: 8) {
-                            Text("Sugestões para Mac:")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            ForEach(LocalLLMService.suggestedModels, id: \.id) { sug in
-                                Button(sug.name) {
-                                    modelNameInput = sug.id
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                Text("Recomendados:")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                ForEach(LocalLLMService.suggestedModels, id: \.id) { sug in
+                                    Button("\(sug.name) (\(sug.sizeEstimate))") {
+                                        modelNameInput = sug.id
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
                             }
                         }
                     }
@@ -1740,7 +1864,7 @@ public struct LLMConfigurationSectionView: View {
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
 
-                // Card 2: Modelos Locais Baixados (Selecionar e Deletar)
+                // Card 2: Modelos Locais Baixados (Selecionar, Verificar GGUF e Deletar)
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -1764,7 +1888,7 @@ public struct LLMConfigurationSectionView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Nenhum modelo baixado ainda")
                                     .font(.subheadline.weight(.semibold))
-                                Text("Digite o nome de um modelo acima e clique em 'Baixar Modelo' para adicioná-lo à lista.")
+                                Text("Escolha um modelo recomendado acima (como Qwen 3 8B) para baixar os pesos reais ou ative o Apple Intelligence Nativo.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -1775,6 +1899,7 @@ public struct LLMConfigurationSectionView: View {
                     } else {
                         ForEach(store.llmConfig.downloadedModels) { model in
                             let isSelected = store.llmConfig.selectedModelId == model.id
+                            let isValidBinary = model.isBuiltInAppleIntelligence || model.hasValidGGUFBinary
                             HStack(spacing: 14) {
                                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                                     .font(.title3)
@@ -1798,13 +1923,36 @@ public struct LLMConfigurationSectionView: View {
                                                 .background(Capsule().fill(Color.green.opacity(0.15)))
                                                 .foregroundStyle(.green)
                                         }
+                                        if !isValidBinary {
+                                            Text("INCOMPLETO (MANIFESTO ANTIGO)")
+                                                .font(.caption2.bold())
+                                                .padding(.horizontal, 7)
+                                                .padding(.vertical, 2)
+                                                .background(Capsule().fill(Color.orange.opacity(0.18)))
+                                                .foregroundStyle(.orange)
+                                        }
                                     }
-                                    Text("Arquivo: \(model.fileName) • Tamanho est.: \(model.formattedSize) • Baixado em \(BRLFormatters.shortDate(model.downloadedAt))")
+                                    Text("Arquivo: \(model.fileName) • Tamanho real: \(model.formattedSize) • Em \(BRLFormatters.shortDate(model.downloadedAt))")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
 
                                 Spacer()
+
+                                if !isValidBinary && !model.isBuiltInAppleIntelligence {
+                                    Button("Baixar GGUF Real") {
+                                        let targetRepo = model.id.lowercased().contains("gguf") ? model.id : "Qwen/Qwen3-8B-GGUF"
+                                        modelNameInput = targetRepo
+                                        llmService.downloadModel(
+                                            modelRepoId: targetRepo,
+                                            huggingFaceToken: hfTokenInput,
+                                            into: store
+                                        )
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .tint(.orange)
+                                    .disabled(llmService.isDownloading)
+                                }
 
                                 if !isSelected {
                                     Button("Selecionar Modelo") {
@@ -1840,6 +1988,7 @@ public struct LLMConfigurationSectionView: View {
         }
         .onAppear {
             hfTokenInput = store.llmConfig.huggingFaceToken
+            localEndpointInput = store.llmConfig.localEndpointURL
         }
         .alert(
             "Confirmar Exclusão de Modelo Local",
