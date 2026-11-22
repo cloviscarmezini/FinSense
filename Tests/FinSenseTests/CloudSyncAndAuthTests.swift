@@ -370,4 +370,42 @@ final class CloudSyncAndAuthTests: XCTestCase {
 
         try? FileManager.default.removeItem(at: tempDir)
     }
+
+    func testAutoSyncOptionBehaviorWhenDisabledAndEnabled() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let syncService = CloudSyncService(store: store)
+        store.cloudSyncService = syncService
+
+        let dummyUser = UserSummary(id: UUID(), email: "test_auto@finsense.com", fullName: "User Auto")
+        let dummyAuth = AuthResponse(accessToken: "tok", refreshToken: "ref", tokenType: "Bearer", expiresIn: 900, user: dummyUser)
+        AuthService.shared.saveSession(dummyAuth)
+        syncService.isEnabled = true
+
+        // 1. Quando isAutoSyncEnabled está desabilitado
+        syncService.isAutoSyncEnabled = false
+        XCTAssertFalse(syncService.isAutoSyncEnabled)
+
+        let tx = FinancialTransaction(
+            name: "Farmácia",
+            amount: 80.0,
+            date: Date(),
+            type: .expense,
+            categoryId: UUID(),
+            accountId: UUID()
+        )
+        syncService.recordLocalMutation(entityName: "financial_transactions", entityId: tx.id, operation: .upsert, entity: tx)
+
+        // A mutação deve ficar armazenada na outbox para não perder dados, porém sem disparo automático
+        XCTAssertEqual(syncService.pendingMutationsCount, 1)
+
+        // 2. Quando reabilitado, mantém o comportamento automático
+        syncService.isAutoSyncEnabled = true
+        XCTAssertTrue(syncService.isAutoSyncEnabled)
+
+        AuthService.shared.logout()
+        try? FileManager.default.removeItem(at: tempDir)
+    }
 }

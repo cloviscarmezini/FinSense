@@ -19,6 +19,13 @@ public final class CloudSyncService: ObservableObject {
 
     // Configurações persistidas
     @AppStorage("cloud_sync_enabled") public var isEnabled: Bool = false
+    @AppStorage("cloud_sync_auto_sync") public var isAutoSyncEnabled: Bool = true {
+        didSet {
+            if isAutoSyncEnabled && canSync && pendingMutationsCount > 0 {
+                scheduleSync(delaySeconds: 1.0)
+            }
+        }
+    }
     @AppStorage("cloud_sync_base_url") public var baseURLString: String = "http://localhost:8080/api/v1"
     @AppStorage("cloud_sync_client_id") public var clientId: String = UUID().uuidString
     @AppStorage("cloud_sync_last_revision") public var lastServerRevision: Int = 0
@@ -71,7 +78,9 @@ public final class CloudSyncService: ObservableObject {
                     if !self.isEnabled {
                         self.isEnabled = true
                     }
-                    self.scheduleSync(delaySeconds: 0.5)
+                    if self.isAutoSyncEnabled {
+                        self.scheduleSync(delaySeconds: 0.5)
+                    }
                 }
             }
     }
@@ -93,7 +102,7 @@ public final class CloudSyncService: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.isNetworkAvailable = (path.status == .satisfied)
-                if self.isNetworkAvailable && self.canSync {
+                if self.isNetworkAvailable && self.canSync && self.isAutoSyncEnabled {
                     self.scheduleSync(delaySeconds: 1.0)
                 } else if !self.isNetworkAvailable && self.canSync {
                     self.syncStatus = .outOfSync(pendingCount: self.outboxQueue.count, reason: "Sem conexão com a internet")
@@ -153,16 +162,27 @@ public final class CloudSyncService: ObservableObject {
         pendingMutationsCount = outboxQueue.count
         syncStatus = .outOfSync(pendingCount: outboxQueue.count, reason: "Alterações locais pendentes")
 
-        if canSync {
+        if canSync && isAutoSyncEnabled {
             scheduleSync(delaySeconds: 3.0)
         }
     }
 
-    private func scheduleSync(delaySeconds: Double) {
+    public func scheduleSync(delaySeconds: Double) {
+        guard isAutoSyncEnabled else { return }
         guard canSync, isNetworkAvailable, !isSeeding else { return }
         debounceTimer?.cancel()
         debounceTimer = Just(())
             .delay(for: .seconds(delaySeconds), scheduler: RunLoop.main)
+            .sink { [weak self] in
+                self?.performSync()
+            }
+    }
+
+    private func scheduleNextBatch() {
+        guard canSync, isNetworkAvailable, !isSeeding else { return }
+        debounceTimer?.cancel()
+        debounceTimer = Just(())
+            .delay(for: .seconds(0.5), scheduler: RunLoop.main)
             .sink { [weak self] in
                 self?.performSync()
             }
@@ -268,7 +288,7 @@ public final class CloudSyncService: ObservableObject {
                 syncStatus = .synced(lastSync: now)
             } else {
                 syncStatus = .outOfSync(pendingCount: outboxQueue.count, reason: "Enviando próximo lote...")
-                scheduleSync(delaySeconds: 0.5)
+                scheduleNextBatch()
             }
         } catch {
             let msg = error.localizedDescription

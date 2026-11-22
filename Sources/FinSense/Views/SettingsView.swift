@@ -68,7 +68,9 @@ public struct CloudSyncSettingsCardView: View {
                 set: { newValue in
                     sync.isEnabled = newValue
                     if newValue {
-                        sync.performSync()
+                        if sync.isAutoSyncEnabled {
+                            sync.performSync()
+                        }
                     } else {
                         sync.syncStatus = .disabled
                     }
@@ -76,12 +78,19 @@ public struct CloudSyncSettingsCardView: View {
             ))
             .font(.system(size: 14, weight: .semibold))
 
-            Text("Quando ativado, as alterações salvas localmente são enviadas silenciosamente ao servidor em segundo plano e sincronizadas bidirecionalmente.")
+            Text("Quando ativado, os dados podem ser sincronizados bidirecionalmente com o seu servidor na nuvem.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             // Opções avançadas de sync (APENAS se ativado)
             if sync.isEnabled {
+                Toggle("Sincronizar automaticamente", isOn: $sync.isAutoSyncEnabled)
+                    .font(.system(size: 13, weight: .semibold))
+
+                Text("Quando habilitada, as alterações salvas são sincronizadas em segundo plano automaticamente. Quando desabilitada, só sincroniza manualmente ao clicar em um dos botões de sincronizar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 Divider()
 
                 VStack(alignment: .leading, spacing: 12) {

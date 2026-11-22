@@ -1671,7 +1671,9 @@ public final class FinancialDataStore: ObservableObject {
         if res.totalImportedItems > 0 || res.autoCreatedDependenciesCount > 0 || importedPlansCount > 0 {
             save()
             cloudSyncService?.enqueueAllLocalData()
-            cloudSyncService?.performSync()
+            if cloudSyncService?.isAutoSyncEnabled == true {
+                cloudSyncService?.performSync()
+            }
         }
 
         return res
@@ -1858,7 +1860,9 @@ public final class FinancialDataStore: ObservableObject {
             sortTransactions()
             save()
             cloudSyncService?.enqueueAllLocalData()
-            cloudSyncService?.performSync()
+            if cloudSyncService?.isAutoSyncEnabled == true {
+                cloudSyncService?.performSync()
+            }
         }
 
         return (imported, skipped)
