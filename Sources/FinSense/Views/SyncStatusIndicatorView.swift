@@ -105,6 +105,7 @@ public struct SyncDetailPopoverContent: View {
             if syncService.isSyncing {
                 ProgressView(value: max(0.05, syncService.syncProgress), total: 1.0)
                     .progressViewStyle(.linear)
+                    .animation(.easeInOut(duration: 0.25), value: syncService.syncProgress)
             }
 
             Divider()

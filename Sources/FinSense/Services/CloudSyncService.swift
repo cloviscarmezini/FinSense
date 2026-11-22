@@ -178,16 +178,6 @@ public final class CloudSyncService: ObservableObject {
             }
     }
 
-    private func scheduleNextBatch() {
-        guard canSync, isNetworkAvailable, !isSeeding else { return }
-        debounceTimer?.cancel()
-        debounceTimer = Just(())
-            .delay(for: .seconds(0.5), scheduler: RunLoop.main)
-            .sink { [weak self] in
-                self?.performSync()
-            }
-    }
-
     public func performSync() {
         guard canSync else {
             syncStatus = .disabled
@@ -200,7 +190,7 @@ public final class CloudSyncService: ObservableObject {
         guard !isSyncing, !isSeeding else { return }
 
         isSyncing = true
-        syncProgress = 0.10
+        syncProgress = 0.05
         syncStatus = .syncing
 
         Task {
@@ -210,93 +200,148 @@ public final class CloudSyncService: ObservableObject {
 
     private func executeSyncPushPull() async {
         guard let store else {
-            isSyncing = false
-            syncProgress = 0.0
+            await MainActor.run {
+                self.isSyncing = false
+                self.syncProgress = 0.0
+            }
             return
         }
 
-        syncProgress = 0.20
-        let localStoreIsEmpty = store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty && store.contracts.isEmpty && store.investments.isEmpty && store.debts.isEmpty
-        let effectiveSinceRevision: Int64
-        if localStoreIsEmpty {
-            effectiveSinceRevision = 0
-        } else {
-            effectiveSinceRevision = Int64(lastServerRevision)
-        }
+        var totalMutationsTarget = outboxQueue.count
+        var totalMutationsProcessed = 0
+        var remainingBatches = 50
+        var hasEnqueuedAutoSeed = false
 
-        let batchToSend = Array(outboxQueue.prefix(250))
-        let payload = SyncPushPullRequest(
-            clientId: clientId,
-            sinceRevision: effectiveSinceRevision,
-            mutations: batchToSend.map { mut in
-                // Converte operação para padrão SQL esperado pela restrição de banco (INSERT, UPDATE, DELETE)
-                let opString: String = {
-                    switch mut.operation {
-                    case .upsert, .insert: return "INSERT"
-                    case .update: return "UPDATE"
-                    case .delete: return "DELETE"
-                    }
-                }()
+        while remainingBatches > 0 {
+            remainingBatches -= 1
 
-                let dataMap: [String: AnyCodableValue]? = {
-                    guard let json = mut.payloadJSON, let rawData = json.data(using: .utf8) else { return nil }
-                    return try? JSONDecoder().decode([String: AnyCodableValue].self, from: rawData)
-                }()
-
-                return SyncMutationDTO(
-                    mutationId: mut.id,
-                    entityName: mut.entityName,
-                    entityId: mut.entityId,
-                    operation: opString,
-                    timestamp: ISO8601DateFormatter().string(from: mut.updatedAt),
-                    data: dataMap
-                )
+            let localStoreIsEmpty = store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty && store.contracts.isEmpty && store.investments.isEmpty && store.debts.isEmpty
+            let effectiveSinceRevision: Int64
+            if localStoreIsEmpty && lastServerRevision == 0 {
+                effectiveSinceRevision = 0
+            } else {
+                effectiveSinceRevision = Int64(lastServerRevision)
             }
-        )
 
-        syncProgress = 0.40
-        do {
-            let response = try await BackendAPIClient.shared.pushPull(
-                baseURL: baseURLString,
-                requestPayload: payload
+            let batchToSend = Array(outboxQueue.prefix(250))
+            let currentBatchCount = batchToSend.count
+
+            await MainActor.run {
+                if totalMutationsTarget > 0 {
+                    let startRatio = Double(totalMutationsProcessed) / Double(totalMutationsTarget)
+                    let endRatio = Double(totalMutationsProcessed + currentBatchCount) / Double(totalMutationsTarget)
+                    let step = startRatio + (endRatio - startRatio) * 0.35
+                    self.syncProgress = min(0.95, max(self.syncProgress, step))
+                } else {
+                    self.syncProgress = min(0.95, max(self.syncProgress, 0.25))
+                }
+            }
+
+            let payload = SyncPushPullRequest(
+                clientId: clientId,
+                sinceRevision: effectiveSinceRevision,
+                mutations: batchToSend.map { mut in
+                    let opString: String = {
+                        switch mut.operation {
+                        case .upsert, .insert: return "INSERT"
+                        case .update: return "UPDATE"
+                        case .delete: return "DELETE"
+                        }
+                    }()
+
+                    let dataMap: [String: AnyCodableValue]? = {
+                        guard let json = mut.payloadJSON, let rawData = json.data(using: .utf8) else { return nil }
+                        return try? JSONDecoder().decode([String: AnyCodableValue].self, from: rawData)
+                    }()
+
+                    return SyncMutationDTO(
+                        mutationId: mut.id,
+                        entityName: mut.entityName,
+                        entityId: mut.entityId,
+                        operation: opString,
+                        timestamp: ISO8601DateFormatter().string(from: mut.updatedAt),
+                        data: dataMap
+                    )
+                }
             )
 
-            syncProgress = 0.65
+            do {
+                let response = try await BackendAPIClient.shared.pushPull(
+                    baseURL: baseURLString,
+                    requestPayload: payload
+                )
 
-            let ackSet = Set(response.allAcknowledgedIds)
-            outboxQueue.removeAll { ackSet.contains($0.id) }
-            saveOutboxQueue()
-            pendingMutationsCount = outboxQueue.count
+                let ackSet = Set(response.allAcknowledgedIds)
+                let previousOutboxCount = outboxQueue.count
+                outboxQueue.removeAll { ackSet.contains($0.id) }
+                saveOutboxQueue()
+                pendingMutationsCount = outboxQueue.count
 
-            syncProgress = 0.75
-            applyServerChanges(response, into: store)
+                let acknowledgedCount = previousOutboxCount - outboxQueue.count
+                totalMutationsProcessed += acknowledgedCount
 
-            let serverIsEmpty = response.latestRevision == 0 && (response.serverChanges?.isEmpty ?? true) && (response.deltas?.isEmpty ?? true)
-            let hasLocalData = !store.transactions.isEmpty || !store.accounts.isEmpty || !store.categories.isEmpty || !store.contracts.isEmpty || !store.investments.isEmpty || !store.debts.isEmpty || !store.provisions.isEmpty || !store.categoryQuotas.isEmpty
+                await MainActor.run {
+                    if totalMutationsTarget > 0 {
+                        let ratio = Double(totalMutationsProcessed) / Double(totalMutationsTarget)
+                        self.syncProgress = min(0.95, max(self.syncProgress, ratio * 0.90))
+                    } else {
+                        self.syncProgress = min(0.95, max(self.syncProgress, 0.65))
+                    }
+                }
 
-            if serverIsEmpty && hasLocalData && outboxQueue.isEmpty {
-                print("⚡️ [CloudSync] Conta conectada com dados locais e servidor vazio: enfileirando envio automático...")
-                enqueueAllLocalData()
+                applyServerChanges(response, into: store)
+
+                let serverIsEmpty = response.latestRevision == 0 && (response.serverChanges?.isEmpty ?? true) && (response.deltas?.isEmpty ?? true)
+                let hasLocalData = !store.transactions.isEmpty || !store.accounts.isEmpty || !store.categories.isEmpty || !store.contracts.isEmpty || !store.investments.isEmpty || !store.debts.isEmpty || !store.provisions.isEmpty || !store.categoryQuotas.isEmpty
+
+                if !hasEnqueuedAutoSeed && serverIsEmpty && hasLocalData && outboxQueue.isEmpty {
+                    hasEnqueuedAutoSeed = true
+                    print("⚡️ [CloudSync] Conta conectada com dados locais e servidor vazio: enfileirando envio automático...")
+                    enqueueAllLocalData()
+                    totalMutationsTarget = outboxQueue.count
+                    totalMutationsProcessed = 0
+                    continue
+                }
+
+                lastServerRevision = Int(response.latestRevision)
+
+                if outboxQueue.isEmpty {
+                    break
+                } else if outboxQueue.count < previousOutboxCount {
+                    // Houve redução na fila: continua o loop para o próximo lote dentro do mesmo carregamento
+                    continue
+                } else {
+                    // Nenhuma mutação foi reconhecida (sem redução): encerra para evitar loop
+                    break
+                }
+            } catch {
+                let msg = error.localizedDescription
+                await MainActor.run {
+                    self.syncStatus = .outOfSync(pendingCount: self.outboxQueue.count, reason: msg.isEmpty ? "Servidor indisponível" : msg)
+                    self.isSyncing = false
+                    self.syncProgress = 0.0
+                }
+                return
             }
-
-            lastServerRevision = Int(response.latestRevision)
-            let now = Date()
-            lastSyncDate = now
-            syncProgress = 1.0
-
-            if outboxQueue.isEmpty {
-                syncStatus = .synced(lastSync: now)
-            } else {
-                syncStatus = .outOfSync(pendingCount: outboxQueue.count, reason: "Enviando próximo lote...")
-                scheduleNextBatch()
-            }
-        } catch {
-            let msg = error.localizedDescription
-            syncStatus = .outOfSync(pendingCount: outboxQueue.count, reason: msg.isEmpty ? "Servidor indisponível" : msg)
-            syncProgress = 0.0
         }
 
-        isSyncing = false
+        let now = Date()
+        await MainActor.run {
+            self.lastSyncDate = now
+            self.syncProgress = 1.0
+            if self.outboxQueue.isEmpty {
+                self.syncStatus = .synced(lastSync: now)
+            } else {
+                self.syncStatus = .outOfSync(pendingCount: self.outboxQueue.count, reason: "Alterações pendentes")
+            }
+        }
+
+        // Breve pausa visual para que o usuário visualize a barra chegando a 100%
+        try? await Task.sleep(nanoseconds: 250_000_000)
+
+        await MainActor.run {
+            self.isSyncing = false
+        }
     }
 
     public func enqueueAllLocalData() {
@@ -365,7 +410,7 @@ public final class CloudSyncService: ObservableObject {
             for (idx, change) in changes.enumerated() {
                 if idx % 10 == 0 || idx == total - 1 {
                     let sub = 0.75 + (Double(idx + 1) / Double(total)) * 0.20
-                    self.syncProgress = min(sub, 0.98)
+                    self.syncProgress = min(0.98, max(self.syncProgress, sub))
                 }
 
                 let changeDate: Date = {

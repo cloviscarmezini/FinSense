@@ -408,4 +408,44 @@ final class CloudSyncAndAuthTests: XCTestCase {
         AuthService.shared.logout()
         try? FileManager.default.removeItem(at: tempDir)
     }
+
+    func testSyncProgressMonotonicityAndUnifiedLoadingAcrossDeltas() {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let syncService = CloudSyncService(store: store)
+        store.cloudSyncService = syncService
+
+        // Simula progresso intermediário estabelecido durante processamento de lote
+        syncService.syncProgress = 0.50
+
+        // Mock de resposta com múltiplas alterações do servidor
+        let dummyChanges: [SyncMutationDTO] = (1...15).map { idx in
+            SyncMutationDTO(
+                mutationId: UUID(),
+                entityName: "bank_accounts",
+                entityId: UUID(),
+                operation: "INSERT",
+                timestamp: ISO8601DateFormatter().string(from: Date()),
+                data: nil
+            )
+        }
+
+        let response = SyncPushPullResponse(
+            latestRevision: 10,
+            appliedMutationIds: [],
+            serverChanges: dummyChanges,
+            deltas: nil,
+            tombstones: nil
+        )
+
+        // Aplicação das mudanças do servidor não pode reduzir o progresso já avançado
+        syncService.applyServerChangesForTesting(response, into: store)
+
+        XCTAssertGreaterThanOrEqual(syncService.syncProgress, 0.50, "O progresso de sincronização nunca deve regredir para trás durante aplicação de deltas")
+        XCTAssertLessThanOrEqual(syncService.syncProgress, 1.0, "O progresso não deve ultrapassar 1.0 (100%)")
+
+        try? FileManager.default.removeItem(at: tempDir)
+    }
 }

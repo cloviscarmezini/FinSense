@@ -136,6 +136,7 @@ public struct CloudSyncSettingsCardView: View {
                                 ProgressView(value: max(0.05, sync.syncProgress), total: 1.0)
                                     .progressViewStyle(.linear)
                                     .frame(width: 140)
+                                    .animation(.easeInOut(duration: 0.25), value: sync.syncProgress)
                             }
                         } else if let last = sync.lastSyncDate, case .synced = sync.syncStatus {
                             HStack(spacing: 6) {
