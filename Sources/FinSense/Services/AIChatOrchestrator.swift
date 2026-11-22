@@ -10,6 +10,10 @@ public final class AIChatOrchestrator: ObservableObject {
     public var maxToolExecutionHops: Int = 8
     /// Permite forçar execução determinística pura em testes unitários isolados
     public var forceDeterministicFallbackForTesting: Bool = false
+    /// Alvo pendente quando o usuário clica em "Simular Prazo" e a IA aguarda a escolha do ritmo (Agressivo / Moderado / Leve)
+    public var pendingSimulationTarget: PendingSimulationTarget? = nil
+    /// Último alvo simulado para permitir alternância direta de ritmo ("E no Moderado?")
+    public var lastSimulatedTarget: PendingSimulationTarget? = nil
 
     public init(registry: AIToolRegistry? = nil) {
         self.registry = registry ?? .shared
@@ -30,6 +34,7 @@ public final class AIChatOrchestrator: ObservableObject {
         registry.register(AggregateTransactionsTool(store: store))
         registry.register(GetInvestmentsSummaryTool(store: store))
         registry.register(AnalyzeDebtPayoffStrategyTool(store: store))
+        registry.register(InternetLookupTool(store: store))
         registry.register(UnsupportedCapabilityTool(registry: registry))
     }
 
@@ -80,9 +85,254 @@ public final class AIChatOrchestrator: ObservableObject {
             )
         }
 
+        // 1B. Interceptação da Simulação Interativa em 2 Etapas (Simular Prazo: Dívidas vs Contratos)
+        let promptMeta = InteractivePayoffPlanner.extractMetadata(from: cleanPrompt, store: store)
+        let normCleanPrompt = promptMeta.cleanPrompt
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+
+        let saveTargetContextBreadcrumb: (PendingSimulationTarget, String) -> Void = { target, stage in
+            let kindStr: String
+            let idStr: String
+            let nameStr: String
+            switch target {
+            case .debt(let id, let name):
+                kindStr = "debt"
+                idStr = id.uuidString
+                nameStr = name
+            case .contract(let id, let name, _):
+                kindStr = "contract"
+                idStr = id.uuidString
+                nameStr = name
+            }
+            let obj: [String: Any] = [
+                "kind": kindStr,
+                "id": idStr,
+                "name": nameStr,
+                "stage": stage
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: obj),
+               let jsonStr = String(data: data, encoding: .utf8) {
+                store.chatHistory.append(
+                    ChatMessage(
+                        role: .tool,
+                        content: jsonStr,
+                        timestamp: Date(),
+                        modelUsed: modelLabel,
+                        toolName: "interactive_simulation_context",
+                        toolCallId: UUID().uuidString
+                    )
+                )
+            }
+        }
+
+        if let explicitTarget = promptMeta.target {
+            pendingSimulationTarget = explicitTarget
+            lastSimulatedTarget = nil
+            LocalLLMRuntime.shared.invalidateAppleSession()
+        }
+
+        // Caso chat livre peça "simular/simule prazo" sem ritmo nem valor mensal explícito, identifica o alvo exato citado
+        let hasSimulIntent = normCleanPrompt.contains("simul") &&
+            (normCleanPrompt.contains("prazo") || normCleanPrompt.contains("quitar") || normCleanPrompt.contains("divid") || normCleanPrompt.contains("emprest") || normCleanPrompt.contains("financiament"))
+        let specifiesMonthlyAmount = normCleanPrompt.contains("/mes") || normCleanPrompt.contains("por mes") || normCleanPrompt.contains("mensal de r$")
+        if pendingSimulationTarget == nil &&
+           hasSimulIntent &&
+           PayoffIntensity.parse(from: promptMeta.cleanPrompt) == nil &&
+           !normCleanPrompt.contains("monte um plano de acao") &&
+           !specifiesMonthlyAmount {
+            if let matchedDebt = store.activeDebts.first(where: {
+                let dNorm = $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")).lowercased()
+                let noStopwords = dNorm.split(separator: " ").filter { $0.count >= 4 }.map(String.init)
+                return (!dNorm.isEmpty && normCleanPrompt.contains(dNorm)) || (!noStopwords.isEmpty && noStopwords.allSatisfy { normCleanPrompt.contains($0) })
+            }) ?? (normCleanPrompt.contains("divid") && store.activeDebts.count == 1 ? store.activeDebts.first : nil) {
+                pendingSimulationTarget = .debt(id: matchedDebt.id, name: matchedDebt.name)
+                LocalLLMRuntime.shared.invalidateAppleSession()
+            } else if normCleanPrompt.contains("financiament") || normCleanPrompt.contains("emprest") || normCleanPrompt.contains("contrat"),
+                      let matchedContract = matchBestContract(in: normCleanPrompt, store: store) {
+                pendingSimulationTarget = .contract(id: matchedContract.id, name: matchedContract.name, kind: matchedContract.kind)
+                LocalLLMRuntime.shared.invalidateAppleSession()
+            }
+        }
+
         // 2. Determina se há backend neural configurado no store (ou se estamos em teste/fallback determinístico)
         let hasConfiguredAI = store.hasInstalledLLMModel || !store.llmConfig.localEndpointURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let backend = LocalLLMRuntime.shared.resolveActiveBackend(for: store)
+
+        let serializeJson: ([String: Any]) -> String = { dict in
+            guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+                  let str = String(data: data, encoding: .utf8) else {
+                return "{}"
+            }
+            return str.count > 3600 ? String(str.prefix(3600)) + "...}" : str
+        }
+
+        // ETAPA 1: Perguntar Agressivo / Moderado / Leve antes de calcular datas e valores
+        let shouldAskIntensityFirst: Bool = {
+            if promptMeta.askIntensityFirst && pendingSimulationTarget != nil && PayoffIntensity.parse(from: promptMeta.cleanPrompt) == nil {
+                return true
+            }
+            if pendingSimulationTarget != nil &&
+               hasSimulIntent &&
+               PayoffIntensity.parse(from: promptMeta.cleanPrompt) == nil &&
+               !normCleanPrompt.contains("monte um plano de acao") {
+                return true
+            }
+            return false
+        }()
+
+        if shouldAskIntensityFirst, let clarTarget = pendingSimulationTarget {
+            logStep("🗄️ Consultando banco local FinSense: alvo, contas, reservas e Saldo Previsto de \(BRLFormatters.shortDate(store.endOfMonth(for: store.selectedMonth)))...")
+            logStep("🎯 Perguntando o ritmo desejado (Agressivo, Moderado ou Leve) antes de calcular datas e valores...")
+            saveTargetContextBreadcrumb(clarTarget, "awaiting_intensity")
+            let clarPayload = InteractivePayoffPlanner.buildClarificationPayload(target: clarTarget, store: store)
+            let fallbackMd = InteractivePayoffPlanner.buildClarificationFallbackMarkdown(target: clarTarget, store: store)
+            let clarFollowUps = ["Plano Agressivo", "Plano Moderado", "Plano Leve"]
+
+            if !forceDeterministicFallbackForTesting, hasConfiguredAI, case .appleFoundationModels = backend {
+                let isDebtTarget = clarTarget.isDebt
+                let forbiddenRule = isDebtTarget
+                    ? "PROIBIDO chamar de empréstimo/financiamento/amortização: trata-se exclusivamente de uma DÍVIDA EM ABERTO (guardar dinheiro pouco a pouco)."
+                    : "Trata-se de contrato parcelado (empréstimo/financiamento com plano de amortização)."
+                let directive = """
+                ANTES DE PROPOR QUALQUER VALOR MENSAL OU DATA DE QUITAÇÃO:
+                - \(forbiddenRule)
+                - Confirme qual é o alvo exato e informe apenas o valor/saldo atual no banco local e o Saldo Previsto na data de fechamento (\(clarPayload["dataReferenciaFechamentoMes"] ?? "")).
+                - NÃO escreva estimativas em R$/mês (NÃO diga R$ 0,00/mês nem invente parcelas/percentuais); os valores exatos serão calculados apenas após a escolha nos meses em que houver saldo positivo no fechamento.
+                - Pergunte claramente se o usuário prefere o ritmo **Agressivo**, **Moderado** ou **Leve**.
+                """
+                if let appleOut = try? await LocalLLMRuntime.shared.runNativeAppleIntelligenceAgentTurn(
+                    userPrompt: promptMeta.cleanPrompt,
+                    store: store,
+                    isThinkingEnabled: isThinkingEnabled,
+                    preGroundedContext: (steps: executedSteps, compactJson: serializeJson(clarPayload), directive: directive),
+                    onStepUpdate: onStepUpdate,
+                    onThinkingUpdate: onThinkingUpdate,
+                    onContentUpdate: nil
+                ) {
+                    let md = appleOut.responseMarkdown
+                    let mentionsAllChoices = md.localizedCaseInsensitiveContains("agressiv") &&
+                        md.localizedCaseInsensitiveContains("moderad") &&
+                        md.localizedCaseInsensitiveContains("leve")
+                    let expectedSaldoStr = (clarPayload["saldoPrevistoNaDataReferencia"] as? String) ?? ""
+                    let saldoPreserved = expectedSaldoStr.isEmpty || md.contains(expectedSaldoStr)
+                    let containsPrematureMonthlyValues = md.contains("0,00/m") || md.contains("0.00/m") || md.contains("/mês")
+                    let confusedDebtWithLoan = isDebtTarget && (md.localizedCaseInsensitiveContains("empréstim") || md.localizedCaseInsensitiveContains("emprestim") || md.localizedCaseInsensitiveContains("amortiza"))
+                    let useAppleDraft = mentionsAllChoices && saldoPreserved && !containsPrematureMonthlyValues && !confusedDebtWithLoan
+                    return TurnOutput(
+                        responseMarkdown: useAppleDraft ? md : fallbackMd,
+                        thinkingContent: appleOut.thinkingContent,
+                        executedSteps: executedSteps + appleOut.executedSteps,
+                        followUps: clarFollowUps,
+                        shouldClose: false,
+                        engineUsed: backend.displayBadge
+                    )
+                }
+            }
+
+            return TurnOutput(
+                responseMarkdown: fallbackMd,
+                thinkingContent: isThinkingEnabled ? "Consultei o banco local FinSense e identifiquei o alvo; aguardando escolha do ritmo (Agressivo, Moderado ou Leve) para calcular datas e valores reais mês a mês." : nil,
+                executedSteps: executedSteps,
+                followUps: clarFollowUps,
+                shouldClose: false,
+                engineUsed: !forceDeterministicFallbackForTesting && hasConfiguredAI ? backend.displayBadge : modelLabel
+            )
+        }
+
+        // ETAPA 2: Usuário escolheu Agressivo / Moderado / Leve -> recupera contexto durável e calcula mês a mês
+        let recoveredTarget = pendingSimulationTarget
+            ?? InteractivePayoffPlanner.recoverTargetFromHistory(store.chatHistory, store: store)
+            ?? lastSimulatedTarget
+        if let simTarget = recoveredTarget,
+           let chosenIntensity = PayoffIntensity.parse(from: promptMeta.cleanPrompt) {
+            logStep("📆 Consultando meses futuros no banco local e calculando plano \(chosenIntensity.displayTitle) mês a mês com fechamento do mês + impacto futuro...")
+            let simResult = InteractivePayoffPlanner.simulateDetailedPlan(
+                target: simTarget,
+                intensity: chosenIntensity,
+                store: store
+            )
+            pendingSimulationTarget = nil
+            lastSimulatedTarget = simTarget
+            saveTargetContextBreadcrumb(simTarget, "completed")
+
+            let alternativeFollowUps: [String] = PayoffIntensity.allCases
+                .filter { $0 != chosenIntensity }
+                .map { "Simular no ritmo \($0.displayTitle)" } + ["Obrigado, pode encerrar"]
+
+            let jsonString = serializeJson(simResult.payload)
+            let toolRecord = ChatMessage(
+                role: .tool,
+                content: jsonString,
+                timestamp: Date(),
+                modelUsed: modelLabel,
+                toolName: simTarget.isDebt ? "interactive_debt_savings_plan" : "interactive_contract_amortization_plan",
+                toolCallId: UUID().uuidString
+            )
+            store.chatHistory.append(toolRecord)
+
+            if !forceDeterministicFallbackForTesting, hasConfiguredAI, case .appleFoundationModels = backend {
+                let terminologyGuard = simTarget.isDebt
+                    ? "TRATA-SE DE UMA DÍVIDA EM ABERTO (NÃO É EMPRÉSTIMO NEM FINANCIAMENTO). É PROIBIDO usar as palavras empréstimo, financiamento ou amortização; fale apenas em guardar dinheiro pouco a pouco nos meses positivos."
+                    : "Trata-se de contrato de crédito com parcelas mensais e amortização."
+                let directive = """
+                \(terminologyGuard)
+                Escreva APENAS uma introdução executiva curta (2 frases objetivas em português) apresentando o plano \(chosenIntensity.displayTitle), SEM desenhar tabela nem inventar valores (o cronograma completo com todas as datas e valores verificados já será exibido logo abaixo).
+                COPIE EXATAMENTE a data de quitação do JSON sem alterá-la.
+                """
+                if let appleOut = try? await LocalLLMRuntime.shared.runNativeAppleIntelligenceAgentTurn(
+                    userPrompt: promptMeta.cleanPrompt,
+                    store: store,
+                    isThinkingEnabled: isThinkingEnabled,
+                    preGroundedContext: (steps: executedSteps, compactJson: jsonString, directive: directive),
+                    onStepUpdate: onStepUpdate,
+                    onThinkingUpdate: onThinkingUpdate,
+                    onContentUpdate: nil
+                ) {
+                    let intro = appleOut.responseMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let payoffDate = (simResult.payload["dataQuitacaoPrevista"] as? String)
+                        ?? (simResult.payload["dataQuitacaoPossivel"] as? String)
+                        ?? ""
+                    let origMaturity = (simResult.payload["dataOriginalTermino"] as? String) ?? ""
+                    let wrongDebtTerms = simTarget.isDebt && (
+                        intro.localizedCaseInsensitiveContains("empréstim") ||
+                        intro.localizedCaseInsensitiveContains("emprestim") ||
+                        intro.localizedCaseInsensitiveContains("amortiza") ||
+                        intro.localizedCaseInsensitiveContains("financiam")
+                    )
+                    let introValid = !intro.isEmpty &&
+                        !intro.contains("|") &&
+                        !intro.contains("---") &&
+                        !wrongDebtTerms &&
+                        (origMaturity.isEmpty || origMaturity == payoffDate || !intro.contains(origMaturity))
+                    let finalMd = introValid
+                        ? "\(intro)\n\n---\n\n\(simResult.markdown)"
+                        : simResult.markdown
+                    return TurnOutput(
+                        responseMarkdown: finalMd,
+                        thinkingContent: appleOut.thinkingContent,
+                        executedSteps: executedSteps + appleOut.executedSteps,
+                        followUps: Array(alternativeFollowUps.prefix(3)),
+                        shouldClose: false,
+                        engineUsed: backend.displayBadge
+                    )
+                }
+            }
+
+            return TurnOutput(
+                responseMarkdown: simResult.markdown,
+                thinkingContent: isThinkingEnabled ? "Cronograma \(chosenIntensity.displayTitle) calculado mês a mês considerando exclusivamente os meses positivos e o impacto no Saldo Previsto futuro." : nil,
+                executedSteps: executedSteps,
+                followUps: Array(alternativeFollowUps.prefix(3)),
+                shouldClose: false,
+                engineUsed: !forceDeterministicFallbackForTesting && hasConfiguredAI ? backend.displayBadge : modelLabel
+            )
+        } else if pendingSimulationTarget != nil {
+            let asksAboutSimulation = normCleanPrompt.contains("ritmo") || normCleanPrompt.contains("diferenca") || normCleanPrompt.contains("qual melhor")
+            if !asksAboutSimulation {
+                pendingSimulationTarget = nil
+            }
+        }
 
         if !forceDeterministicFallbackForTesting,
            hasConfiguredAI,
@@ -659,6 +909,20 @@ public final class AIChatOrchestrator: ObservableObject {
             return [AIToolCall(name: "query_transactions", argumentsJson: txJson)]
         }
 
+        if InternetLookupService.isCurrencyQuery(norm) ||
+           InternetLookupService.isMacroRateQuery(norm) ||
+           norm.contains("recomend") ||
+           norm.contains("aplicar") ||
+           norm.contains("onde investir") ||
+           norm.contains("internet") {
+            let topic: String = InternetLookupService.isCurrencyQuery(norm)
+                ? "currency"
+                : (norm.contains("selic") || norm.contains("cdi") || norm.contains("ipca") ? "economic_rates" : "investment_info")
+            let webArgs: [String: Any] = ["query": prompt, "topic": topic]
+            let webJson = (try? String(data: JSONSerialization.data(withJSONObject: webArgs), encoding: .utf8)) ?? "{}"
+            return [AIToolCall(name: "internet_lookup", argumentsJson: webJson)]
+        }
+
         return nil
     }
 
@@ -1006,6 +1270,84 @@ public final class AIChatOrchestrator: ObservableObject {
                     "Qual a projeção para os próximos meses?",
                     "Obrigado, pode encerrar"
                 ],
+                false
+            )
+        }
+
+        if let webTool = toolResults.first(where: { $0.toolName == "internet_lookup" }) {
+            let res = webTool.result
+            let status = (res["status"] as? String) ?? ""
+            if status == "disabled" {
+                let msg = (res["message"] as? String) ?? "Consultas na internet estão desativadas nas Configurações da IA."
+                return (
+                    "### 🌐 Acesso à Internet Desativado\n\n\(msg)",
+                    ["Qual é o meu patrimônio consolidado hoje?", "Como está meu saldo previsto?", "Obrigado, pode encerrar"],
+                    false
+                )
+            }
+            if status == "unreachable_or_no_results" {
+                let msg = (res["message"] as? String) ?? "Não foi possível consultar fontes públicas externas no momento."
+                return (
+                    "### 🌐 Consulta Pública Externa\n\n\(msg)",
+                    ["Qual é o meu saldo disponível nas contas?", "Obrigado, pode encerrar"],
+                    false
+                )
+            }
+
+            var lines: [String] = ["### 🌐 Consulta Pública na Internet (Somente Leitura — Sem Envio de Dados)\n"]
+            if let fxList = res["exchangeRates"] as? [[String: Any]], !fxList.isEmpty {
+                lines.append("#### 💱 Cotações Atuais:")
+                for item in fxList {
+                    let name = (item["name"] as? String) ?? (item["pair"] as? String) ?? "Moeda"
+                    let bid = (item["bidFormatted"] as? String) ?? "-"
+                    let src = (item["source"] as? String) ?? "Fonte Pública"
+                    let dt = (item["updatedAt"] as? String) ?? ""
+                    lines.append("• **\(name):** **\(bid)** _(Fonte: \(src)\(dt.isEmpty ? "" : " • \(dt)"))_")
+                }
+                lines.append("")
+            }
+
+            if let conv = res["localPatrimonyConversionOnlyLocalMath"] as? [String: Any] {
+                let code = (conv["currencyCode"] as? String) ?? "USD"
+                let patBRL = (conv["patrimonyBRL"] as? String) ?? "R$ 0,00"
+                let chkBRL = (conv["checkingBRL"] as? String) ?? "R$ 0,00"
+                let invBRL = (conv["consolidatedInvestmentsBRL"] as? String) ?? "R$ 0,00"
+                let patConv = (conv["patrimonyConverted"] as? String) ?? "-"
+                lines.append("#### 💼 Conversão do Seu Patrimônio (Cálculo 100% Local):")
+                lines.append("• **Patrimônio Consolidado Local:** **\(patBRL)** _(Contas: \(chkBRL) + Investimentos: \(invBRL))_")
+                lines.append("• **Equivalente em \(code) Hoje:** **\(patConv)**")
+                lines.append("")
+            }
+
+            if let macro = res["brazilianMacroIndicators"] as? [String: Any] {
+                lines.append("#### 🏛️ Taxas e Índices Oficiais (Banco Central):")
+                if let selic = macro["selicMetaAnualPercent"] as? Double {
+                    lines.append("• **Taxa Selic Meta:** **\(String(format: "%.2f", selic))% ao ano**")
+                }
+                if let cdi = macro["cdiAnualizadoPercent"] as? Double {
+                    lines.append("• **CDI Anualizado:** **\(String(format: "%.2f", cdi))% ao ano**")
+                }
+                if let ipca = macro["ipcaAcumulado12MesesPercent"] as? Double {
+                    lines.append("• **IPCA Acumulado (12 meses):** **\(String(format: "%.2f", ipca))%**")
+                }
+                lines.append("")
+            }
+
+            if let refs = res["publicWebReferences"] as? [[String: Any]], !refs.isEmpty {
+                lines.append("#### 📚 Referências Públicas:")
+                for ref in refs.prefix(3) {
+                    let title = (ref["title"] as? String) ?? "Referência"
+                    let summary = (ref["summary"] as? String) ?? ""
+                    let src = (ref["source"] as? String) ?? ""
+                    lines.append("• **\(title)** _(\(src))_: \(summary)")
+                }
+                lines.append("")
+            }
+
+            lines.append("> 🔒 _Privacidade garantida: apenas o termo público foi consultado em modo leitura; seus saldos e transações permaneceram exclusivamente neste Mac._")
+            return (
+                lines.joined(separator: "\n"),
+                ["Qual a taxa Selic e o CDI hoje?", "Como está minha sobra líquida este mês?", "Obrigado, pode encerrar"],
                 false
             )
         }

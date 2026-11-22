@@ -225,11 +225,15 @@ public struct DebtsView: View {
                 Spacer()
 
                 Button {
-                    let question = "[NOVA SIMULAÇÃO DO SISTEMA] Consultando exclusivamente minhas dívidas em aberto reais, meu Saldo Previsto no fim do mês, saldo atual em contas, investimentos consolidados e histórico de receitas/despesas, em quanto tempo consigo quitar a dívida \"\(debt.name)\" (ID \(debt.id.uuidString)) e qual a estratégia mais segura sem comprometer o caixa?"
+                    let question = "[NOVA SIMULAÇÃO DO SISTEMA] [TIPO:DIVIDA] [ID:\(debt.id.uuidString)] [MODO:PERGUNTAR_RITMO] Simule o prazo para quitar a dívida \"\(debt.name)\" (\(BRLFormatters.currency(debt.originalAmount)))."
                     store.requireInstalledLLM(forFeature: "Simular Prazo da Dívida '\(debt.name)' na IA Local") {
                         store.isAIChatPresented = true
                         Task {
-                            await llmService.sendUserQuestion(question, store: store)
+                            await llmService.startFreshSimulationQuestion(
+                                question,
+                                target: .debt(id: debt.id, name: debt.name),
+                                store: store
+                            )
                         }
                     }
                 } label: {

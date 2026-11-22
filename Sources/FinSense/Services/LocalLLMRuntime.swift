@@ -518,6 +518,7 @@ public final class LocalLLMRuntime {
         userPrompt: String,
         store: FinancialDataStore,
         isThinkingEnabled: Bool,
+        preGroundedContext: (steps: [String], compactJson: String, directive: String?)? = nil,
         onStepUpdate: ((String) -> Void)?,
         onThinkingUpdate: ((String) -> Void)?,
         onContentUpdate: ((String) -> Void)?
@@ -536,7 +537,7 @@ public final class LocalLLMRuntime {
             let temp = min(max(store.llmConfig.appleIntelligenceTemperature, 0.05), 0.9)
             let maxTokens = isThinkingEnabled
                 ? max(1200, store.llmConfig.appleIntelligenceMaxResponseTokens)
-                : min(900, max(550, store.llmConfig.appleIntelligenceMaxResponseTokens))
+                : min(950, max(600, store.llmConfig.appleIntelligenceMaxResponseTokens))
 
             let options = GenerationOptions(
                 temperature: isThinkingEnabled ? temp : min(temp, 0.2),
@@ -564,9 +565,8 @@ public final class LocalLLMRuntime {
                 forceNew: shouldForceNew
             )
 
-            let effectivePrompt: String = isExplicitReset
-                ? userPrompt.replacingOccurrences(of: "[NOVA SIMULAÇÃO DO SISTEMA]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                : userPrompt
+            let strippedTags = InteractivePayoffPlanner.extractMetadata(from: userPrompt, store: store).cleanPrompt
+            let effectivePrompt = strippedTags.isEmpty ? userPrompt : strippedTags
 
             if isThinkingEnabled {
                 let initialThought = "🧠 Analisando solicitação e consultando banco de dados local FinSense..."
@@ -574,10 +574,26 @@ public final class LocalLLMRuntime {
                 onThinkingUpdate?(initialThought)
             }
 
-            // Para simulações iniciadas diretamente dos cards da UI, fundamenta imediatamente com os cálculos reais
-            // antes da síntese neural para eliminar latência de idas-e-voltas e garantir zero alucinação.
             var initialExecutionPrompt = effectivePrompt
-            if isExplicitReset {
+            if let pre = preGroundedContext {
+                for st in pre.steps {
+                    collectedAppleSteps.append(st)
+                    collectedAppleThinkingLines.append("• \(st)")
+                    onStepUpdate?(st)
+                }
+                if !pre.steps.isEmpty {
+                    onThinkingUpdate?(collectedAppleThinkingLines.joined(separator: "\n"))
+                }
+                let directiveText = pre.directive ?? "Apresente uma resposta clara em Markdown copiando exatamente os números, datas e valores fornecidos acima, sem inventar dados."
+                initialExecutionPrompt = """
+                \(effectivePrompt)
+
+                Dados reais extraídos agora do FinSense:
+                \(pre.compactJson)
+
+                \(directiveText)
+                """
+            } else if isExplicitReset {
                 let snapshot = await FinancialDatabaseContextBuilder.buildGroundedContextSnapshot(
                     for: effectivePrompt,
                     store: store
@@ -977,7 +993,129 @@ public final class LocalLLMRuntime {
         #endif
         throw NSError(domain: "LocalLLM", code: -6, userInfo: [NSLocalizedDescriptionKey: "Apple Intelligence indisponível nesta versão do macOS."])
     }
+
+    // MARK: - Enriquecimento Inteligente de Extrato Bancário (Apple Intelligence On-Device)
+
+    /// Melhora títulos genéricos/criptografados e categorias de transações extraídas de extratos bancários
+    /// usando `FoundationModels` 100% local (zero envio externo de dados financeiros).
+    public func enrichParsedStatementTransactions(
+        _ items: [ParsedStatementTransaction],
+        categories: [CategoryItem]
+    ) async -> [ParsedStatementTransaction] {
+        guard !items.isEmpty else { return items }
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            let model = SystemLanguageModel(useCase: .general, guardrails: .permissiveContentTransformations)
+            guard model.isAvailable else { return items }
+
+            let expenseCats = categories.filter { $0.type == .expense }.map(\.name)
+            let incomeCats = categories.filter { $0.type == .income }.map(\.name)
+            let genericTitles: Set<String> = [
+                "despesa", "gasto", "compra", "pagamento", "receita", "movimentacao",
+                "lancamento", "debito", "credito", "transferencia", "pix", "outros", "transacao"
+            ]
+
+            let instructionsText = """
+            Você é um especialista contábil brasileiro classificando lançamentos de extrato bancário.
+            Para cada lançamento enviado com índice, descrição original e valor:
+            1) Gere um `cleanTitle` limpo, específico e legível em português brasileiro (identificando estabelecimentos ou serviços reais mesmo quando abreviados, sem códigos bancários aleatórios ou termos genéricos como Compra/Despesa/Gasto/Outros).
+            2) Escolha exatamente uma categoria existente da lista:
+            - Categorias de Despesa: \(expenseCats.joined(separator: ", "))
+            - Categorias de Receita: \(incomeCats.joined(separator: ", "))
+            Se a descrição já indicar claramente uma categoria ou estabelecimento, preserve e refine.
+            """
+
+            var updated = items
+            let chunkSize = 8
+            let maxItemsToEnrich = min(items.count, 48)
+            var startIndex = 0
+
+            while startIndex < maxItemsToEnrich {
+                if Task.isCancelled { break }
+                let endIndex = min(startIndex + chunkSize, maxItemsToEnrich)
+                let sliceLines: String = (startIndex..<endIndex).map { idx in
+                    let tx = updated[idx]
+                    let kindStr = tx.type == .income ? "RECEITA" : "DESPESA"
+                    return "[\(idx)] tipo=\(kindStr) | tituloAtual=\"\(tx.cleanTitle)\" | bruto=\"\(tx.rawDescription)\" | catAtual=\"\(tx.suggestedCategoryName)\" | valor=\(String(format: "%.2f", tx.amount))"
+                }.joined(separator: "\n")
+
+                let prompt = """
+                Classifique e aprimore os \(endIndex - startIndex) lançamentos abaixo retornando exatamente um item para cada índice:
+                \(sliceLines)
+                """
+
+                do {
+                    let session = LanguageModelSession(model: model, instructions: instructionsText)
+                    let options = GenerationOptions(temperature: 0.1, maximumResponseTokens: 700)
+                    let response = try await session.respond(to: prompt, generating: AppleStatementBatchOutput.self, options: options)
+
+                    for suggestion in response.content.items {
+                        let idx = suggestion.index
+                        guard idx >= startIndex && idx < endIndex else { continue }
+
+                        let proposedTitle = suggestion.cleanTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let normProposedTitle = proposedTitle.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")).lowercased()
+                        if !proposedTitle.isEmpty,
+                           proposedTitle.count >= 3,
+                           !genericTitles.contains(normProposedTitle),
+                           !proposedTitle.hasPrefix("[") {
+                            updated[idx].cleanTitle = proposedTitle
+                        }
+
+                        // Respeita explicitCategoryName quando usuário especificou explicitamente na linha natural
+                        if updated[idx].explicitCategoryName == nil {
+                            let targetCats = categories.filter { $0.type == updated[idx].type }
+                            let normSuggestedCat = suggestion.categoryName
+                                .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR"))
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                                .lowercased()
+                            if let matchedCat = targetCats.first(where: {
+                                let cNorm = $0.name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "pt_BR")).lowercased()
+                                return cNorm == normSuggestedCat || cNorm.contains(normSuggestedCat) || normSuggestedCat.contains(cNorm)
+                            }) {
+                                updated[idx].suggestedCategoryId = matchedCat.id
+                                updated[idx].suggestedCategoryName = matchedCat.name
+                            }
+                        }
+
+                        if !updated[idx].extractedDetails.contains("Apple Intelligence") {
+                            updated[idx].extractedDetails = "[Apple Intelligence] \(updated[idx].extractedDetails)"
+                        }
+                    }
+                } catch is CancellationError {
+                    break
+                } catch {
+                    // Em caso de falha pontual num lote, preserva análise determinística daquele lote e segue
+                }
+
+                startIndex = endIndex
+            }
+
+            return updated
+        }
+        #endif
+        return items
+    }
 }
+
+#if canImport(FoundationModels)
+@available(macOS 26.0, *)
+@Generable
+private struct AppleStatementItemOutput {
+    @Guide(description: "Índice exato do item recebido na entrada")
+    var index: Int
+    @Guide(description: "Nome claro, humano e específico para a transação (ex: 'Farmácia Drogasil', 'Supermercado Delta', 'Uber Viagens'). Nunca use palavras genéricas como 'Despesa', 'Gasto', 'Compra', 'Pagamento' ou 'Outros'.")
+    var cleanTitle: String
+    @Guide(description: "Nome exato de uma das categorias fornecidas para o respectivo tipo (despesa ou receita)")
+    var categoryName: String
+}
+
+@available(macOS 26.0, *)
+@Generable
+private struct AppleStatementBatchOutput {
+    var items: [AppleStatementItemOutput]
+}
+#endif
 
 // MARK: - Downloader Real de Pesos GGUF do Hugging Face (Streaming + Progresso em Bytes)
 

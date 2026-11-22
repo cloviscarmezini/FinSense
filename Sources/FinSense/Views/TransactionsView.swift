@@ -203,15 +203,52 @@ public struct TransactionsView: View {
                         )
                         .frame(maxWidth: .infinity)
 
-                        // Card 4 — Transações Pendentes
+                        // Card 4 — Saldo previsto para [data fim do mês selecionado]
+                        let projectedBalanceValue = kpiSummary.isPast
+                            ? kpiSummary.projectedAccountBalance
+                            : kpiSummary.balanceIfAllBudgetsConsumed
+                        let projectedBalanceTint = projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                        let monthEndDateStr = BRLFormatters.shortDate(store.endOfMonth(for: store.selectedMonth))
+                        let yearEndDateStr = "31/12/\(BRLFormatters.yearString(store.selectedMonth))"
+                        let projectedCardTitle: String = {
+                            if kpiSummary.isPast {
+                                return isAnnual ? "Resultado Consolidado (Ano)" : "Saldo Final Realizado"
+                            }
+                            return isAnnual
+                                ? "Saldo previsto para \(yearEndDateStr)"
+                                : "Saldo previsto para \(monthEndDateStr)"
+                        }()
+                        let projectedSubtitleText: String = kpiSummary.isPast
+                            ? "Saldo final histórico conciliado"
+                            : "Se não usar o orçamento: \(BRLFormatters.currency(kpiSummary.projectedAccountBalance))"
+                        let projectedCustomSubtitle: Text? = {
+                            if kpiSummary.isPast {
+                                return Text("Saldo final histórico conciliado").foregroundColor(.secondary)
+                            }
+                            let prefix = "Se não usar o orçamento: "
+                            let valueStr = BRLFormatters.currency(kpiSummary.projectedAccountBalance)
+                            let amountColor = kpiSummary.projectedAccountBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                            return Text(prefix).foregroundColor(.secondary) + Text(valueStr).foregroundColor(amountColor)
+                        }()
+                        let projectedFootnote: String = {
+                            if kpiSummary.isPast {
+                                return "Resultado final registrado"
+                            }
+                            if projectedBalanceValue < 0 {
+                                return "Alerta: Risco de caixa negativo"
+                            }
+                            return "Saldo projetado no fechamento"
+                        }()
+
                         MetricCardView(
-                            title: isAnnual ? "Transações Pendentes (Ano)" : "Transações Pendentes",
-                            value: BRLFormatters.currency(kpiSummary.totalPendingVolume),
-                            subtitle: "A receber: \(BRLFormatters.currency(kpiSummary.pendingIncome)) • A pagar: \(BRLFormatters.currency(kpiSummary.pendingExpense))",
-                            icon: "clock.badge.exclamationmark",
-                            tint: kpiSummary.totalPendingVolume > 0 ? Color(hex: "#F59E0B") : Color(hex: "#64748B"),
-                            footnote: (kpiSummary.overdueExpenses > 0 || kpiSummary.pendingIncomeOverdue > 0) ? "Possui pendências em atraso" : nil,
-                            footnoteColor: Color(hex: "#EF4444")
+                            title: projectedCardTitle,
+                            value: BRLFormatters.currency(projectedBalanceValue),
+                            subtitle: projectedSubtitleText,
+                            customSubtitle: projectedCustomSubtitle,
+                            icon: kpiSummary.isPast ? "checkmark.seal.fill" : "building.columns.fill",
+                            tint: projectedBalanceTint,
+                            footnote: projectedFootnote,
+                            footnoteColor: kpiSummary.isPast ? .secondary : projectedBalanceTint
                         )
                         .frame(maxWidth: .infinity)
 
@@ -1796,7 +1833,7 @@ public struct StatementImportSheet: View {
                                 hasAttemptedLoad = true
                             }
                         } label: {
-                            Label("Analisar Texto com LLM Local", systemImage: "sparkles")
+                            Label("Analisar Texto com Apple Intelligence", systemImage: "sparkles")
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(Color(hex: "#6366F1"))
@@ -1812,7 +1849,7 @@ public struct StatementImportSheet: View {
                 HStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
-                    Text("A LLM local está analisando os lançamentos, identificando estabelecimentos e classificando categorias...")
+                    Text("A Apple Intelligence está analisando o extrato, gerando nomes claros e identificando a categoria ideal de cada gasto...")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }

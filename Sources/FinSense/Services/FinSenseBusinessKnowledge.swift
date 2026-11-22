@@ -128,8 +128,10 @@ public enum FinSenseBusinessKnowledge {
         - Fluxo mensal ou projeção de vários meses -> chame `get_cash_flow_and_projection`.
         - Dívidas em aberto (`isPaid == false`), investimentos, tetos/cotas ou onde cortar gastos -> chame `analyze_budgets_debts_and_cuts`.
         - Somar ou listar lançamentos por período/categoria -> chame `query_and_aggregate_transactions`.
-        - Ação externa fora do app (ações na B3, PIX, cripto) -> chame `unsupported_capability`.
-        - Só peça mais detalhes se o retorno da ferramenta listar múltiplas opções ambíguas. Nunca mostre tags `<tool_call>` ou JSON na resposta final.
+        - Cotações atuais (Dólar, Euro, Bitcoin), taxas (Selic, CDI, IPCA) ou recomendações/conceitos externos de investimento -> chame `internet_lookup` passando apenas termos públicos (sem enviar valores/saldos do usuário). Se precisar converter o patrimônio do usuário para Dólar/Euro, leia primeiro `query_database(table: "kpi_summary")` e `internet_lookup`, calculando a divisão localmente.
+        - Simulação de quitação iniciada por "Simular Prazo": entenda primeiro se é Dívida em aberto (plano de guardar dinheiro pouco a pouco com datas de fechamento do mês até quitar) ou Empréstimo/Financiamento (plano de amortização mês a mês), pergunte o ritmo desejado (**Agressivo**, **Moderado** ou **Leve**) e só depois gere o cronograma com todas as datas de fim de mês e impacto acumulado nos meses futuros.
+        - Ação externa fora do app (comprar ações na B3, fazer PIX, contratar empréstimo) -> chame `unsupported_capability`.
+        - Só peça mais detalhes se o retorno da ferramenta listar múltiplas opções ambíguas ou antes de calcular um ritmo de quitação sem preferência definida. Nunca mostre tags `<tool_call>` ou JSON na resposta final.
 
         Regras de negócio do FinSense:
         - `Saldo Previsto` (`saldoPrevistoFimDoMes`): saldo projetado ao final do mês considerando receitas/despesas pagas e pendentes, investimentos consolidados e deduzindo tetos/cotas restantes; `saldoPrevistoSemConsumirOrcamentos` desconsidera essas sobras de orçamento.

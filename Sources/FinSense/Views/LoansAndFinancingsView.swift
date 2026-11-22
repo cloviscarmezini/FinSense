@@ -606,11 +606,15 @@ public struct LoansAndFinancingsView: View {
                     Button {
                         let kindLower = contract.kind == .loan ? "empréstimo" : "financiamento"
                         let contractNumInfo = contract.contractNumber.map { " — Contrato \($0)" } ?? ""
-                        let question = "[NOVA SIMULAÇÃO DO SISTEMA] Monte um plano de ação completo para quitar meu \(kindLower) \"\(contract.name)\"\(contractNumInfo) no menor prazo possível, simulando cenários mensais de amortização e validando a viabilidade no meu Saldo Previsto."
+                        let question = "[NOVA SIMULAÇÃO DO SISTEMA] [TIPO:CONTRATO] [ID:\(contract.id.uuidString)] [MODO:PERGUNTAR_RITMO] Simule o prazo para quitar meu \(kindLower) \"\(contract.name)\"\(contractNumInfo)."
                         store.requireInstalledLLM(forFeature: "Simular Prazo de '\(contract.name)' com IA Local") {
                             store.isAIChatPresented = true
                             Task {
-                                await llmService.sendUserQuestion(question, store: store)
+                                await llmService.startFreshSimulationQuestion(
+                                    question,
+                                    target: .contract(id: contract.id, name: contract.name, kind: contract.kind),
+                                    store: store
+                                )
                             }
                         }
                     } label: {

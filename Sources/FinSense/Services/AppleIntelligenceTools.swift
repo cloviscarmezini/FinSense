@@ -30,6 +30,7 @@ public enum AppleIntelligenceToolFactory {
             AppleSimulateContractPlanTool(store: store, onActivity: onActivity),
             AppleTransactionsTool(store: store, onActivity: onActivity),
             AppleBudgetsDebtsAndCutsTool(store: store, onActivity: onActivity),
+            AppleWebLookupTool(store: store, onActivity: onActivity),
             AppleUnsupportedCapabilityTool(onActivity: onActivity)
         ]
     }
@@ -392,7 +393,41 @@ public struct AppleBudgetsDebtsAndCutsTool: FoundationModels.Tool, @unchecked Se
     }
 }
 
-// MARK: - 6. Fallback Mandatório para Ações Externas Não Suportadas
+// MARK: - 6. Consultas Web (Somente Leitura) & Fallback Mandatório
+
+@available(macOS 26.0, *)
+public struct AppleWebLookupTool: FoundationModels.Tool, @unchecked Sendable {
+    public let name = "internet_lookup"
+    public let description = "Busca informações públicas na internet (Dólar, Euro, Bitcoin, Selic, CDI, IPCA e conceitos de investimento). Somente leitura: não envia nenhum dado pessoal ou valor financeiro."
+
+    @Generable
+    public struct Arguments {
+        @Guide(description: "Termo público de busca sem valores pessoais (ex: 'dolar hoje', 'selic e cdi', 'tesouro selic vs cdb')")
+        public var query: String
+        @Guide(description: "Categoria opcional: currency, economic_rates, investment_info ou general")
+        public var topic: String?
+    }
+
+    private let store: FinancialDataStore
+    private let onActivity: AppleToolActivityHandler?
+
+    public init(store: FinancialDataStore, onActivity: AppleToolActivityHandler?) {
+        self.store = store
+        self.onActivity = onActivity
+    }
+
+    public func call(arguments: Arguments) async throws -> String {
+        onActivity?(
+            "🌐 Consultando dados públicos na internet (somente leitura)...",
+            "Buscando cotação/índice ou referência pública para '\(InternetLookupService.sanitizePublicQuery(arguments.query))' sem enviar dados pessoais."
+        )
+        let tool = await MainActor.run { InternetLookupTool(store: store) }
+        var params: [String: Any] = ["query": arguments.query]
+        if let t = arguments.topic, !t.isEmpty { params["topic"] = t }
+        let res = try await tool.execute(parameters: params)
+        return encodeCompactResult(res, maxLength: 2300)
+    }
+}
 
 @available(macOS 26.0, *)
 public struct AppleUnsupportedCapabilityTool: FoundationModels.Tool, @unchecked Sendable {

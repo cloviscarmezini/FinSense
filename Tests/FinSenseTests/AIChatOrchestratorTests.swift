@@ -618,4 +618,240 @@ final class AIChatOrchestratorTests: XCTestCase {
         XCTAssertFalse(grounded.steps.isEmpty)
         XCTAssertTrue(grounded.compactJson.contains("1.500,00"), "Snapshot determinístico deve simular exatamente R$ 1.500,00/mês quando solicitado")
     }
+
+    // MARK: - 8. Internet Lookup Toggle, Conversão Local, Extrato e Simulação Interativa em 2 Etapas
+
+    func testInternetLookupConfigDefaultAndDisabledGuard() async throws {
+        let legacyJson = """
+        {
+            "isEnabled": true,
+            "isThinkingEnabled": true,
+            "temperature": 0.25,
+            "maxTokens": 1024,
+            "appleIntelligenceTemperature": 0.25,
+            "appleIntelligenceMaxResponseTokens": 1400,
+            "localEndpointURL": ""
+        }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(LLMConfiguration.self, from: legacyJson)
+        XCTAssertTrue(decoded.isInternetAccessEnabled, "Configurações legadas devem habilitar consultas de internet somente-leitura por padrão")
+
+        // Sanitização deve remover valores em R$, UUIDs e sequências longas
+        let dirty = "Se meu patrimonio de R$ 154.320,50 com contrato 123456789 e id \(UUID().uuidString) estivesse em dolar hoje?"
+        let sanitized = InternetLookupService.sanitizePublicQuery(dirty)
+        XCTAssertFalse(sanitized.contains("154.320,50"))
+        XCTAssertFalse(sanitized.contains("123456789"))
+        XCTAssertTrue(sanitized.localizedCaseInsensitiveContains("dolar"))
+
+        // Quando desativado nas Configurações, InternetLookupTool deve recusar execução e orientar o usuário
+        let (store, tempDir) = createTestStore()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        store.llmConfig.isInternetAccessEnabled = false
+
+        let tool = InternetLookupTool(store: store)
+        let res = try await tool.execute(parameters: ["query": "Qual o valor do dolar hoje?"])
+        XCTAssertEqual(res["status"] as? String, "disabled")
+    }
+
+    func testInteractiveTwoStepSimularPrazoFreshContextAndDebtVsContract() async throws {
+        let (store, tempDir) = createTestStore()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let acc = BankAccount(id: UUID(), name: "Conta Itaú", initialBalance: 6000.0)
+        let catSal = CategoryItem(id: UUID(), name: "Salário", type: .income, iconSymbol: "banknote", colorHex: "#10B981")
+        let catDebt = CategoryItem(id: UUID(), name: "Dívidas", type: .expense, iconSymbol: "creditcard", colorHex: "#EF4444")
+        store.accounts.append(acc)
+        store.categories.append(contentsOf: [catSal, catDebt])
+
+        let now = store.selectedMonth
+        store.transactions.append(contentsOf: [
+            FinancialTransaction(name: "Salário Mensal", amount: 10000.0, date: now, type: .income, isPaid: true, categoryId: catSal.id, accountId: acc.id, recurrenceMode: .recurring, recurrenceFrequency: .monthly),
+            FinancialTransaction(name: "Aluguel e Contas", amount: 3000.0, date: now, type: .expense, isPaid: true, categoryId: catDebt.id, accountId: acc.id, recurrenceMode: .recurring, recurrenceFrequency: .monthly)
+        ])
+
+        let serasa = DebtItem(id: UUID(), name: "Acordo Serasa", originalAmount: 4500.0, isPaid: false)
+        store.debts.append(serasa)
+
+        let loan = CreditContract(
+            id: UUID(),
+            kind: .loan,
+            name: "Consignado Teste",
+            contractNumber: "554433",
+            loanSubtype: .consignado,
+            amortizationSystem: .price,
+            totalContractedAmount: 24000.0,
+            outstandingBalance: 18000.0,
+            installmentAmount: 900.0,
+            billingDay: 10,
+            totalInstallments: 24,
+            originalTotalInstallments: 24,
+            monthlyInterestRate: 1.5,
+            startDate: now,
+            accountId: acc.id,
+            categoryId: catDebt.id,
+            pastInstallmentsElapsedAtCreation: 4
+        )
+        store.contracts.append(loan)
+
+        let orchestrator = AIChatOrchestrator.shared
+        orchestrator.forceDeterministicFallbackForTesting = true
+        defer { orchestrator.forceDeterministicFallbackForTesting = false; orchestrator.pendingSimulationTarget = nil; orchestrator.lastSimulatedTarget = nil }
+
+        // Histórico anterior deve ser completamente zerado quando um botão fixo iniciar nova simulação
+        store.chatHistory = [ChatMessage(role: .user, content: "Conversa antiga", timestamp: now)]
+        orchestrator.pendingSimulationTarget = .debt(id: serasa.id, name: serasa.name)
+
+        let monthEndStr = BRLFormatters.shortDate(store.endOfMonth(for: store.selectedMonth))
+
+        // 1A. Simular Prazo em DÍVIDA (Serasa) -> Etapa 1 deve perguntar Agressivo / Moderado / Leve e citar fim do mês
+        let debtPrompt = "[NOVA SIMULAÇÃO DO SISTEMA] [TIPO:DIVIDA] [ID:\(serasa.id.uuidString)] [MODO:PERGUNTAR_RITMO] Quero simular um prazo para quitar minha dívida \"Acordo Serasa\"."
+        store.chatHistory.removeAll() // simula comportamento de startFreshSimulationQuestion sem usar backend neural
+        orchestrator.pendingSimulationTarget = .debt(id: serasa.id, name: serasa.name)
+        let step1Debt = await orchestrator.processTurnWithThinking(
+            userPrompt: debtPrompt,
+            store: store,
+            modelLabel: "Apple Intelligence Nativo",
+            isThinkingEnabled: true
+        )
+        XCTAssertTrue(step1Debt.responseMarkdown.contains("Agressivo"))
+        XCTAssertTrue(step1Debt.responseMarkdown.contains("Moderado"))
+        XCTAssertTrue(step1Debt.responseMarkdown.contains("Leve"))
+        XCTAssertFalse(step1Debt.responseMarkdown.contains("0,00/mês"), "Etapa 1 nunca deve propor valores R$ 0,00/mês prematuramente")
+        XCTAssertTrue(step1Debt.responseMarkdown.contains("guardar dinheiro pouco a pouco"))
+        XCTAssertTrue(step1Debt.responseMarkdown.contains(monthEndStr))
+        XCTAssertEqual(step1Debt.followUps, ["Plano Agressivo", "Plano Moderado", "Plano Leve"])
+
+        // 1B. Resposta do usuário ("Plano Moderado") -> Etapa 2 retorna cronograma de guarda gradual com datas de fechamento e data de quitação
+        let step2Debt = await orchestrator.processTurnWithThinking(
+            userPrompt: "Plano Moderado",
+            store: store,
+            modelLabel: "Apple Intelligence Nativo",
+            isThinkingEnabled: true
+        )
+        XCTAssertTrue(step2Debt.responseMarkdown.contains("Plano Moderado para Quitar Dívida"))
+        XCTAssertTrue(step2Debt.responseMarkdown.contains("Data prevista para quitação integral"))
+        XCTAssertTrue(step2Debt.responseMarkdown.contains(monthEndStr))
+
+        // 2. Simular Prazo em EMPRÉSTIMO -> Etapa 1 pergunta ritmo mencionando amortização parcelada, Etapa 2 amortiza mês a mês
+        store.chatHistory.removeAll()
+        orchestrator.pendingSimulationTarget = .contract(id: loan.id, name: loan.name, kind: loan.kind)
+        let loanPrompt = "[NOVA SIMULAÇÃO DO SISTEMA] [TIPO:CONTRATO] [ID:\(loan.id.uuidString)] [MODO:PERGUNTAR_RITMO] Quero simular um prazo para quitar meu empréstimo \"Consignado Teste\"."
+        let step1Loan = await orchestrator.processTurnWithThinking(
+            userPrompt: loanPrompt,
+            store: store,
+            modelLabel: "Apple Intelligence Nativo",
+            isThinkingEnabled: true
+        )
+        XCTAssertTrue(step1Loan.responseMarkdown.contains("plano de amortização mês a mês"))
+        XCTAssertTrue(step1Loan.responseMarkdown.contains(monthEndStr))
+
+        let step2Loan = await orchestrator.processTurnWithThinking(
+            userPrompt: "Plano Agressivo",
+            store: store,
+            modelLabel: "Apple Intelligence Nativo",
+            isThinkingEnabled: true
+        )
+        XCTAssertTrue(step2Loan.responseMarkdown.contains("Plano de Amortização Agressivo"))
+        XCTAssertTrue(step2Loan.responseMarkdown.contains("Cronograma de Amortização"))
+        XCTAssertTrue(step2Loan.responseMarkdown.contains(monthEndStr))
+    }
+
+    func testDebtSimulationWithNegativeCurrentMonthAndPositiveFutureMonthsPreservesContextAndFutureSafety() async throws {
+        let (store, tempDir) = createTestStore()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let acc = BankAccount(id: UUID(), name: "Conta Principal", initialBalance: 0.0)
+        let catSal = CategoryItem(id: UUID(), name: "Salário", type: .income, iconSymbol: "banknote", colorHex: "#10B981")
+        let catExp = CategoryItem(id: UUID(), name: "Despesas", type: .expense, iconSymbol: "creditcard", colorHex: "#EF4444")
+        store.accounts.append(acc)
+        store.categories.append(contentsOf: [catSal, catExp])
+
+        let cal = store.calendar
+        let nov = store.selectedMonth
+        let dec = cal.date(byAdding: .month, value: 1, to: nov)!
+        let jan = cal.date(byAdding: .month, value: 2, to: nov)!
+        let feb = cal.date(byAdding: .month, value: 3, to: nov)!
+        let mar = cal.date(byAdding: .month, value: 4, to: nov)!
+
+        // Mês atual negativo (-R$ 394,33), Dezembro positivo (+R$ 4.000 líquido -> acumulado +3.605,67),
+        // Janeiro com IPVA (-R$ 1.500 líquido -> acumulado cai para +2.105,67!), Fev/Mar positivos (+R$ 3.000/mês)
+        store.transactions.append(contentsOf: [
+            FinancialTransaction(name: "Salário Nov", amount: 5000.0, date: nov, type: .income, isPaid: true, categoryId: catSal.id, accountId: acc.id),
+            FinancialTransaction(name: "Despesas Nov", amount: 5394.33, date: nov, type: .expense, isPaid: true, categoryId: catExp.id, accountId: acc.id),
+            FinancialTransaction(name: "Salário Dez", amount: 9000.0, date: dec, type: .income, isPaid: false, categoryId: catSal.id, accountId: acc.id),
+            FinancialTransaction(name: "Despesas Dez", amount: 5000.0, date: dec, type: .expense, isPaid: false, categoryId: catExp.id, accountId: acc.id),
+            FinancialTransaction(name: "Salário Jan", amount: 5000.0, date: jan, type: .income, isPaid: false, categoryId: catSal.id, accountId: acc.id),
+            FinancialTransaction(name: "IPVA + Despesas Jan", amount: 6500.0, date: jan, type: .expense, isPaid: false, categoryId: catExp.id, accountId: acc.id),
+            FinancialTransaction(name: "Salário Fev", amount: 8000.0, date: feb, type: .income, isPaid: false, categoryId: catSal.id, accountId: acc.id),
+            FinancialTransaction(name: "Despesas Fev", amount: 5000.0, date: feb, type: .expense, isPaid: false, categoryId: catExp.id, accountId: acc.id),
+            FinancialTransaction(name: "Salário Mar", amount: 8000.0, date: mar, type: .income, isPaid: false, categoryId: catSal.id, accountId: acc.id),
+            FinancialTransaction(name: "Despesas Mar", amount: 5000.0, date: mar, type: .expense, isPaid: false, categoryId: catExp.id, accountId: acc.id)
+        ])
+
+        let carrefour = DebtItem(id: UUID(), name: "Cartão de crédito Carrefour", originalAmount: 6196.0, isPaid: false)
+        store.debts.append(carrefour)
+
+        let orchestrator = AIChatOrchestrator.shared
+        orchestrator.forceDeterministicFallbackForTesting = true
+        orchestrator.pendingSimulationTarget = nil
+        orchestrator.lastSimulatedTarget = nil
+        defer {
+            orchestrator.forceDeterministicFallbackForTesting = false
+            orchestrator.pendingSimulationTarget = nil
+            orchestrator.lastSimulatedTarget = nil
+        }
+
+        // Chat livre usando "Simule" (não apenas "simular") deve reconhecer alvo exato, NÃO propor ~R$ 0,00/mês e salvar breadcrumb
+        let step1 = await orchestrator.processTurnWithThinking(
+            userPrompt: "Simule o prazo para quitar a divida \"Cartão de credito Carrefour\" (R$6.196)",
+            store: store,
+            modelLabel: "Apple Intelligence Nativo",
+            isThinkingEnabled: true
+        )
+        XCTAssertTrue(step1.responseMarkdown.contains("Cartão de crédito Carrefour"))
+        XCTAssertFalse(step1.responseMarkdown.contains("0,00/mês"), "Não deve sugerir valores falsos de R$ 0,00/mês na Etapa 1")
+        XCTAssertTrue(step1.responseMarkdown.contains("Agressivo"))
+        XCTAssertTrue(step1.responseMarkdown.contains("Moderado"))
+        XCTAssertTrue(step1.responseMarkdown.contains("Leve"))
+
+        // Simula perda da variável em RAM antes de responder "Agressivo" — o contexto DEVE ser recuperado pelo breadcrumb do chatHistory!
+        orchestrator.pendingSimulationTarget = nil
+        orchestrator.lastSimulatedTarget = nil
+
+        let step2 = await orchestrator.processTurnWithThinking(
+            userPrompt: "agressivo",
+            store: store,
+            modelLabel: "Apple Intelligence Nativo",
+            isThinkingEnabled: true
+        )
+        XCTAssertTrue(step2.responseMarkdown.contains("Plano Agressivo para Quitar Dívida: Cartão de crédito Carrefour"))
+        XCTAssertFalse(step2.responseMarkdown.localizedCaseInsensitiveContains("empréstimo"))
+        XCTAssertTrue(step2.responseMarkdown.contains("Sem reserva possível neste mês"), "Novembro negativo não deve alocar reserva falsa")
+        // Em Dezembro (folga +3.605,67), o impacto de Janeiro (-1.500) reduz a margem segura máxima de Dezembro para 2.105,67 (não pode estourar Janeiro nem assumir R$ 6.196 em Dezembro!)
+        XCTAssertFalse(step2.responseMarkdown.contains("31/12/2026) _"), "Não deve quitar em Dezembro ignorando impacto em Janeiro")
+        XCTAssertFalse(step2.responseMarkdown.contains("|---|"), "Cronograma não deve usar pipe table incompatível com Text(LocalizedStringKey)")
+    }
+
+    func testStatementImportProducesNonGenericMerchantTitles() {
+        let categories = [
+            CategoryItem(name: "Saúde", type: .expense, iconSymbol: "heart.fill", colorHex: "#EF4444"),
+            CategoryItem(name: "Compras", type: .expense, iconSymbol: "bag.fill", colorHex: "#8B5CF6"),
+            CategoryItem(name: "Transporte", type: .expense, iconSymbol: "car.fill", colorHex: "#3B82F6"),
+            CategoryItem(name: "Alimentação", type: .expense, iconSymbol: "fork.knife", colorHex: "#F59E0B"),
+            CategoryItem(name: "Outros", type: .expense, iconSymbol: "tag.fill", colorHex: "#64748B")
+        ]
+        let rawText = """
+        05/11/2026 PAG*DROGASIL 123 -145,90
+        06/11/2026 PIX QRS MERCADOLIVRE -230,00
+        07/11/2026 COMPRA DEBITO UBER -34,50
+        08/11/2026 IFD*STARBUCKS BRASIL -28,00
+        """
+        let parsed = StatementImportService.parseStatementText(rawText, categories: categories)
+        XCTAssertEqual(parsed.count, 4)
+        XCTAssertEqual(parsed[0].cleanTitle, "Farmácia Drogasil")
+        XCTAssertEqual(parsed[0].suggestedCategoryName, "Saúde")
+        XCTAssertEqual(parsed[1].cleanTitle, "Mercado Livre")
+        XCTAssertEqual(parsed[2].cleanTitle, "Uber Viagens")
+        XCTAssertEqual(parsed[3].cleanTitle, "Starbucks Cafeteria")
+    }
 }

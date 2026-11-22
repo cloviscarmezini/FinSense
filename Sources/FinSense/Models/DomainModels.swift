@@ -911,7 +911,7 @@ public struct DebtItem: Identifiable, Codable, Hashable {
 
 // MARK: - Loans (Empréstimos) & Financings (Financiamentos)
 
-public enum CreditContractKind: String, Codable, CaseIterable, Identifiable, Hashable {
+public enum CreditContractKind: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
     case loan
     case financing
 
@@ -1986,6 +1986,7 @@ public struct LLMConfiguration: Codable, Hashable {
     public var contextWindowSize: Int
     public var appleIntelligenceTemperature: Double
     public var appleIntelligenceMaxResponseTokens: Int
+    public var isInternetAccessEnabled: Bool
 
     enum CodingKeys: String, CodingKey {
         case huggingFaceToken
@@ -1996,6 +1997,7 @@ public struct LLMConfiguration: Codable, Hashable {
         case contextWindowSize
         case appleIntelligenceTemperature
         case appleIntelligenceMaxResponseTokens
+        case isInternetAccessEnabled
     }
 
     public init(
@@ -2006,7 +2008,8 @@ public struct LLMConfiguration: Codable, Hashable {
         isThinkingModeEnabled: Bool = true,
         contextWindowSize: Int = 16384,
         appleIntelligenceTemperature: Double = 0.25,
-        appleIntelligenceMaxResponseTokens: Int = 1600
+        appleIntelligenceMaxResponseTokens: Int = 1600,
+        isInternetAccessEnabled: Bool = true
     ) {
         self.huggingFaceToken = huggingFaceToken
         self.selectedModelId = selectedModelId
@@ -2016,6 +2019,7 @@ public struct LLMConfiguration: Codable, Hashable {
         self.contextWindowSize = contextWindowSize
         self.appleIntelligenceTemperature = appleIntelligenceTemperature
         self.appleIntelligenceMaxResponseTokens = appleIntelligenceMaxResponseTokens
+        self.isInternetAccessEnabled = isInternetAccessEnabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -2028,6 +2032,7 @@ public struct LLMConfiguration: Codable, Hashable {
         self.contextWindowSize = try container.decodeIfPresent(Int.self, forKey: .contextWindowSize) ?? 16384
         self.appleIntelligenceTemperature = try container.decodeIfPresent(Double.self, forKey: .appleIntelligenceTemperature) ?? 0.25
         self.appleIntelligenceMaxResponseTokens = try container.decodeIfPresent(Int.self, forKey: .appleIntelligenceMaxResponseTokens) ?? 1600
+        self.isInternetAccessEnabled = try container.decodeIfPresent(Bool.self, forKey: .isInternetAccessEnabled) ?? true
     }
 
     public var selectedModel: LocalLLMModelInfo? {

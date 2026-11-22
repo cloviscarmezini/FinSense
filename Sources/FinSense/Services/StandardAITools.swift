@@ -155,63 +155,7 @@ private func simulateLoanProjectionSafe(
     draftPlan: AmortizationPlan?,
     in store: FinancialDataStore
 ) -> LoanProjectionResult? {
-    let unpaid = store.transactions.filter {
-        $0.linkedContractId == contract.id &&
-        $0.installmentIndex != nil &&
-        !$0.isPaid
-    }
-    if !unpaid.isEmpty {
-        return draftPlan != nil
-            ? store.simulateAmortizationPlanPreview(for: contract.id, draftPlan: draftPlan)
-            : store.loanProjection(for: contract.id)
-    }
-
-    let rem = store.remainingInstallmentsCount(for: contract)
-    guard rem > 0 else {
-        return draftPlan != nil
-            ? store.simulateAmortizationPlanPreview(for: contract.id, draftPlan: draftPlan)
-            : store.loanProjection(for: contract.id)
-    }
-
-    let cal = store.calendar
-    let paid = store.paidTransactionsCount(forContract: contract)
-    let schedByNum = Dictionary(uniqueKeysWithValues: (contract.scheduledInstallments ?? []).map { ($0.installmentNumber, $0) })
-    let baseAnchor = cal.date(byAdding: .month, value: 1, to: store.effectiveCurrentDate) ?? store.effectiveCurrentDate
-    let day = min(max(contract.billingDay, 1), 28)
-
-    var syntheticUnpaid: [FinancialTransaction] = []
-    syntheticUnpaid.reserveCapacity(rem)
-    for idx in 0..<rem {
-        let instNum = paid + idx + 1
-        let monthDate = cal.date(byAdding: .month, value: idx, to: baseAnchor) ?? baseAnchor
-        var comps = cal.dateComponents([.year, .month], from: monthDate)
-        comps.day = day
-        let txDate = cal.date(from: comps) ?? monthDate
-        let amount = schedByNum[instNum]?.amount ?? contract.installmentAmount
-        syntheticUnpaid.append(
-            FinancialTransaction(
-                name: "\(contract.name) (\(instNum)/\(contract.totalInstallments))",
-                amount: amount,
-                date: txDate,
-                type: .expense,
-                isPaid: false,
-                categoryId: contract.categoryId,
-                accountId: contract.accountId,
-                installmentIndex: instNum,
-                installmentTotal: contract.totalInstallments,
-                linkedContractId: contract.id
-            )
-        )
-    }
-
-    let effectivePlan = draftPlan ?? store.amortizationPlan(for: contract.id)
-    return LoanProjectionEngine.simulate(
-        contract: contract,
-        unpaidInstallmentTransactions: syntheticUnpaid,
-        currentRealBalanceDouble: store.currentOutstandingBalance(for: contract),
-        plan: effectivePlan,
-        calendar: store.calendar
-    )
+    InteractivePayoffPlanner.simulateProjectionSafe(for: contract, draftPlan: draftPlan, in: store)
 }
 
 // MARK: - 1. Tool: get_contract_details
@@ -2252,7 +2196,9 @@ public enum FinancialDatabaseContextBuilder {
             "emprestim", "financiament", "contrat", "divid", "saldo", "previsto",
             "simul", "amortiz", "quit", "fluxo", "projet", "gast", "despes",
             "receit", "teto", "cota", "provis", "invest", "conta", "parcela",
-            "orcament", "caixa", "sobra", "patrimon", "quanto"
+            "orcament", "caixa", "sobra", "patrimon", "quanto",
+            "dolar", "euro", "bitcoin", "btc", "usd", "cambio", "cotacao",
+            "selic", "cdi", "ipca", "inflacao", "tesouro", "cdb", "lci", "lca", "fii"
         ]
         return financialTopics.contains { p.contains($0) }
     }
@@ -2391,12 +2337,27 @@ public enum FinancialDatabaseContextBuilder {
             }
         }
 
+        // 6. Consultas públicas na internet (apenas leitura, sem enviar dados financeiros pessoais)
+        let wantsWebInfo = InternetLookupService.isCurrencyQuery(norm) ||
+            InternetLookupService.isMacroRateQuery(norm) ||
+            norm.contains("recomend") ||
+            norm.contains("aplicar") ||
+            norm.contains("onde investir") ||
+            norm.contains("internet")
+        if wantsWebInfo {
+            executedSteps.append("🌐 Consultando internet (somente leitura) sem enviar dados pessoais...")
+            let webRes = try? await InternetLookupTool(store: store).execute(parameters: ["query": prompt])
+            if let webRes {
+                bundle["webLookup"] = webRes
+            }
+        }
+
         let compactJson: String = {
             guard let data = try? JSONSerialization.data(withJSONObject: bundle, options: [.sortedKeys]),
                   let str = String(data: data, encoding: .utf8) else {
                 return "{}"
             }
-            return str.count > 2600 ? String(str.prefix(2600)) + "...}" : str
+            return str.count > 3600 ? String(str.prefix(3600)) + "...}" : str
         }()
 
         return (executedSteps, compactJson)

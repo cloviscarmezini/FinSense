@@ -1647,6 +1647,24 @@ public struct LLMConfigurationSectionView: View {
                     }
                     .toggleStyle(.switch)
 
+                    Toggle(isOn: Binding(
+                        get: { store.llmConfig.isInternetAccessEnabled },
+                        set: { newValue in
+                            store.llmConfig.isInternetAccessEnabled = newValue
+                            store.save()
+                            LocalLLMRuntime.shared.invalidateAppleSession()
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Consultas na Internet (Apenas Leitura — Cotações & Investimentos)")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Permite consultar cotações atuais (Dólar, Euro, Bitcoin), taxas (Selic, CDI, IPCA) e recomendações conceituais públicas na web. Nenhum dado pessoal ou financeiro seu é enviado.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
+
                     Divider()
 
                     HStack(spacing: 24) {
@@ -1705,7 +1723,8 @@ public struct LLMConfigurationSectionView: View {
                         ("building.columns.fill", "Contas Bancárias & Cenários", "Saldos em tempo real, cenário Real (Base) vs Com Planejamento e patrimônio consolidado."),
                         ("doc.text.magnifyingglass", "Empréstimos & Financiamentos", "Parcelas pagas pelo salário, cronograma decrescente DDC, crescimento TP CAIXA e simulação de amortização."),
                         ("calendar.badge.clock", "Planejamento de Amortização & FGTS", "Engine LoanProjectionEngine, quitação antecipada, economia de juros e impacto de aportes em Dinheiro/FGTS."),
-                        ("chart.line.uptrend.xyaxis", "Fluxo de Caixa, Dívidas & Transações", "Consultas e agregações por período, projeções de até 36 meses, tetos/envelopes, cotas e investimentos.")
+                        ("chart.line.uptrend.xyaxis", "Fluxo de Caixa, Dívidas & Transações", "Consultas e agregações por período, projeções de até 36 meses, tetos/envelopes, cotas e investimentos."),
+                        ("globe", "Consultas Web (Somente Leitura)", "Cotações de câmbio (Dólar, Euro, BTC), índices (Selic, CDI, IPCA) e conceitos públicos de investimentos sem enviar dados pessoais.")
                     ]
 
                     ForEach(capabilities, id: \.title) { cap in

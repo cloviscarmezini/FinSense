@@ -434,12 +434,13 @@ public struct AIChatSheetView: View {
         HStack(alignment: .top) {
             if msg.role == .user {
                 let displayContent: String = {
-                    if msg.content.hasPrefix("[NOVA SIMULAÇÃO DO SISTEMA]") {
-                        return msg.content
-                            .replacingOccurrences(of: "[NOVA SIMULAÇÃO DO SISTEMA] ", with: "")
-                            .replacingOccurrences(of: "[NOVA SIMULAÇÃO DO SISTEMA]", with: "")
+                    var clean = msg.content
+                        .replacingOccurrences(of: "[NOVA SIMULAÇÃO DO SISTEMA]", with: "")
+                    if let regex = try? NSRegularExpression(pattern: "\\[(?:TIPO|MODO|ID):[^\\]]+\\]") {
+                        let nsRange = NSRange(clean.startIndex..<clean.endIndex, in: clean)
+                        clean = regex.stringByReplacingMatches(in: clean, options: [], range: nsRange, withTemplate: "")
                     }
-                    return msg.content
+                    return clean.trimmingCharacters(in: .whitespacesAndNewlines)
                 }()
                 Spacer(minLength: 80)
                 VStack(alignment: .trailing, spacing: 4) {

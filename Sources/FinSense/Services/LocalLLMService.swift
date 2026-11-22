@@ -380,7 +380,7 @@ public final class LocalLLMService: ObservableObject {
         isAnalyzingStatement = true
         defer { isAnalyzingStatement = false }
 
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        try? await Task.sleep(nanoseconds: 100_000_000)
 
         var parsed = StatementImportService.parseStatementText(
             rawText,
@@ -389,9 +389,18 @@ public final class LocalLLMService: ObservableObject {
             referenceDate: store.selectedMonth
         )
 
-        let modelName = store.llmConfig.selectedModel?.displayName ?? "LLM Local"
+        // Enriquecimento inteligente com Apple Intelligence on-device (sem transmitir dados externos)
+        parsed = await LocalLLMRuntime.shared.enrichParsedStatementTransactions(
+            parsed,
+            categories: store.categories
+        )
+
+        let backend = LocalLLMRuntime.shared.resolveActiveBackend(for: store)
+        let modelLabel = backend.displayBadge
         for idx in parsed.indices {
-            parsed[idx].extractedDetails = "[IA Local: \(modelName)] \(parsed[idx].extractedDetails)"
+            if !parsed[idx].extractedDetails.contains("IA") {
+                parsed[idx].extractedDetails = "[\(modelLabel)] \(parsed[idx].extractedDetails)"
+            }
         }
 
         return parsed
@@ -481,6 +490,21 @@ public final class LocalLLMService: ObservableObject {
         isThinkingPhase = false
         isTypingResponse = false
         currentAgentStepMessage = ""
+    }
+
+    /// Inicia uma nova simulação de prazo a partir dos botões fixos (Dívidas / Empréstimos),
+    /// garantindo contexto zerado e definição do alvo exato antes da escolha do ritmo.
+    public func startFreshSimulationQuestion(
+        _ question: String,
+        target: PendingSimulationTarget,
+        store: FinancialDataStore
+    ) async {
+        activeChatTask?.cancel()
+        store.chatHistory.removeAll()
+        AIChatOrchestrator.shared.pendingSimulationTarget = target
+        AIChatOrchestrator.shared.lastSimulatedTarget = nil
+        LocalLLMRuntime.shared.invalidateAppleSession()
+        await sendUserQuestion(question, store: store)
     }
 
     public func sendUserQuestion(_ question: String, store: FinancialDataStore) async {

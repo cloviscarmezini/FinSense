@@ -772,35 +772,59 @@ public enum StatementImportService {
             embeddedPurchaseDayMonth = String(rawDescription[range])
         }
 
-        // Identifica modalidade da operação no padrão Itaú / Bancos Brasileiros
+        // Identifica modalidade da operação no padrão Itaú e bancos brasileiros em geral
+        let stripTrailingPurchaseDate: (String) -> String = { text in
+            text.replacingOccurrences(of: #"\s*\d{2}/\d{2}$"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
         if upper.hasPrefix("PIX QRS ") {
             paymentMethod = "PIX QR Code"
-            let merchant = String(rawDescription.dropFirst("PIX QRS ".count))
-                .replacingOccurrences(of: #"\d{2}/\d{2}$"#, with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
+            let merchant = stripTrailingPurchaseDate(String(rawDescription.dropFirst("PIX QRS ".count)))
             cleanTitle = prettifyMerchantName(merchant, fallback: rawDescription)
             extraNotes.append("Pagamento instantâneo via PIX QR Code")
         } else if upper.hasPrefix("PIX TRANSF ") {
             paymentMethod = type == .income ? "PIX Recebido" : "PIX Enviado"
-            let person = String(rawDescription.dropFirst("PIX TRANSF ".count))
-                .replacingOccurrences(of: #"\d{2}/\d{2}$"#, with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
-            cleanTitle = type == .income ? "PIX Recebido: \(person.capitalized)" : "PIX Enviado: \(person.capitalized)"
-            extraNotes.append("Transferência PIX (\(person.capitalized))")
+            let person = stripTrailingPurchaseDate(String(rawDescription.dropFirst("PIX TRANSF ".count)))
+            let prettyTarget = prettifyMerchantName(person, fallback: person.capitalized)
+            cleanTitle = type == .income ? "PIX Recebido: \(prettyTarget)" : "PIX Enviado: \(prettyTarget)"
+            extraNotes.append("Transferência PIX (\(prettyTarget))")
+        } else if upper.hasPrefix("PIX ENVIADO ") || upper.hasPrefix("PIX RECEBIDO ") {
+            let isIncomePix = upper.hasPrefix("PIX RECEBIDO ")
+            paymentMethod = isIncomePix ? "PIX Recebido" : "PIX Enviado"
+            let prefixLen = (isIncomePix ? "PIX RECEBIDO " : "PIX ENVIADO ").count
+            let target = stripTrailingPurchaseDate(String(rawDescription.dropFirst(prefixLen)))
+            let prettyTarget = prettifyMerchantName(target, fallback: target.capitalized)
+            cleanTitle = isIncomePix ? "PIX Recebido: \(prettyTarget)" : "PIX Enviado: \(prettyTarget)"
+            extraNotes.append("Transferência PIX (\(prettyTarget))")
         } else if upper.hasPrefix("DEV PIX ") {
             paymentMethod = "Estorno / Devolução PIX"
-            let origin = String(rawDescription.dropFirst("DEV PIX ".count))
-                .replacingOccurrences(of: #"\d{2}/\d{2}$"#, with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
+            let origin = stripTrailingPurchaseDate(String(rawDescription.dropFirst("DEV PIX ".count)))
             cleanTitle = "Reembolso PIX: \(prettifyMerchantName(origin, fallback: origin))"
             extraNotes.append("Devolução/estorno de transação PIX")
         } else if upper.hasPrefix("PAY ") {
             paymentMethod = "Cartão Débito / Apple Pay"
-            let merchant = String(rawDescription.dropFirst("PAY ".count))
-                .replacingOccurrences(of: #"\d{2}/\d{2}$"#, with: "", options: .regularExpression)
-                .trimmingCharacters(in: .whitespaces)
+            let merchant = stripTrailingPurchaseDate(String(rawDescription.dropFirst("PAY ".count)))
             cleanTitle = prettifyMerchantName(merchant, fallback: rawDescription)
             extraNotes.append("Compra presencial/cartão (PAY)")
+        } else if upper.hasPrefix("COMPRA CARTAO ") || upper.hasPrefix("COMPRA DEBITO ") || upper.hasPrefix("COMPRA CREDITO ") {
+            paymentMethod = upper.hasPrefix("COMPRA CREDITO ") ? "Cartão de Crédito" : "Cartão de Débito"
+            let merchant = rawDescription.replacingOccurrences(
+                of: #"^COMPRA\s+(?:CARTAO|DEBITO|CREDITO)\s+"#,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            cleanTitle = prettifyMerchantName(stripTrailingPurchaseDate(merchant), fallback: rawDescription)
+            extraNotes.append("Compra no cartão (\(cleanTitle))")
+        } else if upper.hasPrefix("PAG*") || upper.hasPrefix("MP *") || upper.hasPrefix("IFD*") || upper.hasPrefix("MERCADOPAGO*") {
+            paymentMethod = "Cartão / Intermediador"
+            let merchant = rawDescription.replacingOccurrences(
+                of: #"^(?:PAG\*|MP\s*\*|IFD\*|MERCADOPAGO\*)\s*"#,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            cleanTitle = prettifyMerchantName(stripTrailingPurchaseDate(merchant), fallback: rawDescription)
+            extraNotes.append("Lançamento via adquirente/intermediador (\(cleanTitle))")
         } else if upper.hasPrefix("PAG BOLETO ") {
             paymentMethod = "Pagamento de Boleto"
             let issuer = String(rawDescription.dropFirst("PAG BOLETO ".count)).trimmingCharacters(in: .whitespaces)
@@ -811,11 +835,21 @@ public enum StatementImportService {
             let util = String(rawDescription.dropFirst("PAGAMENTOCONTA ".count)).trimmingCharacters(in: .whitespaces)
             cleanTitle = "Conta: \(prettifyMerchantName(util, fallback: util))"
             extraNotes.append("Pagamento de conta de consumo/concessionária")
-        } else if upper.hasPrefix("DA ") {
+        } else if upper.hasPrefix("DA ") || upper.hasPrefix("DEB AUTO ") {
             paymentMethod = "Débito Automático"
-            let provider = String(rawDescription.dropFirst("DA ".count)).trimmingCharacters(in: .whitespaces)
+            let prefixLen = upper.hasPrefix("DEB AUTO ") ? "DEB AUTO ".count : "DA ".count
+            let provider = String(rawDescription.dropFirst(prefixLen)).trimmingCharacters(in: .whitespaces)
             cleanTitle = "Débito Automático: \(prettifyMerchantName(provider, fallback: provider))"
             extraNotes.append("Cobrança recorrente em débito automático")
+        } else if upper.hasPrefix("TED ") || upper.hasPrefix("DOC ") || upper.hasPrefix("SISPAG ") {
+            paymentMethod = "Transferência Bancária"
+            let target = rawDescription.replacingOccurrences(
+                of: #"^(?:TED|DOC|SISPAG)\s+"#,
+                with: "",
+                options: [.regularExpression, .caseInsensitive]
+            )
+            cleanTitle = prettifyMerchantName(stripTrailingPurchaseDate(target), fallback: rawDescription)
+            extraNotes.append("Transferência bancária (\(cleanTitle))")
         } else if upper.contains("APLICACAO COFRINHOS") {
             paymentMethod = "Aplicação em Cofrinhos"
             cleanTitle = "Aplicação Cofrinhos Itaú"
@@ -836,6 +870,8 @@ public enum StatementImportService {
             paymentMethod = "Rendimento Automático"
             cleanTitle = "Rendimento Aplicação Automática"
             extraNotes.append("Rendimento creditado em conta")
+        } else {
+            cleanTitle = prettifyMerchantName(stripTrailingPurchaseDate(rawDescription), fallback: rawDescription)
         }
 
         if let embedded = embeddedPurchaseDayMonth, !postingDateString.hasPrefix(embedded) {
@@ -846,25 +882,27 @@ public enum StatementImportService {
         let candidateCategories = categories.filter { $0.type == type }
         var matchedCategory: CategoryItem? = nil
 
-        // Regras semânticas de alta precisão para os itens do extrato Itaú e gerais
+        // Regras semânticas de alta precisão para os itens do extrato Itaú e estabelecimentos brasileiros
         let semanticRules: [(keywords: [String], categorySubstring: String)] = [
             (["APLICACAO COFRINHOS", "APLICACAO CDB"], "Aplicações"),
             (["RESGATE COFRINHOS", "RESGATE CDB"], "Resgate"),
-            (["REND PAGO"], "Rendimentos"),
-            (["DEV PIX"], "Reembolso"),
-            (["DELTA", "SAMS"], "Supermercado"),
-            (["99 FOOD", "IFOOD", "KFC", "PIZZI", "DOCER", "ACAIF", "CACAU", "BACIO", "FRANG", "MACAR", "CEVAD", "SOPHI", "WANDO", "MR MI", "KCOWO", "MAJO", "CAPPT"], "Alimentação"),
-            (["BBZ ADMINISTRACAO", "CONDOMI", "CASA", "OBRAM"], "Moradia"),
-            (["CPFL", "COMGAS", "S.PIRACICAB"], "Energia"),
-            (["VIVO", "CLARO", "TELEFONICA"], "Telefonia"),
-            (["UBER", "MOBIFACIL"], "Transporte"),
-            (["AUTO", "AUTOZ", "POSTO"], "Combustível"),
-            (["MARKETP", "AMAZON", "HAVAN", "PAGAR ME", "LOJAS", "VOLLU", "L4U", "MP R", "58.269.906"], "Compras"),
-            (["COBAS", "AGROM"], "Pets"),
-            (["VSTP EDUCAC"], "Educação"),
-            (["EVO V"], "Saúde"),
-            (["BRADESCARD"], "Cartão de Crédito"),
-            (["PIX TRANSF"], type == .income ? "PIX Recebido" : "Transferências")
+            (["REND PAGO", "DIVIDEND", "JCP"], "Rendimentos"),
+            (["DEV PIX", "ESTORNO", "REEMBOLSO"], "Reembolso"),
+            (["SALARIO", "FOLHA", "PRO-LABORE", "REMUNERACAO"], "Salário"),
+            (["DELTA", "SAMS", "CARREFOUR", "ASSAI", "ATACADAO", "PAO DE ACUCAR", "SUPERMERC", "SUPER MERC", "HORTIFRUTI", "SACOLAO"], "Supermercado"),
+            (["99 FOOD", "IFOOD", "IFD*", "RAPPI", "KFC", "PIZZ", "DOCER", "ACAIF", "CACAU", "BACIO", "FRANG", "MACAR", "CEVAD", "SOPHI", "WANDO", "MR MI", "KCOWO", "MAJO", "CAPPT", "PADARIA", "PANIFICADORA", "BURGER", "MCDONALD", "STARBUCKS", "CAFETERIA", "RESTAURANTE", "CHURRASCARIA", "LANCHONETE"], "Alimentação"),
+            (["BBZ ADMINISTRACAO", "CONDOMI", "ALUGUEL", "IMOBILIAR", "OBRAM", "LEROY", "TELHANORTE"], "Moradia"),
+            (["CPFL", "ENEL", "LIGHT", "CEMIG", "COPEL", "COMGAS", "S.PIRACICAB", "SABESP", "SANEPAR"], "Energia"),
+            (["VIVO", "CLARO", "TELEFONICA", "TIM ", "OI FIBRA"], "Telefonia"),
+            (["NETFLIX", "SPOTIFY", "DISNEY", "AMAZON PRIME", "APPLE.COM", "GOOGLE ONE", "YOUTUBE", "HBO", "GLOBOPLAY", "CINEMA", "INGRESSO"], "Lazer"),
+            (["UBER", "99POP", "99APP", "MOBIFACIL", "SEM PARAR", "CONECTCAR", "VELOE", "ESTACIONAMENTO", "PASSAGEM", "AZUL LINHAS", "GOL ", "LATAM"], "Transporte"),
+            (["AUTO", "AUTOZ", "POSTO", "SHELL", "IPIRANGA", "BR MANIA", "ALE ", "COMBUSTIVEL"], "Combustível"),
+            (["MARKETP", "MERCADO LIVRE", "MERCADOLIVRE", "SHOPEE", "MAGALU", "MAGAZINE LUIZA", "CASAS BAHIA", "AMAZON", "HAVAN", "PAGAR ME", "LOJAS", "VOLLU", "L4U", "MP R", "58.269.906"], "Compras"),
+            (["COBAS", "COBASI", "PETZ", "PETLOVE", "AGROM", "VETERINAR"], "Pets"),
+            (["VSTP EDUCAC", "ALURA", "UDEMY", "COURSERA", "FACULDADE", "ESCOLA", "COLEGIO", "LIVRARIA"], "Educação"),
+            (["EVO V", "DROGASIL", "DROGA RAIA", "RAIA", "PACHECO", "PAGUE MENOS", "PANVEL", "FARMACIA", "ULTRAFARMA", "UNIMED", "SULAMERICA", "BRADESCO SAUDE", "AMIL", "DASA", "FLEURY", "HOSPITAL", "CLINICA", "ODONTO", "SMART FIT", "BLUEFIT"], "Saúde"),
+            (["BRADESCARD", "FATURA", "NUBANK FATURA", "ITAU CARD"], "Cartão de Crédito"),
+            (["PIX TRANSF", "PIX ENVIADO", "PIX RECEBIDO", "TED ", "DOC "], type == .income ? "PIX Recebido" : "Transferências")
         ]
 
         for rule in semanticRules {
@@ -902,34 +940,61 @@ public enum StatementImportService {
     private static func prettifyMerchantName(_ raw: String, fallback: String) -> String {
         let u = raw.uppercased()
         if u.contains("DELTA") { return "Supermercados Delta" }
+        if u.contains("CARREFOUR") { return "Supermercado Carrefour" }
+        if u.contains("ASSAI") { return "Assaí Atacadista" }
+        if u.contains("ATACADAO") { return "Atacadão" }
+        if u.contains("PAO DE ACUCAR") { return "Pão de Açúcar" }
         if u.contains("BBZ ADMINISTRACAO") { return "Condomínio BBZ Administração" }
         if u.contains("CPFL") { return "CPFL Energia Paulista" }
+        if u.contains("ENEL") { return "Enel Energia" }
+        if u.contains("SABESP") { return "Sabesp Saneamento" }
         if u.contains("S.PIRACICAB") { return "SEMAE Piracicaba (Água)" }
         if u.contains("COMGAS") { return "Comgás" }
-        if u.contains("CLARO CELULAR") { return "Claro Celular" }
-        if u.contains("VIVO-SP") { return "Vivo Fibra / Móvel (\(raw))" }
-        if u.contains("TELEFONICA") { return "Vivo / Telefônica Brasil" }
+        if u.contains("CLARO CELULAR") || u.contains("CLARO ") { return "Claro Celular / Internet" }
+        if u.contains("VIVO-SP") { return "Vivo Fibra / Móvel" }
+        if u.contains("TELEFONICA") || u.contains("VIVO ") { return "Vivo / Telefônica Brasil" }
         if u.contains("MOBIFACIL") { return "MobiFácil Passagens" }
-        if u.contains("UBER") { return "Uber" }
+        if u.contains("UBER") { return "Uber Viagens" }
+        if u.contains("99POP") || u.contains("99APP") { return "99 Mobilidade" }
         if u.contains("99 FOOD") { return "99Food Delivery" }
         if u.contains("IFOOD") { return "iFood Delivery" }
-        if u.contains("COBAS") { return "Cobasi Pet Shop" }
+        if u.contains("RAPPI") { return "Rappi Delivery" }
+        if u.contains("NETFLIX") { return "Netflix Assinatura" }
+        if u.contains("SPOTIFY") { return "Spotify Música" }
+        if u.contains("DROGASIL") { return "Farmácia Drogasil" }
+        if u.contains("DROGA RAIA") { return "Farmácia Droga Raia" }
+        if u.contains("PAGUE MENOS") { return "Farmácias Pague Menos" }
+        if u.contains("SMART FIT") { return "Smart Fit Academia" }
+        if u.contains("COBAS") || u.contains("COBASI") { return "Cobasi Pet Shop" }
+        if u.contains("PETZ") { return "Petz Pet Shop" }
         if u.contains("AGROM") { return "Agropecuária / Pet" }
         if u.contains("HAVAN") { return "Lojas Havan" }
         if u.contains("SAMS") { return "Sam's Club" }
         if u.contains("CACAU") { return "Cacau Show" }
         if u.contains("BACIO") { return "Bacio di Latte" }
         if u.contains("KFC") { return "KFC Restaurante" }
+        if u.contains("STARBUCKS") { return "Starbucks Cafeteria" }
+        if u.contains("AMAZON PRIME") { return "Amazon Prime" }
         if u.contains("AMAZON") { return "Amazon.com.br" }
+        if u.contains("MERCADOLIVRE") || u.contains("MERCADO LIVRE") || u.contains("MARKETP") { return "Mercado Livre" }
+        if u.contains("SHOPEE") { return "Shopee Brasil" }
         if u.contains("VSTP EDUCAC") { return "VSTP Educação" }
         if u.contains("BRADESCARD") { return "Fatura Cartão Bradescard" }
-        if u.contains("MARKETP") { return "Mercado Livre / Marketplace" }
         if u.contains("PAGAR ME") { return "Pagar.me Pagamentos" }
         if u.contains("AUTOZ") || u == "AUTO" { return "Posto / Automotivo (\(raw))" }
         if u.contains("POSTO") { return "Posto de Combustível" }
         if u.contains("OBRAM") { return "Obramax Construção" }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? fallback : trimmed
+
+        // Normaliza siglas bancárias em maiúsculas sem devolver código bruto feio
+        var cleaned = raw
+            .replacingOccurrences(of: #"\bCNPJ\s*[0-9./-]+"#, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if cleaned == cleaned.uppercased() && cleaned.count > 3 {
+            cleaned = cleaned.localizedCapitalized
+        }
+        return cleaned.isEmpty ? fallback : cleaned
     }
 }
 
