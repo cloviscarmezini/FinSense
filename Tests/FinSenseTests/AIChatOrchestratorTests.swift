@@ -435,5 +435,23 @@ final class AIChatOrchestratorTests: XCTestCase {
         let decodedConfig = try JSONDecoder().decode(LLMConfiguration.self, from: Data(legacyJson.utf8))
         XCTAssertTrue(decodedConfig.isThinkingModeEnabled)
         XCTAssertEqual(decodedConfig.contextWindowSize, 16384)
+        XCTAssertEqual(decodedConfig.appleIntelligenceTemperature, 0.25)
+        XCTAssertEqual(decodedConfig.appleIntelligenceMaxResponseTokens, 1600)
+
+        // 4. Sanitização rigorosa contra vazamento de tags <tool_call> XML/JSON na resposta final
+        let dirtyOutput = """
+        <think>Pensando no saldo</think>
+        <tool_call name="get_monthly_cash_flow"></tool_call>
+        Seu saldo disponível em conta hoje é de R$ 12.500,00.
+        <tool_call>{"tool":"get_financial_overview"}</tool_call>
+        """
+        let clean = LocalLLMRuntime.sanitizeAssistantOutput(dirtyOutput)
+        XCTAssertFalse(clean.contains("<tool_call"))
+        XCTAssertFalse(clean.contains("</tool_call>"))
+        XCTAssertFalse(clean.contains("<think>"))
+        XCTAssertEqual(clean, "Seu saldo disponível em conta hoje é de R$ 12.500,00.")
+
+        // 5. Modo exclusivo Apple Intelligence ativo quando disponível
+        XCTAssertTrue(LocalLLMRuntime.isAppleIntelligenceExclusiveMode)
     }
 }

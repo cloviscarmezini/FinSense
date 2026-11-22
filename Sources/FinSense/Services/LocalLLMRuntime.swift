@@ -363,11 +363,38 @@ public final class LlamaServerProcessManager {
 public final class LocalLLMRuntime {
     public static let shared = LocalLLMRuntime()
 
+    /// Modo exclusivo Apple Intelligence (Apple Silicon M1/macOS Nativo).
+    /// Mantém integrações antigas (llama.cpp / Hugging Face / HTTP) preservadas em código, porém desativadas e ocultas.
+    public static let isAppleIntelligenceExclusiveMode: Bool = true
+
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    private final class AppleSessionBox {
+        let session: LanguageModelSession
+        init(_ session: LanguageModelSession) { self.session = session }
+    }
+    private var cachedAppleSessionBox: AnyObject?
+    private var cachedAppleSessionThinkingFlag: Bool?
+    private var cachedAppleSessionDataRevision: UInt64?
+    private var cachedAppleSessionStoreId: ObjectIdentifier?
+    private var activeAppleStepHandler: ((String) -> Void)?
+    private var activeAppleThinkingHandler: ((String) -> Void)?
+    private var collectedAppleSteps: [String] = []
+    private var collectedAppleThinkingLines: [String] = []
+    #endif
+
     private init() {}
 
     /// Determina qual backend real deve ser usado com base na configuração atual e hardware do Mac
     public func resolveActiveBackend(for store: FinancialDataStore) -> LocalLLMBackendKind {
-        // 1. Se o usuário tem um modelo GGUF válido baixado e `llama-server` instalado -> Prioridade máxima!
+        if Self.isAppleIntelligenceExclusiveMode {
+            if Self.isAppleIntelligenceAvailable {
+                return .appleFoundationModels
+            }
+            return .deterministicFallback(reason: "Apple Intelligence indisponível nas Preferências do Sistema deste Mac.")
+        }
+
+        // Legado preservado (desabilitado no modo exclusivo Apple Intelligence):
         if let selected = store.llmConfig.selectedModel,
            selected.hasValidGGUFBinary,
            let binaryPath = LlamaServerProcessManager.locateLlamaServerBinary() {
@@ -378,19 +405,16 @@ public final class LocalLLMRuntime {
             )
         }
 
-        // 2. Endpoint OpenAI-Compatível local (Ollama / LM Studio / llama-server externo)
         let customEndpoint = store.llmConfig.localEndpointURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if !customEndpoint.isEmpty {
             let modelName = store.llmConfig.selectedModel?.displayName ?? "LLM Local HTTP"
             return .customOpenAIEndpoint(endpointURL: customEndpoint, modelName: modelName)
         }
 
-        // 3. Apple Intelligence On-Device Nativo (FoundationModels macOS 26/27+)
         if Self.isAppleIntelligenceAvailable {
             return .appleFoundationModels
         }
 
-        // 4. Fallback determinístico (testes sem runtime ou Mac incompatível)
         return .deterministicFallback(reason: "Nenhum modelo GGUF completo ou motor Apple Intelligence disponível no momento.")
     }
 
@@ -401,6 +425,201 @@ public final class LocalLLMRuntime {
         }
         #endif
         return false
+    }
+
+    public static func appleIntelligenceStatusDescription() -> String {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            switch SystemLanguageModel.default.availability {
+            case .available:
+                return "Disponível e ativo no Apple Silicon (On-Device)"
+            case .unavailable(let reason):
+                return "Indisponível (\(String(describing: reason)))"
+            }
+        }
+        #endif
+        return "Requer macOS 26+ com Apple Intelligence habilitado"
+    }
+
+    public func invalidateAppleSession() {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            cachedAppleSessionBox = nil
+            cachedAppleSessionThinkingFlag = nil
+            cachedAppleSessionDataRevision = nil
+        }
+        #endif
+    }
+
+    /// Pré-aquece os pesos da Apple Intelligence na memória unificada M1 para reduzir latência da primeira resposta
+    public func prewarmAppleIntelligence(for store: FinancialDataStore) {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *), Self.isAppleIntelligenceAvailable {
+            let session = ensureNativeAppleSession(
+                for: store,
+                isThinkingEnabled: store.llmConfig.isThinkingModeEnabled,
+                forceNew: false
+            )
+            session.prewarm()
+        }
+        #endif
+    }
+
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    private func ensureNativeAppleSession(
+        for store: FinancialDataStore,
+        isThinkingEnabled: Bool,
+        forceNew: Bool
+    ) -> LanguageModelSession {
+        let storeIdentity = ObjectIdentifier(store)
+        if !forceNew,
+           let box = cachedAppleSessionBox as? AppleSessionBox,
+           cachedAppleSessionThinkingFlag == isThinkingEnabled,
+           cachedAppleSessionDataRevision == store.dataRevision,
+           cachedAppleSessionStoreId == storeIdentity {
+            return box.session
+        }
+
+        let instructions = FinSenseBusinessKnowledge.buildAppleIntelligenceInstructions(
+            store: store,
+            isThinkingEnabled: isThinkingEnabled
+        )
+
+        let activityCallback: AppleToolActivityHandler = { [weak self] stepLabel, thoughtLine in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.collectedAppleSteps.append(stepLabel)
+                self.collectedAppleThinkingLines.append("• \(thoughtLine)")
+                self.activeAppleStepHandler?(stepLabel)
+                self.activeAppleThinkingHandler?(self.collectedAppleThinkingLines.joined(separator: "\n"))
+            }
+        }
+
+        let tools = AppleIntelligenceToolFactory.buildAllTools(
+            store: store,
+            onActivity: activityCallback
+        )
+        let newSession = LanguageModelSession(tools: tools, instructions: instructions)
+        self.cachedAppleSessionBox = AppleSessionBox(newSession)
+        self.cachedAppleSessionThinkingFlag = isThinkingEnabled
+        self.cachedAppleSessionDataRevision = store.dataRevision
+        self.cachedAppleSessionStoreId = storeIdentity
+        return newSession
+    }
+    #endif
+
+    /// Execução rápida, nativa e com tool-calling estruturado via FoundationModels no Apple Silicon M1
+    public func runNativeAppleIntelligenceAgentTurn(
+        userPrompt: String,
+        store: FinancialDataStore,
+        isThinkingEnabled: Bool,
+        onStepUpdate: ((String) -> Void)?,
+        onThinkingUpdate: ((String) -> Void)?,
+        onContentUpdate: ((String) -> Void)?
+    ) async throws -> (responseMarkdown: String, thinkingContent: String?, executedSteps: [String]) {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *) {
+            collectedAppleSteps = []
+            collectedAppleThinkingLines = []
+            activeAppleStepHandler = onStepUpdate
+            activeAppleThinkingHandler = onThinkingUpdate
+
+            let isExplicitReset = userPrompt.hasPrefix("[NOVA SIMULAÇÃO DO SISTEMA]")
+            let isCleanHistory = store.chatHistory.filter({ $0.role == .user || $0.role == .assistant }).count <= 1
+            let shouldForceNew = isExplicitReset || isCleanHistory
+
+            let temp = min(max(store.llmConfig.appleIntelligenceTemperature, 0.05), 0.9)
+            let maxTokens = isThinkingEnabled
+                ? max(800, store.llmConfig.appleIntelligenceMaxResponseTokens)
+                : min(750, max(450, store.llmConfig.appleIntelligenceMaxResponseTokens / 2))
+
+            let options = GenerationOptions(
+                temperature: isThinkingEnabled ? temp : min(temp, 0.2),
+                maximumResponseTokens: maxTokens
+            )
+
+            func executeWithSession(_ session: LanguageModelSession, promptText: String) async throws -> String {
+                let stream = session.streamResponse(to: promptText, options: options)
+                var latestRendered = ""
+
+                for try await partial in stream {
+                    if Task.isCancelled { throw CancellationError() }
+                    let cleaned = Self.sanitizeAssistantOutput(partial.content)
+                    if !cleaned.isEmpty && cleaned != latestRendered {
+                        latestRendered = cleaned
+                        onContentUpdate?(cleaned)
+                    }
+                }
+                return latestRendered
+            }
+
+            let session = ensureNativeAppleSession(
+                for: store,
+                isThinkingEnabled: isThinkingEnabled,
+                forceNew: shouldForceNew
+            )
+
+            let effectivePrompt: String = isExplicitReset
+                ? userPrompt.replacingOccurrences(of: "[NOVA SIMULAÇÃO DO SISTEMA]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+                : userPrompt
+
+            if isThinkingEnabled {
+                let initialThought = "🧠 Analisando solicitação e preparando consultas ao banco FinSense..."
+                collectedAppleThinkingLines.append(initialThought)
+                onThinkingUpdate?(initialThought)
+            }
+
+            do {
+                let rawReply = try await executeWithSession(session, promptText: effectivePrompt)
+                let finalClean = Self.sanitizeAssistantOutput(rawReply)
+                let thinkingFinal = collectedAppleThinkingLines.joined(separator: "\n")
+                return (
+                    finalClean.isEmpty ? "Consulta concluída nos dados locais do FinSense." : finalClean,
+                    thinkingFinal.isEmpty ? nil : thinkingFinal,
+                    collectedAppleSteps
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Retry automático com sessão limpa e resumo mínimo caso atinja limite da janela de 4K
+                invalidateAppleSession()
+                let freshSession = ensureNativeAppleSession(
+                    for: store,
+                    isThinkingEnabled: isThinkingEnabled,
+                    forceNew: true
+                )
+                let retryReply = try await executeWithSession(freshSession, promptText: effectivePrompt)
+                let finalClean = Self.sanitizeAssistantOutput(retryReply)
+                let thinkingFinal = collectedAppleThinkingLines.joined(separator: "\n")
+                return (
+                    finalClean.isEmpty ? "Consulta concluída nos dados locais do FinSense." : finalClean,
+                    thinkingFinal.isEmpty ? nil : thinkingFinal,
+                    collectedAppleSteps
+                )
+            }
+        }
+        #endif
+        throw NSError(domain: "LocalLLM", code: -6, userInfo: [NSLocalizedDescriptionKey: "Apple Intelligence indisponível nesta versão do macOS."])
+    }
+
+    /// Remove estritamente qualquer tag residual `<tool_call ...>`, `<think>...</think>` ou artefato de controle antes de exibir ao usuário
+    public static func sanitizeAssistantOutput(_ raw: String) -> String {
+        var text = ThinkTagStreamExtractor.splitThinkingAndContent(from: raw).content
+        let patterns = [
+            "<tool_call[\\s\\S]*?</tool_call>",
+            "<tool_call[^>]*>",
+            "</tool_call>",
+            "<think>[\\s\\S]*?</think>",
+            "<think>[\\s\\S]*$"
+        ]
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                text = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+            }
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Executa um turno de inferência no modelo neural ativo com streaming em tempo real de Pensamento + Conteúdo + Tool Calls

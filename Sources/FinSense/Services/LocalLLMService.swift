@@ -79,17 +79,17 @@ public final class LocalLLMService: ObservableObject {
 
     public func activateBuiltInAppleIntelligence(in store: FinancialDataStore) {
         guard LocalLLMRuntime.isAppleIntelligenceAvailable else {
-            lastErrorMessage = "Apple Intelligence não está disponível ou ativado nas Ajustes do Sistema deste Mac."
+            lastErrorMessage = "Apple Intelligence não está disponível ou ativado nos Ajustes do Sistema deste Mac."
             return
         }
         let info = LocalLLMModelInfo(
             id: LocalLLMModelInfo.builtInAppleIntelligenceId,
-            displayName: "Apple Intelligence (macOS Nativo)",
+            displayName: "Apple Intelligence (Apple Silicon M1)",
             fileName: "apple-on-device",
             localPath: "",
             sizeBytes: 0,
             downloadedAt: Date(),
-            quantization: "On-Device ANE"
+            quantization: "On-Device Nativo"
         )
         if let idx = store.llmConfig.downloadedModels.firstIndex(where: { $0.id == info.id }) {
             store.llmConfig.downloadedModels[idx] = info
@@ -99,7 +99,22 @@ public final class LocalLLMService: ObservableObject {
         store.llmConfig.selectedModelId = info.id
         store.save()
         lastErrorMessage = nil
-        downloadStatusMessage = "Apple Intelligence nativo ativado e selecionado!"
+        downloadStatusMessage = "Apple Intelligence nativo ativado e pronto no seu Mac M1!"
+    }
+
+    /// Garante na inicialização do app real que a Apple Intelligence seja ativada automaticamente quando disponível
+    public func activateBuiltInAppleIntelligenceIfNeeded(in store: FinancialDataStore) {
+        guard LocalLLMRuntime.isAppleIntelligenceExclusiveMode,
+              LocalLLMRuntime.isAppleIntelligenceAvailable else {
+            return
+        }
+        if store.llmConfig.selectedModelId != LocalLLMModelInfo.builtInAppleIntelligenceId || !store.hasInstalledLLMModel {
+            activateBuiltInAppleIntelligence(in: store)
+        }
+    }
+
+    public func prewarmAppleIntelligence(store: FinancialDataStore) {
+        LocalLLMRuntime.shared.prewarmAppleIntelligence(for: store)
     }
 
     // MARK: - Hugging Face Real GGUF Download & Management

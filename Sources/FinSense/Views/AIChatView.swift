@@ -64,6 +64,7 @@ public struct AIChatSheetView: View {
                 Button {
                     store.llmConfig.isThinkingModeEnabled.toggle()
                     store.save()
+                    LocalLLMRuntime.shared.invalidateAppleSession()
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: store.llmConfig.isThinkingModeEnabled ? "brain.filled.head.profile" : "bolt.fill")
@@ -122,19 +123,16 @@ public struct AIChatSheetView: View {
                 .keyboardShortcut(.cancelAction)
             }
 
-            // Aviso não-bloqueante se o modelo selecionado ainda tiver arquivo incompleto (apenas manifesto antigo)
-            if let selected = store.llmConfig.selectedModel,
-               !selected.isBuiltInAppleIntelligence,
-               !selected.hasValidGGUFBinary,
-               store.llmConfig.localEndpointURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Aviso apenas se Apple Intelligence não estiver disponível nos Ajustes do macOS
+            if !LocalLLMRuntime.isAppleIntelligenceAvailable {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                    Text("O modelo '\(selected.displayName)' possui apenas o manifesto antigo (\(selected.formattedSize)). \(LocalLLMRuntime.isAppleIntelligenceAvailable ? "Usando Apple Intelligence Nativo automaticamente no momento." : "") Baixe o arquivo GGUF completo em Configurações > Modelos IA para extrair 32K de contexto.")
+                    Text("Apple Intelligence indisponível nos Ajustes do Sistema (\(LocalLLMRuntime.appleIntelligenceStatusDescription())). Ative a Apple Intelligence no macOS para conversação neural completa.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Configurar IA") {
+                    Button("Ajustes IA") {
                         dismiss()
                         store.navigateToLLMInstallSettings()
                     }
@@ -300,6 +298,8 @@ public struct AIChatSheetView: View {
             withAnimation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true)) {
                 pulseAnimation = true
             }
+            llmService.activateBuiltInAppleIntelligenceIfNeeded(in: store)
+            llmService.prewarmAppleIntelligence(store: store)
         }
         .onChange(of: llmService.shouldCloseChatSheet) { _, shouldClose in
             if shouldClose {
@@ -310,10 +310,11 @@ public struct AIChatSheetView: View {
         }
         .alert("Confirmar Limpeza do Histórico", isPresented: $showClearHistoryConfirmation) {
             Button("Limpar Histórico", role: .destructive) {
+                LocalLLMRuntime.shared.invalidateAppleSession()
                 store.chatHistory = [
                     ChatMessage(
                         role: .assistant,
-                        content: "Histórico limpo. Estou com acesso completo ao seu banco de dados financeiro — pode perguntar qualquer coisa sobre suas contas, contratos, amortizações ou projeções!"
+                        content: "Histórico limpo. Estou com acesso completo ao seu banco de dados financeiro via Apple Intelligence — pode perguntar qualquer coisa sobre suas contas, contratos, amortizações ou projeções!"
                     )
                 ]
                 store.save()

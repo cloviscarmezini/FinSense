@@ -275,6 +275,10 @@ public struct MainContentView: View {
         .sheet(isPresented: $store.isLLMInstallAlertPresented) {
             LLMInstallRequiredSheet(store: store, llmService: llmService)
         }
+        .onAppear {
+            llmService.activateBuiltInAppleIntelligenceIfNeeded(in: store)
+            llmService.prewarmAppleIntelligence(store: store)
+        }
     }
 
     @ViewBuilder

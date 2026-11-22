@@ -91,7 +91,44 @@ public final class AIChatOrchestrator: ObservableObject {
         }
 
         if !forceDeterministicFallbackForTesting, hasConfiguredAI {
-            if case .deterministicFallback = backend {
+            if case .appleFoundationModels = backend {
+                do {
+                    logStep("🍎 Executando nativamente via Apple Intelligence (Apple Silicon M1)...")
+                    let appleOut = try await LocalLLMRuntime.shared.runNativeAppleIntelligenceAgentTurn(
+                        userPrompt: cleanPrompt,
+                        store: store,
+                        isThinkingEnabled: isThinkingEnabled,
+                        onStepUpdate: onStepUpdate,
+                        onThinkingUpdate: onThinkingUpdate,
+                        onContentUpdate: onContentUpdate
+                    )
+                    let finalSteps = executedSteps + appleOut.executedSteps
+                    let followUps = generateSmartFollowUps(
+                        prompt: cleanPrompt,
+                        usedTools: appleOut.executedSteps,
+                        store: store
+                    )
+                    return TurnOutput(
+                        responseMarkdown: appleOut.responseMarkdown,
+                        thinkingContent: appleOut.thinkingContent,
+                        executedSteps: finalSteps,
+                        followUps: followUps,
+                        shouldClose: false,
+                        engineUsed: backend.displayBadge
+                    )
+                } catch is CancellationError {
+                    return TurnOutput(
+                        responseMarkdown: "_Geração interrompida pelo usuário._",
+                        thinkingContent: nil,
+                        executedSteps: executedSteps,
+                        followUps: ["Continuar análise", "Fazer outra pergunta"],
+                        shouldClose: false,
+                        engineUsed: backend.displayBadge
+                    )
+                } catch {
+                    logStep("⚠️ Falha pontual no Apple Intelligence (\(error.localizedDescription)); acionando contingência determinística.")
+                }
+            } else if case .deterministicFallback = backend {
                 // cai para determinístico abaixo
             } else {
                 do {
@@ -387,13 +424,7 @@ public final class AIChatOrchestrator: ObservableObject {
     }
 
     private func stripResidualControlTags(from raw: String) -> String {
-        var text = ThinkTagStreamExtractor.splitThinkingAndContent(from: raw).content
-        // Remove possíveis wrappers <tool_call> residuais caso o modelo tenha emitido texto vazio
-        if let start = text.range(of: "<tool_call>"),
-           let end = text.range(of: "</tool_call>", range: start.upperBound..<text.endIndex) {
-            text.removeSubrange(start.lowerBound..<end.upperBound)
-        }
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        LocalLLMRuntime.sanitizeAssistantOutput(raw)
     }
 
     private func isPoliteClosingIntent(_ prompt: String) -> Bool {

@@ -99,6 +99,49 @@ public enum FinSenseBusinessKnowledge {
     - Viabilidade: SEMPRE confira `Sobra Líquida` e `Saldo Disponível` antes de recomendar pagamentos ou amortizações.
     """
 
+    public static func buildAppleIntelligenceInstructions(
+        store: FinancialDataStore,
+        isThinkingEnabled: Bool
+    ) -> String {
+        let nowStr = BRLFormatters.shortDate(store.effectiveCurrentDate)
+        let activeMonthStr = BRLFormatters.monthYear(store.selectedMonth)
+        let scenarioStr = store.budgetProjectionScenario == .withPlanning ? "Com Planejamento" : "Real (Base)"
+
+        let activeContractsSummary = store.contracts.filter { !$0.isSettled }.prefix(6).map { c in
+            "\(c.name) [\(c.kind.title), parcela \(BRLFormatters.currency(c.installmentAmount)), restam \(store.remainingInstallmentsCount(for: c))]"
+        }.joined(separator: "; ")
+
+        let openDebtsSummary = store.activeDebts.prefix(5).map { d in
+            "\(d.name) [\(BRLFormatters.currency(d.originalAmount))]"
+        }.joined(separator: "; ")
+
+        let depthDirective = isThinkingEnabled
+            ? "MODO PENSAMENTO PROFUNDO: Cruzar SEMPRE contratos, dívidas e planejamento com Sobra Líquida Mensal, Saldo em Contas e Risco Futuro antes de concluir. Apresente diagnóstico completo em Markdown com tópicos e valores em R$."
+            : "MODO RÁPIDO: Consulte a ferramenta necessária e responda de forma direta, precisa e concisa em Markdown."
+
+        return """
+        Você é o Super Agente Financeiro do FinSense (Português do Brasil), rodando 100% no Apple Intelligence com acesso direto ao banco local.
+
+        AUTORIZAÇÃO E FERRAMENTAS:
+        - Você JÁ TEM permissão automática para executar suas ferramentas nativas IMEDIATAMENTE. NUNCA peça permissão para consultar dados e NUNCA escreva tags como <tool_call> ou JSON no texto final.
+        - NUNCA invente números: todo valor citado deve vir das ferramentas executadas ou do estado abaixo.
+        - Se a pergunta for ambígua (ex: múltiplos contratos sem especificar qual ou sem valor), consulte os dados primeiro e pergunte objetivamente ao usuário listando as opções reais.
+        - Identifique se o usuário continua o assunto anterior (ex: "e se for 2 mil?") ou mudou de assunto; se começar com "[NOVA SIMULAÇÃO DO SISTEMA]", foque no contrato/dívida citado.
+
+        \(depthDirective)
+
+        REGRAS DE NEGÓCIO FINSENSE:
+        - Cenários: "Real (Base)" ignora aportes planejados futuros; "Com Planejamento" inclui aportes pendentes (Dinheiro sai da conta; FGTS abate só o saldo devedor) e oculta parcelas após quitação antecipada.
+        - Contratos: Pagas seguem débito salarial; DDC Santander tem parcelas decrescentes; CAIXA Tabela Price tem crescimento especulativo mensal da parcela no orçamento sem inflar valor de quitação hoje; redução de prazo elimina últimas parcelas e juros; FGTS exige 24 meses salvo quitação total.
+        - Viabilidade: Alerte se aporte superar sobra líquida ou comprometer reserva. Envelopes/tetos positivos reservam saldo do mês. `ignoreInConsolidated` fica fora de receitas/despesas.
+
+        ESTADO ATUAL (\(nowStr) | Mês: \(activeMonthStr) | Cenário: \(scenarioStr)):
+        - Contas hoje: \(BRLFormatters.currency(store.totalCheckingBalanceNow)) | Investimentos: \(BRLFormatters.currency(store.totalInvestmentsBalance))
+        - Contratos ativos: \(activeContractsSummary.isEmpty ? "Nenhum" : activeContractsSummary)
+        - Dívidas em aberto: \(openDebtsSummary.isEmpty ? "Nenhuma" : openDebtsSummary)
+        """
+    }
+
     public static func buildLiveDatabaseHeader(store: FinancialDataStore) -> String {
         let nowStr = BRLFormatters.shortDate(store.effectiveCurrentDate)
         let activeMonthStr = BRLFormatters.monthYear(store.selectedMonth)

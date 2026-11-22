@@ -62,7 +62,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     public var title: String {
         switch self {
         case .general: return "Gerais"
-        case .llm: return "Configuração da LLM"
+        case .llm: return "Apple Intelligence"
         case .accounts: return "Contas"
         case .categories: return "Categorias"
         }
@@ -71,7 +71,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     public var icon: String {
         switch self {
         case .general: return "slider.horizontal.3"
-        case .llm: return "cpu.fill"
+        case .llm: return "brain.head.profile"
         case .accounts: return "building.columns.fill"
         case .categories: return "square.grid.2x2.fill"
         }
@@ -1984,6 +1984,8 @@ public struct LLMConfiguration: Codable, Hashable {
     public var localEndpointURL: String
     public var isThinkingModeEnabled: Bool
     public var contextWindowSize: Int
+    public var appleIntelligenceTemperature: Double
+    public var appleIntelligenceMaxResponseTokens: Int
 
     enum CodingKeys: String, CodingKey {
         case huggingFaceToken
@@ -1992,6 +1994,8 @@ public struct LLMConfiguration: Codable, Hashable {
         case localEndpointURL
         case isThinkingModeEnabled
         case contextWindowSize
+        case appleIntelligenceTemperature
+        case appleIntelligenceMaxResponseTokens
     }
 
     public init(
@@ -2000,7 +2004,9 @@ public struct LLMConfiguration: Codable, Hashable {
         downloadedModels: [LocalLLMModelInfo] = [],
         localEndpointURL: String = "",
         isThinkingModeEnabled: Bool = true,
-        contextWindowSize: Int = 16384
+        contextWindowSize: Int = 16384,
+        appleIntelligenceTemperature: Double = 0.25,
+        appleIntelligenceMaxResponseTokens: Int = 1600
     ) {
         self.huggingFaceToken = huggingFaceToken
         self.selectedModelId = selectedModelId
@@ -2008,6 +2014,8 @@ public struct LLMConfiguration: Codable, Hashable {
         self.localEndpointURL = localEndpointURL
         self.isThinkingModeEnabled = isThinkingModeEnabled
         self.contextWindowSize = contextWindowSize
+        self.appleIntelligenceTemperature = appleIntelligenceTemperature
+        self.appleIntelligenceMaxResponseTokens = appleIntelligenceMaxResponseTokens
     }
 
     public init(from decoder: Decoder) throws {
@@ -2018,6 +2026,8 @@ public struct LLMConfiguration: Codable, Hashable {
         self.localEndpointURL = try container.decodeIfPresent(String.self, forKey: .localEndpointURL) ?? ""
         self.isThinkingModeEnabled = try container.decodeIfPresent(Bool.self, forKey: .isThinkingModeEnabled) ?? true
         self.contextWindowSize = try container.decodeIfPresent(Int.self, forKey: .contextWindowSize) ?? 16384
+        self.appleIntelligenceTemperature = try container.decodeIfPresent(Double.self, forKey: .appleIntelligenceTemperature) ?? 0.25
+        self.appleIntelligenceMaxResponseTokens = try container.decodeIfPresent(Int.self, forKey: .appleIntelligenceMaxResponseTokens) ?? 1600
     }
 
     public var selectedModel: LocalLLMModelInfo? {
