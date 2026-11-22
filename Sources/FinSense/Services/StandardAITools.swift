@@ -52,6 +52,168 @@ private func extractInt(_ value: Any?) -> Int? {
     return nil
 }
 
+/// Resolve contratos com tratamento inteligente para termos genéricos ("emprestimos", "financiamentos", "todos")
+/// além de correspondência direta ou por tokens específicos (banco, número de contrato, modalidade).
+@MainActor
+private func resolveContractsMatching(
+    in store: FinancialDataStore,
+    contractIdStr: String?,
+    rawQuery: String,
+    kind: String = "any",
+    includeSettled: Bool = false
+) -> [CreditContract] {
+    var pool = store.contracts.filter { includeSettled || !$0.isSettled }
+    let normKind = kind.lowercased()
+    if normKind == "financing" {
+        pool = pool.filter { $0.kind == .financing }
+    } else if normKind == "loan" {
+        pool = pool.filter { $0.kind == .loan }
+    } else if normKind == "debt" {
+        return []
+    }
+
+    if let contractIdStr, let uuid = UUID(uuidString: contractIdStr) {
+        return pool.filter { $0.id == uuid }
+    }
+
+    if let uuidInQuery = UUID(uuidString: rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        return pool.filter { $0.id == uuidInQuery }
+    }
+
+    let normQuery = normalizeSearchToken(rawQuery)
+    if normQuery.isEmpty {
+        return pool
+    }
+
+    let genericLoanWords: Set<String> = ["emprestimo", "emprestimos", "loan", "loans", "consignado"]
+    let genericFinancingWords: Set<String> = ["financiamento", "financiamentos", "financing", "financings", "imovel", "imobiliario", "habitacao", "habitacional"]
+    let genericAllWords: Set<String> = ["contrato", "contratos", "todos", "todas", "all", "any"]
+    let stopWords: Set<String> = [
+        "meu", "meus", "minha", "minhas", "os", "as", "o", "a", "de", "do", "da", "dos", "das",
+        "no", "na", "nos", "nas", "em", "com", "para", "por", "pelo", "pela", "que", "quais",
+        "qual", "sao", "sobre", "ver", "listar", "mostrar", "simular", "simulacao", "prazo",
+        "quitar", "amortizar", "plano", "acao", "completo", "saldo", "valor", "parcela",
+        "taxa", "menor", "possivel", "atual"
+    ]
+
+    // 1. Correspondência direta exata / substring nos campos principais
+    let directMatches = pool.filter { c in
+        normalizeSearchToken(c.name).contains(normQuery) ||
+        normalizeSearchToken(c.contractNumber ?? "").contains(normQuery) ||
+        normalizeSearchToken(c.subtypeDisplayName).contains(normQuery)
+    }
+    if !directMatches.isEmpty {
+        return directMatches
+    }
+
+    // 2. Separa tokens específicos vs categorias genéricas
+    let rawTokens = normQuery
+        .split { !$0.isLetter && !$0.isNumber }
+        .map(String.init)
+        .filter { $0.count >= 2 }
+
+    let nonStopTokens = rawTokens.filter { !stopWords.contains($0) }
+    let specificTokens = nonStopTokens.filter {
+        !genericLoanWords.contains($0) && !genericFinancingWords.contains($0) && !genericAllWords.contains($0)
+    }
+
+    if !specificTokens.isEmpty {
+        let scored = pool.compactMap { c -> (contract: CreditContract, score: Int)? in
+            let hay = normalizeSearchToken("\(c.name) \(c.contractNumber ?? "") \(c.subtypeDisplayName)")
+            let score = specificTokens.filter { hay.contains($0) }.count
+            return score > 0 ? (c, score) : nil
+        }
+        .sorted { $0.score > $1.score }
+        if !scored.isEmpty {
+            return scored.map(\.contract)
+        }
+        return []
+    }
+
+    // 3. Apenas palavras genéricas permaneceram (ex: "meus emprestimos", "quais financiamentos")
+    let hasLoanWord = nonStopTokens.contains { genericLoanWords.contains($0) }
+    let hasFinancingWord = nonStopTokens.contains { genericFinancingWords.contains($0) }
+    let hasAllWord = nonStopTokens.contains { genericAllWords.contains($0) }
+
+    if hasLoanWord && !hasFinancingWord {
+        return pool.filter { $0.kind == .loan }
+    }
+    if hasFinancingWord && !hasLoanWord {
+        return pool.filter { $0.kind == .financing }
+    }
+    if hasAllWord || (hasLoanWord && hasFinancingWord) {
+        return pool
+    }
+    return []
+}
+
+/// Simula projeção via `LoanProjectionEngine`, gerando cronograma sintético fiel caso o contrato ainda
+/// não possua transações parceladas materializadas no store (ex.: testes ou cadastros recentes).
+@MainActor
+private func simulateLoanProjectionSafe(
+    for contract: CreditContract,
+    draftPlan: AmortizationPlan?,
+    in store: FinancialDataStore
+) -> LoanProjectionResult? {
+    let unpaid = store.transactions.filter {
+        $0.linkedContractId == contract.id &&
+        $0.installmentIndex != nil &&
+        !$0.isPaid
+    }
+    if !unpaid.isEmpty {
+        return draftPlan != nil
+            ? store.simulateAmortizationPlanPreview(for: contract.id, draftPlan: draftPlan)
+            : store.loanProjection(for: contract.id)
+    }
+
+    let rem = store.remainingInstallmentsCount(for: contract)
+    guard rem > 0 else {
+        return draftPlan != nil
+            ? store.simulateAmortizationPlanPreview(for: contract.id, draftPlan: draftPlan)
+            : store.loanProjection(for: contract.id)
+    }
+
+    let cal = store.calendar
+    let paid = store.paidTransactionsCount(forContract: contract)
+    let schedByNum = Dictionary(uniqueKeysWithValues: (contract.scheduledInstallments ?? []).map { ($0.installmentNumber, $0) })
+    let baseAnchor = cal.date(byAdding: .month, value: 1, to: store.effectiveCurrentDate) ?? store.effectiveCurrentDate
+    let day = min(max(contract.billingDay, 1), 28)
+
+    var syntheticUnpaid: [FinancialTransaction] = []
+    syntheticUnpaid.reserveCapacity(rem)
+    for idx in 0..<rem {
+        let instNum = paid + idx + 1
+        let monthDate = cal.date(byAdding: .month, value: idx, to: baseAnchor) ?? baseAnchor
+        var comps = cal.dateComponents([.year, .month], from: monthDate)
+        comps.day = day
+        let txDate = cal.date(from: comps) ?? monthDate
+        let amount = schedByNum[instNum]?.amount ?? contract.installmentAmount
+        syntheticUnpaid.append(
+            FinancialTransaction(
+                name: "\(contract.name) (\(instNum)/\(contract.totalInstallments))",
+                amount: amount,
+                date: txDate,
+                type: .expense,
+                isPaid: false,
+                categoryId: contract.categoryId,
+                accountId: contract.accountId,
+                installmentIndex: instNum,
+                installmentTotal: contract.totalInstallments,
+                linkedContractId: contract.id
+            )
+        )
+    }
+
+    let effectivePlan = draftPlan ?? store.amortizationPlan(for: contract.id)
+    return LoanProjectionEngine.simulate(
+        contract: contract,
+        unpaidInstallmentTransactions: syntheticUnpaid,
+        currentRealBalanceDouble: store.currentOutstandingBalance(for: contract),
+        plan: effectivePlan,
+        calendar: store.calendar
+    )
+}
+
 // MARK: - 1. Tool: get_contract_details
 
 @MainActor
@@ -68,7 +230,7 @@ public struct GetContractDetailsTool: AIToolProtocol {
             ],
             "nameOrQuery": [
                 "type": "string",
-                "description": "Nome ou termo de busca do contrato (ex: 'caixa', 'habitação', 'santander', 'consignado', 'mercado pago')"
+                "description": "Nome, termo genérico ou tipo (ex: 'caixa', 'santander', 'emprestimos', 'financiamento', 'mercado pago')"
             ],
             "kind": [
                 "type": "string",
@@ -90,36 +252,14 @@ public struct GetContractDetailsTool: AIToolProtocol {
         let normQuery = normalizeSearchToken(rawQuery)
         let kind = ((parameters["kind"] as? String) ?? "any").lowercased()
 
-        // Busca em Contratos de Financiamento e Empréstimo
-        var matchedContracts = store.contracts.filter { !$0.isSettled }
-        if kind == "financing" {
-            matchedContracts = matchedContracts.filter { $0.kind == .financing }
-        } else if kind == "loan" {
-            matchedContracts = matchedContracts.filter { $0.kind == .loan }
-        } else if kind == "debt" {
-            matchedContracts = []
-        }
-
-        if let contractIdStr, let uuid = UUID(uuidString: contractIdStr) {
-            matchedContracts = matchedContracts.filter { $0.id == uuid }
-        } else if !normQuery.isEmpty {
-            let exactOrPartial = matchedContracts.filter {
-                normalizeSearchToken($0.name).contains(normQuery) ||
-                normalizeSearchToken($0.contractNumber ?? "").contains(normQuery) ||
-                normalizeSearchToken($0.subtypeDisplayName).contains(normQuery)
-            }
-            if !exactOrPartial.isEmpty {
-                matchedContracts = exactOrPartial
-            } else {
-                // Tentativa por palavras individuais (match flexível para prompts compostos)
-                let tokens = normQuery.split(separator: " ").map(String.init).filter { $0.count >= 3 }
-                let byTokens = matchedContracts.filter { c in
-                    let hay = normalizeSearchToken("\(c.name) \(c.contractNumber ?? "") \(c.subtypeDisplayName)")
-                    return tokens.contains { hay.contains($0) }
-                }
-                matchedContracts = byTokens
-            }
-        }
+        // Busca inteligente em Contratos de Financiamento e Empréstimo
+        let matchedContracts = resolveContractsMatching(
+            in: store,
+            contractIdStr: contractIdStr,
+            rawQuery: rawQuery,
+            kind: kind,
+            includeSettled: false
+        )
 
         // Busca em Dívidas se aplicável
         var matchedDebts = store.activeDebts
@@ -128,14 +268,17 @@ public struct GetContractDetailsTool: AIToolProtocol {
         } else if let contractIdStr, let uuid = UUID(uuidString: contractIdStr) {
             matchedDebts = matchedDebts.filter { $0.id == uuid }
         } else if !normQuery.isEmpty {
-            let filtered = matchedDebts.filter { normalizeSearchToken($0.name).contains(normQuery) }
-            if !filtered.isEmpty {
-                matchedDebts = filtered
-            } else {
-                let tokens = normQuery.split(separator: " ").map(String.init).filter { $0.count >= 3 }
-                matchedDebts = matchedDebts.filter { d in
-                    let hay = normalizeSearchToken(d.name)
-                    return tokens.contains { hay.contains($0) }
+            let asksGenericDebt = normQuery.contains("divida") || normQuery.contains("acordo") || normQuery == "todos" || normQuery == "todas"
+            if !asksGenericDebt {
+                let filtered = matchedDebts.filter { normalizeSearchToken($0.name).contains(normQuery) }
+                if !filtered.isEmpty {
+                    matchedDebts = filtered
+                } else {
+                    let tokens = normQuery.split(separator: " ").map(String.init).filter { $0.count >= 3 }
+                    matchedDebts = matchedDebts.filter { d in
+                        let hay = normalizeSearchToken(d.name)
+                        return tokens.contains { hay.contains($0) }
+                    }
                 }
             }
         }
@@ -298,28 +441,15 @@ public struct SimulateAmortizationTool: AIToolProtocol {
         let contractIdStr = parameters["contractId"] as? String
         let query = normalizeSearchToken((parameters["nameOrQuery"] as? String) ?? "")
 
-        // Localiza contrato ativo com busca inteligente
+        // Localiza contrato ativo com busca inteligente (inclui termos genéricos como 'emprestimos' / 'financiamento')
         let activeContracts = store.contracts.filter { !$0.isSettled }
-        var candidates = activeContracts
-
-        if let contractIdStr, let uuid = UUID(uuidString: contractIdStr) {
-            candidates = activeContracts.filter { $0.id == uuid }
-        } else if !query.isEmpty {
-            let direct = activeContracts.filter {
-                normalizeSearchToken($0.name).contains(query) ||
-                normalizeSearchToken($0.subtypeDisplayName).contains(query) ||
-                normalizeSearchToken($0.contractNumber ?? "").contains(query)
-            }
-            if !direct.isEmpty {
-                candidates = direct
-            } else {
-                let tokens = query.split(separator: " ").map(String.init).filter { $0.count >= 3 }
-                candidates = activeContracts.filter { c in
-                    let hay = normalizeSearchToken("\(c.name) \(c.subtypeDisplayName) \(c.contractNumber ?? "")")
-                    return tokens.contains { hay.contains($0) }
-                }
-            }
-        }
+        let candidates = resolveContractsMatching(
+            in: store,
+            contractIdStr: contractIdStr,
+            rawQuery: query,
+            kind: "any",
+            includeSettled: false
+        )
 
         guard let contract = candidates.first else {
             let activeList = activeContracts.map { ["id": $0.id.uuidString, "name": $0.name, "kind": $0.kind.rawValue] }
@@ -398,8 +528,15 @@ public struct SimulateAmortizationTool: AIToolProtocol {
             ]
         }
 
-        // Se solicitado recurringMonthly == true (ou sempre adiciona projeção multi-mês se possível), simula também plano mensal contínuo
-        if recurringMonthly {
+        let kpiSummary = store.buildUnifiedFinancialKPISummary(referenceDate: store.selectedMonth, isAnnual: false)
+        let saldoPrevistoAtual = kpiSummary.isPast ? kpiSummary.projectedAccountBalance : kpiSummary.balanceIfAllBudgetsConsumed
+        baseResult["currentSaldoPrevistoFimDoMes"] = saldoPrevistoAtual
+        baseResult["sobraAposPlanejamento"] = kpiSummary.surplusAfterPlanning
+        baseResult["liquidCheckingBalanceNow"] = kpiSummary.currentAccountBalanceNow
+
+        // Sempre calcula projeção mensal recorrente via LoanProjectionEngine quando solicitada OU quando aporte único elimina 0 parcelas
+        let singleShotElim = (baseResult["eliminatedInstallmentsCount"] as? Int) ?? 0
+        if recurringMonthly || singleShotElim == 0 {
             let cal = store.calendar
             let today = store.effectiveCurrentDate
             var items: [PlannedAmortization] = []
@@ -425,7 +562,13 @@ public struct SimulateAmortizationTool: AIToolProtocol {
                 defaultRecalculationMode: recalcMode,
                 items: items
             )
-            if let proj = store.simulateAmortizationPlanPreview(for: contract.id, draftPlan: draftPlan) {
+            if let proj = simulateLoanProjectionSafe(for: contract, draftPlan: draftPlan, in: store) {
+                let expectedMonthEndCashAfterExtra = store.expectedMonthEndCashBalance(
+                    for: today,
+                    contractId: contract.id,
+                    draftPlan: draftPlan,
+                    draftProjection: proj
+                )
                 baseResult["recurringMonthlyProjection"] = [
                     "monthlyExtraPayment": extraPayment,
                     "originalRemainingMonths": proj.originalRemainingMonths,
@@ -435,7 +578,9 @@ public struct SimulateAmortizationTool: AIToolProtocol {
                     "projectedPayoffDate": BRLFormatters.shortDate(proj.projectedMaturityDate),
                     "originalMaturityDate": BRLFormatters.shortDate(proj.originalMaturityDate),
                     "totalInterestSaved": LoanProjectionEngine.toDouble(proj.totalInterestSaved),
-                    "doesAchieveFullPayoff": proj.doesPlanAchieveFullPayoff
+                    "doesAchieveFullPayoff": proj.doesPlanAchieveFullPayoff,
+                    "expectedMonthEndCashBalanceAfterExtra": expectedMonthEndCashAfterExtra,
+                    "isAffordableInCurrentMonthCash": expectedMonthEndCashAfterExtra >= 0
                 ]
             }
         }
@@ -496,6 +641,9 @@ public struct GetMonthlyCashFlowTool: AIToolProtocol {
             store.ensureRecurringTransactionsMaterialized(upTo: horizon)
         }
 
+        let kpi = store.buildUnifiedFinancialKPISummary(referenceDate: targetDate, isAnnual: false)
+        let saldoPrevisto = kpi.isPast ? kpi.projectedAccountBalance : kpi.balanceIfAllBudgetsConsumed
+
         let incomeTotal = store.monthlyIncome(for: targetDate, onlyPaid: false)
         let incomeReceived = store.monthlyReceivedIncome(for: targetDate)
         let incomePending = store.monthlyPendingIncome(for: targetDate)
@@ -543,11 +691,19 @@ public struct GetMonthlyCashFlowTool: AIToolProtocol {
                 "pending": expensePending
             ],
             "operationalBalance": operationalNet,
+            "sobraAposPlanejamento": kpi.surplusAfterPlanning,
             "savingsRatePercent": savingsRate,
             "remainingBudgetCaps": isPast ? 0.0 : remainingProvisions,
+            "remainingCategoryCeilings": kpi.categoryCeilingsRemaining,
+            "remainingSpecificQuotas": kpi.specificQuotasRemaining,
+            "totalPlannedExpensesWithBudgets": kpi.totalPlannedExpenses,
             "liquidCheckingBalanceNow": checkingNow,
             "investmentsBalanceNow": investedNow,
+            "consolidatedInvestmentsBalance": store.consolidatedInvestmentsBalance,
             "totalPatrimonyNow": patrimonyNow,
+            "totalPatrimonyDashboard": checkingNow + store.consolidatedInvestmentsBalance,
+            "saldoPrevistoFimDoMes": saldoPrevisto,
+            "saldoPrevistoSemConsumirOrcamentos": kpi.projectedAccountBalance,
             "projectedMonthEndCash": store.accumulatedConsolidatedBalance(throughMonth: targetDate),
             "topPendingExpenses": pendingExpenses
         ]
@@ -559,7 +715,7 @@ public struct GetMonthlyCashFlowTool: AIToolProtocol {
 @MainActor
 public struct GetProjectedCashFlowRangeTool: AIToolProtocol {
     public let name: String = "get_projected_cash_flow_range"
-    public let description: String = "Consulta a projeção mês a mês de fluxo de caixa para horizontes futuros (receitas projetadas, despesas, parcelas de contratos com cenário Real ou Planejado, balanço mensal e saldo acumulado)."
+    public let description: String = "Consulta a projeção mês a mês de fluxo de caixa para horizontes futuros (receitas projetadas, despesas, parcelas de contratos com cenário Real ou Planejado, balanço mensal, Saldo Previsto e saldo acumulado)."
 
     public let parametersSchema: [String: Any] = [
         "type": "object",
@@ -598,7 +754,9 @@ public struct GetProjectedCashFlowRangeTool: AIToolProtocol {
 
         var monthsArray: [[String: Any]] = []
         var firstDeficitMonth: String? = nil
+        var firstDeficitSaldoPrevistoMonth: String? = nil
         var minBalance: Double = Double.greatestFiniteMagnitude
+        var minSaldoPrevisto: Double = Double.greatestFiniteMagnitude
         var sumNet: Double = 0.0
 
         for i in 0..<count {
@@ -609,12 +767,21 @@ public struct GetProjectedCashFlowRangeTool: AIToolProtocol {
             let net = store.projectedMonthlyNetBalance(for: cur)
             let accum = store.accumulatedConsolidatedBalance(throughMonth: cur)
 
+            let kpi = store.buildUnifiedFinancialKPISummary(referenceDate: cur, isAnnual: false)
+            let saldoPrevisto = kpi.isPast ? kpi.projectedAccountBalance : kpi.balanceIfAllBudgetsConsumed
+
             sumNet += net
             if accum < minBalance {
                 minBalance = accum
             }
+            if saldoPrevisto < minSaldoPrevisto {
+                minSaldoPrevisto = saldoPrevisto
+            }
             if accum < 0 && firstDeficitMonth == nil {
                 firstDeficitMonth = monthLabel
+            }
+            if saldoPrevisto < 0 && firstDeficitSaldoPrevistoMonth == nil {
+                firstDeficitSaldoPrevistoMonth = monthLabel
             }
 
             monthsArray.append([
@@ -622,6 +789,9 @@ public struct GetProjectedCashFlowRangeTool: AIToolProtocol {
                 "projectedIncome": income,
                 "projectedExpense": expense,
                 "projectedNet": net,
+                "sobraAposPlanejamento": kpi.surplusAfterPlanning,
+                "saldoPrevistoFimDoMes": saldoPrevisto,
+                "saldoSemConsumirOrcamentos": kpi.projectedAccountBalance,
                 "accumulatedBalanceEnd": accum
             ])
         }
@@ -634,8 +804,10 @@ public struct GetProjectedCashFlowRangeTool: AIToolProtocol {
             "lastMonth": monthsArray.last?["month"] ?? "",
             "averageMonthlyNet": sumNet / Double(max(monthsArray.count, 1)),
             "lowestProjectedBalance": minBalance == Double.greatestFiniteMagnitude ? 0.0 : minBalance,
+            "lowestSaldoPrevisto": minSaldoPrevisto == Double.greatestFiniteMagnitude ? 0.0 : minSaldoPrevisto,
             "firstDeficitMonth": firstDeficitMonth as Any,
-            "hasRunwayRisk": firstDeficitMonth != nil,
+            "firstDeficitSaldoPrevistoMonth": firstDeficitSaldoPrevistoMonth as Any,
+            "hasRunwayRisk": firstDeficitMonth != nil || firstDeficitSaldoPrevistoMonth != nil,
             "timeline": monthsArray
         ]
     }
@@ -1205,23 +1377,23 @@ public struct GetLoanProjectionAndPlanTool: AIToolProtocol {
         let query = normalizeSearchToken((parameters["nameOrQuery"] as? String) ?? "")
         let contractIdStr = parameters["contractId"] as? String
 
-        var selected: CreditContract?
-        if let contractIdStr, let uuid = UUID(uuidString: contractIdStr) {
-            selected = activeContracts.first(where: { $0.id == uuid })
+        let candidates = resolveContractsMatching(
+            in: store,
+            contractIdStr: contractIdStr,
+            rawQuery: query,
+            kind: "any",
+            includeSettled: false
+        )
+
+        let selected: CreditContract?
+        if let contractIdStr, UUID(uuidString: contractIdStr) != nil {
+            selected = candidates.first
         } else if !query.isEmpty {
-            selected = activeContracts.first(where: {
-                normalizeSearchToken($0.name).contains(query) ||
-                normalizeSearchToken($0.subtypeDisplayName).contains(query)
-            })
-            if selected == nil {
-                let tokens = query.split(separator: " ").map(String.init).filter { $0.count >= 3 }
-                selected = activeContracts.first { c in
-                    let hay = normalizeSearchToken("\(c.name) \(c.subtypeDisplayName)")
-                    return tokens.contains { hay.contains($0) }
-                }
-            }
+            selected = candidates.first
         } else if activeContracts.count == 1 {
             selected = activeContracts.first
+        } else {
+            selected = nil
         }
 
         guard let contract = selected else {
@@ -1267,11 +1439,11 @@ public struct GetLoanProjectionAndPlanTool: AIToolProtocol {
                 items: items
             )
             usedPlan = draft
-            projection = store.simulateAmortizationPlanPreview(for: contract.id, draftPlan: draft)
+            projection = simulateLoanProjectionSafe(for: contract, draftPlan: draft, in: store)
         } else {
             isSimulatedDraft = false
             usedPlan = store.amortizationPlan(for: contract.id)
-            projection = store.loanProjection(for: contract.id)
+            projection = simulateLoanProjectionSafe(for: contract, draftPlan: nil, in: store)
         }
 
         guard let proj = projection else {
@@ -1572,6 +1744,7 @@ public struct AnalyzeDebtPayoffStrategyTool: AIToolProtocol {
 
     public func execute(parameters: [String: Any]) async throws -> [String: Any] {
         let openDebts = store.activeDebts
+        let paidDebts = store.debts.filter(\.isPaid)
         let debtIdStr = parameters["debtId"] as? String
         let query = normalizeSearchToken((parameters["nameOrQuery"] as? String) ?? "")
 
@@ -1593,15 +1766,27 @@ public struct AnalyzeDebtPayoffStrategyTool: AIToolProtocol {
             matchedDebts = openDebts
         }
 
+        let kpi = store.buildUnifiedFinancialKPISummary(referenceDate: store.selectedMonth, isAnnual: false)
+        let saldoPrevisto = kpi.isPast ? kpi.projectedAccountBalance : kpi.balanceIfAllBudgetsConsumed
+        let openDebtsTotal = openDebts.reduce(0.0) { $0 + $1.originalAmount }
+
         if openDebts.isEmpty {
             return [
                 "status": "success",
-                "message": "O usuário não possui nenhuma dívida em aberto cadastrada no momento.",
+                "message": "O usuário não possui nenhuma dívida em aberto (isPaid == false) cadastrada no momento.",
+                "openDebtsCount": 0,
+                "openDebtsTotalAmount": 0.0,
+                "paidDebtsCount": paidDebts.count,
+                "paidDebtsExcludedNote": "Dívidas já quitadas (isPaid == true) não entram como pendências em aberto.",
+                "liquidCheckingBalanceNow": kpi.currentAccountBalanceNow,
+                "saldoPrevistoFimDoMes": saldoPrevisto,
+                "sobraAposPlanejamento": kpi.surplusAfterPlanning,
+                "investmentsConsolidatedBalance": store.consolidatedInvestmentsBalance,
                 "openDebts": []
             ]
         }
 
-        // Calcula capacidade real de pagamento nos últimos/próximos 3 meses
+        // Calcula capacidade real de pagamento nos próximos meses
         let cal = store.calendar
         if let horizon = cal.date(byAdding: .month, value: 6, to: store.selectedMonth) {
             store.ensureRecurringTransactionsMaterialized(upTo: horizon)
@@ -1616,13 +1801,14 @@ public struct AnalyzeDebtPayoffStrategyTool: AIToolProtocol {
         let averageSurplus = monthlyNets.isEmpty ? 0.0 : (monthlyNets.reduce(0.0, +) / Double(monthlyNets.count))
         let currentMonthNet = store.projectedMonthlyNetBalance(for: store.selectedMonth)
         let checkingNow = store.totalCheckingBalanceNow
-        let investedNow = store.totalInvestmentsBalance
+        let investedConsolidated = store.consolidatedInvestmentsBalance
 
         let targetDebts = matchedDebts.isEmpty ? openDebts : matchedDebts
         let analysisList: [[String: Any]] = targetDebts.map { d in
             let amount = d.originalAmount
             let canPayCashNow = checkingNow >= amount
-            let canPayWithInvestments = (checkingNow + investedNow) >= amount
+            let canPayWithinSaldoPrevisto = saldoPrevisto >= amount
+            let canPayWithInvestments = (checkingNow + investedConsolidated) >= amount
             let monthsWithAverageSurplus: Any = averageSurplus > 0
                 ? Int(ceil(amount / averageSurplus))
                 : "Inviável sem corte de gastos (sobra média mensal não positiva)"
@@ -1630,9 +1816,11 @@ public struct AnalyzeDebtPayoffStrategyTool: AIToolProtocol {
                 "id": d.id.uuidString,
                 "name": d.name,
                 "amount": amount,
+                "isPaid": d.isPaid,
                 "contractedDate": d.contractedDate.map { BRLFormatters.shortDate($0) } ?? "Não informada",
                 "notes": d.notes,
                 "canPayImmediatelyFromChecking": canPayCashNow,
+                "canPayWithinSaldoPrevisto": canPayWithinSaldoPrevisto,
                 "canPayIncludingInvestments": canPayWithInvestments,
                 "estimatedMonthsToSaveFromMonthlySurplus": monthsWithAverageSurplus
             ]
@@ -1641,11 +1829,614 @@ public struct AnalyzeDebtPayoffStrategyTool: AIToolProtocol {
         return [
             "status": "success",
             "matchedSpecifically": !matchedDebts.isEmpty,
+            "openDebtsCount": openDebts.count,
+            "openDebtsTotalAmount": openDebtsTotal,
+            "paidDebtsCount": paidDebts.count,
+            "paidDebtsExcludedNote": "Consideradas exclusivamente dívidas em aberto (isPaid == false); \(paidDebts.count) quitada(s) excluída(s).",
             "currentMonthProjectedNet": currentMonthNet,
             "averageProjectedMonthlySurplusNext4Months": averageSurplus,
             "liquidCheckingBalanceNow": checkingNow,
-            "investmentsBalanceNow": investedNow,
+            "saldoPrevistoFimDoMes": saldoPrevisto,
+            "sobraAposPlanejamento": kpi.surplusAfterPlanning,
+            "investmentsBalanceNow": store.totalInvestmentsBalance,
+            "investmentsConsolidatedBalance": investedConsolidated,
             "debtsAnalysis": analysisList
         ]
+    }
+}
+
+// MARK: - 14. Tool: query_database (Acesso SQL-like Completo a Todas as Tabelas do Banco Local)
+
+@MainActor
+public struct QueryDatabaseTool: AIToolProtocol {
+    public let name: String = "query_database"
+    public let description: String = "Consulta estruturada estilo SQL sobre TODAS as tabelas do banco local do FinSense: 'overview', 'kpi_summary' (inclui Saldo Previsto exato do Dashboard), 'accounts', 'contracts' (todos os financiamentos e empréstimos), 'amortization_plans', 'debts' (separa isPaid == false vs true), 'investments', 'transactions', 'provisions_and_quotas' e 'categories'."
+
+    public let parametersSchema: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "table": [
+                "type": "string",
+                "enum": [
+                    "overview", "kpi_summary", "accounts", "contracts",
+                    "amortization_plans", "debts", "investments",
+                    "transactions", "provisions_and_quotas", "categories"
+                ],
+                "description": "Tabela/coleção alvo no banco local (padrão: overview)"
+            ],
+            "query": [
+                "type": "string",
+                "description": "Filtro de busca textual opcional por nome, contrato, banco ou categoria"
+            ],
+            "month": [
+                "type": "string",
+                "description": "Mês YYYY-MM opcional para kpi_summary, transactions e provisions_and_quotas"
+            ],
+            "year": [
+                "type": "integer",
+                "description": "Ano opcional (ex: 2026) para kpi_summary ou transactions"
+            ],
+            "isAnnual": [
+                "type": "boolean",
+                "description": "Se true em kpi_summary, calcula os indicadores consolidados do ano inteiro"
+            ],
+            "includeSettledOrPaid": [
+                "type": "boolean",
+                "description": "Se true inclui contratos quitados ou lista dívidas pagas separadamente (padrão false para filtros ativos)"
+            ],
+            "includeIgnored": [
+                "type": "boolean",
+                "description": "Se true inclui também transações marcadas como ignoreInConsolidated"
+            ],
+            "limit": [
+                "type": "integer",
+                "description": "Limite máximo de linhas retornadas (padrão 25, máximo 100)"
+            ]
+        ]
+    ]
+
+    private let store: FinancialDataStore
+
+    public init(store: FinancialDataStore) {
+        self.store = store
+    }
+
+    public func execute(parameters: [String: Any]) async throws -> [String: Any] {
+        let rawTable = normalizeSearchToken((parameters["table"] as? String) ?? "overview")
+        let table = canonicalTableName(rawTable)
+        let query = normalizeSearchToken((parameters["query"] as? String) ?? "")
+        let isAnnual = (parameters["isAnnual"] as? Bool) ?? false
+        let includeSettledOrPaid = (parameters["includeSettledOrPaid"] as? Bool) ?? false
+        let includeIgnored = (parameters["includeIgnored"] as? Bool) ?? false
+        let limit = min(max(extractInt(parameters["limit"]) ?? 25, 1), 100)
+
+        var targetDate = store.selectedMonth
+        if let monthStr = parameters["month"] as? String, let parsed = parseISODate(monthStr) {
+            targetDate = parsed
+        } else if let yr = extractInt(parameters["year"]) {
+            var comps = DateComponents()
+            comps.year = yr
+            comps.month = store.calendar.component(.month, from: store.selectedMonth)
+            comps.day = 1
+            if let d = store.calendar.date(from: comps) {
+                targetDate = d
+            }
+        }
+
+        switch table {
+        case "kpi_summary":
+            let kpi = store.buildUnifiedFinancialKPISummary(referenceDate: targetDate, isAnnual: isAnnual)
+            let saldoPrevisto = kpi.isPast ? kpi.projectedAccountBalance : kpi.balanceIfAllBudgetsConsumed
+            return [
+                "status": "success",
+                "table": "kpi_summary",
+                "referenceLabel": isAnnual ? BRLFormatters.yearString(targetDate) : BRLFormatters.monthYear(targetDate),
+                "isAnnual": isAnnual,
+                "isClosedPeriod": kpi.isPast,
+                "activeScenario": store.budgetProjectionScenario.rawValue,
+                "saldoAtualEmContasHoje": kpi.currentAccountBalanceNow,
+                "saldoPrevistoFimDoMes": saldoPrevisto,
+                "saldoPrevistoSemConsumirOrcamentos": kpi.projectedAccountBalance,
+                "sobraAposPlanejamento": kpi.surplusAfterPlanning,
+                "operationalNetBalance": kpi.operationalNetBalance,
+                "projectedIncome": kpi.projectedIncome,
+                "receivedIncome": kpi.receivedIncome,
+                "pendingIncome": kpi.pendingIncome,
+                "pendingIncomeOverdue": kpi.pendingIncomeOverdue,
+                "recordedExpense": kpi.recordedExpense,
+                "paidExpense": kpi.paidExpense,
+                "pendingExpense": kpi.pendingExpense,
+                "overdueExpenses": kpi.overdueExpenses,
+                "remainingBudgetsAndQuotas": kpi.remainingBudgetsAndQuotas,
+                "categoryCeilingsRemaining": kpi.categoryCeilingsRemaining,
+                "specificQuotasRemaining": kpi.specificQuotasRemaining,
+                "totalPlannedExpenses": kpi.totalPlannedExpenses,
+                "consolidatedInvestmentsBalance": store.consolidatedInvestmentsBalance,
+                "totalConsolidatedPatrimony": kpi.currentAccountBalanceNow + store.consolidatedInvestmentsBalance
+            ]
+
+        case "accounts":
+            var list = store.accounts
+            if !query.isEmpty {
+                list = list.filter { normalizeSearchToken($0.name).contains(query) || normalizeSearchToken($0.accountNumber).contains(query) }
+            }
+            let rows: [[String: Any]] = list.prefix(limit).map { acc in
+                [
+                    "id": acc.id.uuidString,
+                    "name": acc.name,
+                    "agency": acc.agency,
+                    "accountNumber": acc.accountNumber,
+                    "initialBalance": acc.initialBalance,
+                    "currentBalanceNow": store.currentBalance(forAccount: acc.id),
+                    "projectedMonthEndBalance": store.currentBalance(forAccount: acc.id, upTo: targetDate)
+                ]
+            }
+            return [
+                "status": "success",
+                "table": "accounts",
+                "count": list.count,
+                "totalCheckingBalanceNow": store.totalCheckingBalanceNow,
+                "rows": rows
+            ]
+
+        case "contracts":
+            var list = query.isEmpty
+                ? store.contracts.filter { includeSettledOrPaid || !$0.isSettled }
+                : resolveContractsMatching(in: store, contractIdStr: nil, rawQuery: query, kind: "any", includeSettled: includeSettledOrPaid)
+            if list.isEmpty && query.isEmpty {
+                list = store.contracts
+            }
+            let rows: [[String: Any]] = list.prefix(limit).map { c in
+                let bal = store.currentOutstandingBalance(for: c)
+                let payoff = store.projectedPayoffAmount(for: c)
+                return [
+                    "id": c.id.uuidString,
+                    "name": c.name,
+                    "kind": c.kind.rawValue,
+                    "kindTitle": c.kind.title,
+                    "subtype": c.subtypeDisplayName,
+                    "contractNumber": c.contractNumber as Any,
+                    "isSettled": c.isSettled,
+                    "outstandingBalance": bal,
+                    "projectedPayoffToday": payoff,
+                    "estimatedDiscountOnPayoff": max(0.0, store.remainingNominalAmount(for: c) - payoff),
+                    "installmentAmount": c.installmentAmount,
+                    "paidInstallmentsCount": store.paidTransactionsCount(forContract: c),
+                    "remainingInstallments": store.remainingInstallmentsCount(for: c),
+                    "totalInstallments": c.totalInstallments,
+                    "billingDaySalaryDebit": c.billingDay,
+                    "bankDueDay": c.effectiveBankDueDay,
+                    "monthlyInterestRatePercent": c.monthlyInterestRate,
+                    "hasDecreasingInstallmentSchedule": !(c.scheduledInstallments?.isEmpty ?? true),
+                    "speculativeMonthlyInstallmentGrowth": c.averageMonthlyInstallmentGrowth as Any,
+                    "hasSavedAmortizationPlan": store.hasSavedAmortizationPlan(for: c.id)
+                ]
+            }
+            let totalOutstanding = list.filter { !$0.isSettled }.reduce(0.0) { $0 + store.currentOutstandingBalance(for: $1) }
+            return [
+                "status": "success",
+                "table": "contracts",
+                "count": list.count,
+                "totalActiveOutstandingBalance": totalOutstanding,
+                "rows": rows
+            ]
+
+        case "amortization_plans":
+            var plans = store.amortizationPlans
+            if !query.isEmpty {
+                plans = plans.filter { p in
+                    guard let c = store.contracts.first(where: { $0.id == p.contractId }) else { return false }
+                    return normalizeSearchToken(c.name).contains(query) || normalizeSearchToken(c.contractNumber ?? "").contains(query)
+                }
+            }
+            let rows: [[String: Any]] = plans.prefix(limit).map { p in
+                let cName = store.contracts.first(where: { $0.id == p.contractId })?.name ?? "Contrato"
+                let proj = store.loanProjection(for: p.contractId)
+                let itemsSample = p.items.sorted { $0.date < $1.date }.prefix(8).map { item -> [String: Any] in
+                    [
+                        "date": BRLFormatters.shortDate(item.date),
+                        "amount": item.amountDouble,
+                        "source": item.source.shortTitle,
+                        "mode": item.mode.rawValue,
+                        "status": item.status.rawValue
+                    ]
+                }
+                var row: [String: Any] = [
+                    "planId": p.id.uuidString,
+                    "contractId": p.contractId.uuidString,
+                    "contractName": cName,
+                    "generationMode": p.generationMode.rawValue,
+                    "defaultMode": p.defaultRecalculationMode.rawValue,
+                    "itemsCount": p.items.count,
+                    "pendingItemsCount": p.items.filter { $0.status == .pending }.count,
+                    "itemsSample": itemsSample
+                ]
+                if let proj {
+                    row["monthsSaved"] = proj.monthsSaved
+                    row["projectedActiveMonths"] = proj.projectedActiveMonths
+                    row["projectedMaturityDate"] = BRLFormatters.shortDate(proj.projectedMaturityDate)
+                    row["totalInterestSaved"] = LoanProjectionEngine.toDouble(proj.totalInterestSaved)
+                    row["doesPlanAchieveFullPayoff"] = proj.doesPlanAchieveFullPayoff
+                    row["fgtsWarnings"] = proj.fgtsWarnings
+                }
+                return row
+            }
+            return [
+                "status": "success",
+                "table": "amortization_plans",
+                "count": plans.count,
+                "rows": rows
+            ]
+
+        case "debts":
+            var openDebts = store.activeDebts
+            var paidDebts = store.debts.filter(\.isPaid)
+            if !query.isEmpty && query != "todas" && query != "todos" && query != "dividas" && query != "divida" {
+                openDebts = openDebts.filter { normalizeSearchToken($0.name).contains(query) || normalizeSearchToken($0.notes).contains(query) }
+                paidDebts = paidDebts.filter { normalizeSearchToken($0.name).contains(query) || normalizeSearchToken($0.notes).contains(query) }
+            }
+            let openRows: [[String: Any]] = openDebts.prefix(limit).map { d in
+                [
+                    "id": d.id.uuidString,
+                    "name": d.name,
+                    "originalAmount": d.originalAmount,
+                    "isPaid": false,
+                    "contractedDate": d.contractedDate.map { BRLFormatters.shortDate($0) } ?? "Não informada",
+                    "notes": d.notes
+                ]
+            }
+            let paidRows: [[String: Any]] = paidDebts.prefix(limit).map { d in
+                [
+                    "id": d.id.uuidString,
+                    "name": d.name,
+                    "originalAmount": d.originalAmount,
+                    "negotiatedAmount": d.negotiatedAmount as Any,
+                    "isPaid": true,
+                    "paidDate": d.paidDate.map { BRLFormatters.shortDate($0) } ?? "Informada"
+                ]
+            }
+            return [
+                "status": "success",
+                "table": "debts",
+                "openDebtsCount": openDebts.count,
+                "openDebtsTotalAmount": openDebts.reduce(0.0) { $0 + $1.originalAmount },
+                "paidDebtsCount": paidDebts.count,
+                "paidDebtsTotalAmount": paidDebts.reduce(0.0) { $0 + ($1.negotiatedAmount ?? $1.originalAmount) },
+                "openDebts": openRows,
+                "paidDebts": paidRows
+            ]
+
+        case "investments":
+            var res = try await GetInvestmentsSummaryTool(store: store).execute(parameters: [:])
+            if !query.isEmpty, let list = res["investments"] as? [[String: Any]] {
+                res["investments"] = list.filter {
+                    normalizeSearchToken(($0["name"] as? String) ?? "").contains(query) ||
+                    normalizeSearchToken(($0["groupName"] as? String) ?? "").contains(query)
+                }
+            }
+            res["table"] = "investments"
+            return res
+
+        case "transactions":
+            if includeIgnored {
+                var txs = store.transactions
+                if let mStr = parameters["month"] as? String, let parsed = parseISODate(mStr) {
+                    let y = store.calendar.component(.year, from: parsed)
+                    let m = store.calendar.component(.month, from: parsed)
+                    txs = txs.filter { store.calendar.component(.year, from: $0.date) == y && store.calendar.component(.month, from: $0.date) == m }
+                }
+                if !query.isEmpty {
+                    txs = txs.filter { normalizeSearchToken($0.name).contains(query) || normalizeSearchToken($0.details).contains(query) }
+                }
+                txs.sort { $0.date > $1.date }
+                let rows = txs.prefix(limit).map { tx -> [String: Any] in
+                    [
+                        "id": tx.id.uuidString,
+                        "date": BRLFormatters.shortDate(tx.date),
+                        "name": tx.name,
+                        "amount": store.effectiveTransactionAmount(for: tx),
+                        "type": tx.type.rawValue,
+                        "isPaid": tx.isPaid,
+                        "ignoreInConsolidated": tx.ignoreInConsolidated,
+                        "category": store.category(for: tx.categoryId)?.name ?? "Geral",
+                        "account": store.account(for: tx.accountId)?.name ?? "Conta"
+                    ]
+                }
+                return [
+                    "status": "success",
+                    "table": "transactions",
+                    "includeIgnored": true,
+                    "totalCount": txs.count,
+                    "rows": rows
+                ]
+            } else {
+                var params: [String: Any] = ["limit": limit]
+                if !query.isEmpty { params["searchQuery"] = query }
+                if let m = parameters["month"] as? String { params["month"] = m }
+                var res = try await QueryTransactionsTool(store: store).execute(parameters: params)
+                res["table"] = "transactions"
+                return res
+            }
+
+        case "provisions_and_quotas":
+            var params: [String: Any] = [:]
+            if let m = parameters["month"] as? String { params["month"] = m }
+            var res = try await GetBudgetCapsStatusTool(store: store).execute(parameters: params)
+            res["table"] = "provisions_and_quotas"
+            return res
+
+        case "categories":
+            var cats = store.categories
+            if !query.isEmpty {
+                cats = cats.filter { normalizeSearchToken($0.name).contains(query) }
+            }
+            let rows = cats.prefix(limit).map { c -> [String: Any] in
+                [
+                    "id": c.id.uuidString,
+                    "name": c.name,
+                    "type": c.type.rawValue,
+                    "isSystemDefault": c.isSystemDefault
+                ]
+            }
+            return [
+                "status": "success",
+                "table": "categories",
+                "count": cats.count,
+                "rows": rows
+            ]
+
+        default:
+            var overview = try await GetFinancialOverviewTool(store: store).execute(parameters: [:])
+            let kpi = store.buildUnifiedFinancialKPISummary(referenceDate: targetDate, isAnnual: isAnnual)
+            let saldoPrevisto = kpi.isPast ? kpi.projectedAccountBalance : kpi.balanceIfAllBudgetsConsumed
+            overview["table"] = "overview"
+            overview["kpiSummary"] = [
+                "saldoAtualEmContasHoje": kpi.currentAccountBalanceNow,
+                "saldoPrevistoFimDoMes": saldoPrevisto,
+                "saldoPrevistoSemConsumirOrcamentos": kpi.projectedAccountBalance,
+                "sobraAposPlanejamento": kpi.surplusAfterPlanning,
+                "remainingBudgetsAndQuotas": kpi.remainingBudgetsAndQuotas,
+                "consolidatedInvestmentsBalance": store.consolidatedInvestmentsBalance
+            ]
+            overview["amortizationPlansCount"] = store.amortizationPlans.count
+            return overview
+        }
+    }
+
+    private func canonicalTableName(_ raw: String) -> String {
+        switch raw {
+        case "kpi", "kpi_summary", "saldo_previsto", "resumo", "dashboard":
+            return "kpi_summary"
+        case "account", "accounts", "conta", "contas":
+            return "accounts"
+        case "contract", "contracts", "contrato", "contratos", "emprestimo", "emprestimos", "financiamento", "financiamentos":
+            return "contracts"
+        case "amortization_plan", "amortization_plans", "plano", "planos", "amortizacoes":
+            return "amortization_plans"
+        case "debt", "debts", "divida", "dividas":
+            return "debts"
+        case "investment", "investments", "investimento", "investimentos":
+            return "investments"
+        case "transaction", "transactions", "transacao", "transacoes", "lancamentos":
+            return "transactions"
+        case "provision", "provisions", "provisions_and_quotas", "orcamentos", "tetos", "cotas", "provisoes":
+            return "provisions_and_quotas"
+        case "category", "categories", "categoria", "categorias":
+            return "categories"
+        default:
+            return "overview"
+        }
+    }
+}
+
+// MARK: - 15. Context Builder Determinístico para Grounding Obrigatório (Zero Alucinação na Apple Intelligence)
+
+@MainActor
+public enum FinancialDatabaseContextBuilder {
+
+    public static func shouldGroundPrompt(prompt: String, draftReply: String) -> Bool {
+        let p = normalizeSearchToken(prompt)
+        let r = normalizeSearchToken(draftReply)
+
+        let draftFailureCues = [
+            "posso prosseguir", "preciso verificar", "preciso confirmar",
+            "deseja que eu", "gostaria que eu", "precisa ser esclarecida",
+            "[consultando", "nao fornece", "nao detectou", "sem acesso",
+            "consultar diretamente o banco", "entrar em contato com"
+        ]
+        if draftFailureCues.contains(where: { r.contains($0) }) {
+            return true
+        }
+
+        let financialTopics = [
+            "emprestim", "financiament", "contrat", "divid", "saldo", "previsto",
+            "simul", "amortiz", "quit", "fluxo", "projet", "gast", "despes",
+            "receit", "teto", "cota", "provis", "invest", "conta", "parcela",
+            "orcament", "caixa", "sobra", "patrimon", "quanto"
+        ]
+        return financialTopics.contains { p.contains($0) }
+    }
+
+    public static func buildGroundedContextSnapshot(
+        for prompt: String,
+        store: FinancialDataStore
+    ) async -> (steps: [String], compactJson: String) {
+        let norm = normalizeSearchToken(prompt)
+        var executedSteps: [String] = []
+        var bundle: [String: Any] = [:]
+
+        // 1. Contrato específico ou simulação de quitação / amortização
+        let matchedContracts = resolveContractsMatching(
+            in: store,
+            contractIdStr: nil,
+            rawQuery: prompt,
+            kind: "any",
+            includeSettled: false
+        )
+        let asksSimulation = norm.contains("quitar") || norm.contains("quitacao") || norm.contains("amortiz") ||
+            norm.contains("simular") || norm.contains("simulacao") || norm.contains("plano de acao") ||
+            norm.contains("menor prazo")
+
+        if asksSimulation, let contract = matchedContracts.first {
+            executedSteps.append("⚡ Executando LoanProjectionEngine em '\(contract.name)' + validando Saldo Previsto...")
+            if let details = try? await GetContractDetailsTool(store: store).execute(parameters: ["contractId": contract.id.uuidString]),
+               let rows = details["contracts"] as? [[String: Any]], let first = rows.first {
+                let bal = (first["outstandingBalance"] as? Double) ?? store.currentOutstandingBalance(for: contract)
+                let payoff = (first["projectedPayoffToday"] as? Double) ?? store.projectedPayoffAmount(for: contract)
+                let inst = (first["installmentAmount"] as? Double) ?? contract.installmentAmount
+                bundle["contrato"] = [
+                    "id": first["id"] ?? "",
+                    "nome": first["name"] ?? contract.name,
+                    "tipo": first["subtype"] ?? contract.subtypeDisplayName,
+                    "numeroContrato": first["contractNumber"] ?? (contract.contractNumber ?? ""),
+                    "saldoDevedorAtualHoje": BRLFormatters.currency(bal),
+                    "valorParaQuitarHoje": BRLFormatters.currency(payoff),
+                    "valorDaParcelaMensal": BRLFormatters.currency(inst),
+                    "parcelasPagas": first["paidInstallmentsCount"] ?? 0,
+                    "parcelasRestantes": first["remainingInstallments"] ?? 0,
+                    "totalParcelas": first["totalInstallments"] ?? contract.totalInstallments
+                ]
+            }
+
+            if let planRes = try? await GetLoanProjectionAndPlanTool(store: store).execute(parameters: ["contractId": contract.id.uuidString]),
+               (planRes["hasSavedPlanOnDatabase"] as? Bool) == true {
+                let savedInt = (planRes["totalInterestSaved"] as? Double) ?? 0.0
+                bundle["planoDeAmortizacaoSalvoNoBanco"] = [
+                    "mesesEconomizados": planRes["monthsSaved"] ?? 0,
+                    "economiaTotalDeJurosNoContrato": BRLFormatters.currency(savedInt),
+                    "dataQuitacaoPrevista": planRes["projectedMaturityDate"] ?? "",
+                    "aportesPendentesCount": planRes["plannedItemsCount"] ?? 0
+                ]
+            } else {
+                bundle["planoDeAmortizacaoSalvoNoBanco"] = ["possuiPlanoSalvo": false]
+            }
+
+            let amounts: [Double]
+            if let customExtra = extractCustomMonthlyAmount(from: prompt) {
+                amounts = [customExtra]
+            } else {
+                amounts = [500.0, 1000.0, 2000.0]
+            }
+            var scenarios: [[String: Any]] = []
+            let simTool = SimulateAmortizationTool(store: store)
+            for amt in amounts {
+                if let res = try? await simTool.execute(parameters: [
+                    "contractId": contract.id.uuidString,
+                    "extraPayment": amt,
+                    "mode": "reduce_term",
+                    "recurringMonthly": true
+                ]) {
+                    let rec = (res["recurringMonthlyProjection"] as? [String: Any]) ?? [:]
+                    let monthsSaved = (rec["monthsSavedWithPlan"] as? Int) ?? 0
+                    let interestSaved = (rec["totalInterestSaved"] as? Double) ?? 0.0
+                    let endCash = (rec["expectedMonthEndCashBalanceAfterExtra"] as? Double) ?? (res["currentSaldoPrevistoFimDoMes"] as? Double) ?? 0.0
+                    scenarios.append([
+                        "aporteExtraMensal": BRLFormatters.currency(amt),
+                        "parcelasEliminadasTotal": monthsSaved,
+                        "novoPrazoRestanteMeses": rec["projectedMonthsWithPlan"] ?? res["newRemainingInstallments"] ?? 0,
+                        "economiaTotalDeJurosNoContrato": BRLFormatters.currency(interestSaved),
+                        "novaDataDeQuitacaoTotal": rec["projectedPayoffDate"] ?? "",
+                        "saldoPrevistoFimDoMesComEsseAporte": BRLFormatters.currency(endCash),
+                        "viavelNoSaldoPrevisto": endCash >= 0
+                    ])
+                }
+            }
+            bundle["cenariosMensaisSimulados"] = scenarios
+        } else if norm.contains("emprestim") || norm.contains("financiament") || norm.contains("contrat") {
+            executedSteps.append("🗄️ Consultando tabela 'contracts' no banco local FinSense...")
+            if let contractsRes = try? await QueryDatabaseTool(store: store).execute(parameters: ["table": "contracts"]) {
+                bundle["contracts"] = contractsRes
+            }
+        }
+
+        // 2. Dívidas em aberto (isPaid == false) vs pagas
+        if norm.contains("divid") || norm.contains("acordo") {
+            executedSteps.append("💎 Consultando tabela 'debts' e estratégia de quitação (isPaid == false)...")
+            if let debtsRes = try? await AnalyzeDebtPayoffStrategyTool(store: store).execute(parameters: [:]) {
+                bundle["debtsAnalysis"] = debtsRes
+            }
+        }
+
+        // 3. Investimentos
+        if norm.contains("invest") || norm.contains("reserv") || norm.contains("caixinha") || norm.contains("divid") {
+            executedSteps.append("🗄️ Consultando tabela 'investments' no banco FinSense...")
+            if let invRes = try? await QueryDatabaseTool(store: store).execute(parameters: ["table": "investments"]) {
+                bundle["investments"] = invRes
+            }
+        }
+
+        // 4. Fluxo de caixa mensal + Saldo Previsto + Sobra Após Planejamento
+        executedSteps.append("💵 Calculando KPIs e Saldo Previsto exato do mês ativo...")
+        if let kpiRes = try? await QueryDatabaseTool(store: store).execute(parameters: ["table": "kpi_summary"]) {
+            bundle["kpiDashboard"] = kpiRes
+        }
+
+        // 5. Projeção futura, transações ou tetos conforme tema da pergunta
+        if norm.contains("projec") || norm.contains("futur") || norm.contains("debito") || norm.contains("meses") {
+            executedSteps.append("📈 Projetando fluxo de caixa dos próximos 12 meses...")
+            if let projRes = try? await GetProjectedCashFlowRangeTool(store: store).execute(parameters: ["numberOfMonths": 12]) {
+                bundle["projectedCashFlow12m"] = projRes
+            }
+        }
+        if norm.contains("gast") || norm.contains("despes") || norm.contains("receit") || norm.contains("transac") || norm.contains("categoria") || norm.contains("mercado") {
+            executedSteps.append("🔍 Agregando transações por categoria...")
+            if let aggRes = try? await AggregateTransactionsTool(store: store).execute(parameters: ["type": "expense", "groupBy": "category"]) {
+                bundle["transactionsAggregated"] = aggRes
+            }
+        }
+        if norm.contains("teto") || norm.contains("cota") || norm.contains("orcament") || norm.contains("provis") {
+            executedSteps.append("📌 Consultando tetos e cotas de orçamento...")
+            if let capsRes = try? await GetBudgetCapsStatusTool(store: store).execute(parameters: [:]) {
+                bundle["budgetsAndQuotas"] = capsRes
+            }
+        }
+
+        let compactJson: String = {
+            guard let data = try? JSONSerialization.data(withJSONObject: bundle, options: [.sortedKeys]),
+                  let str = String(data: data, encoding: .utf8) else {
+                return "{}"
+            }
+            return str.count > 2600 ? String(str.prefix(2600)) + "...}" : str
+        }()
+
+        return (executedSteps, compactJson)
+    }
+
+    /// Extrai valor monetário único informado pelo usuário (ex: "R$ 1.500", "2 mil por mês"),
+    /// ignorando prompts multi-cenário ou números de contrato longos.
+    private static func extractCustomMonthlyAmount(from rawPrompt: String) -> Double? {
+        let norm = normalizeSearchToken(rawPrompt)
+        if norm.contains("500") && norm.contains("1.000") && norm.contains("2.000") {
+            return nil
+        }
+
+        var candidates: [Double] = []
+        let patterns = [
+            "r\\$\\s*([0-9][0-9\\.]*(?:,[0-9]{1,2})?)",
+            "([0-9]+(?:[.,][0-9]+)?)\\s*mil\\b",
+            "(?:amortizar|amortizasse|aportar|aporte|extra|extras|colocar)\\s+(?:r\\$\\s*)?([0-9][0-9\\.]*(?:,[0-9]{1,2})?)"
+        ]
+
+        for (idx, pattern) in patterns.enumerated() {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
+            let ns = norm as NSString
+            let matches = regex.matches(in: norm, range: NSRange(location: 0, length: ns.length))
+            for m in matches where m.numberOfRanges > 1 {
+                let rawToken = ns.substring(with: m.range(at: 1))
+                let parsed: Double?
+                if idx == 1 {
+                    let num = Double(rawToken.replacingOccurrences(of: ",", with: "."))
+                    parsed = num.map { $0 * 1000.0 }
+                } else {
+                    parsed = extractDouble(rawToken)
+                }
+                if let val = parsed, val >= 50.0, val < 500_000.0 {
+                    candidates.append(val)
+                }
+            }
+        }
+
+        let unique = Set(candidates.map { ($0 * 100.0).rounded() / 100.0 })
+        return unique.count == 1 ? unique.first : nil
     }
 }

@@ -1563,8 +1563,6 @@ public struct LLMConfigurationSectionView: View {
     @ObservedObject public var store: FinancialDataStore
     @ObservedObject public var llmService: LocalLLMService
 
-    @State private var prewarmConfirmation: String = ""
-
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
@@ -1613,22 +1611,13 @@ public struct LLMConfigurationSectionView: View {
                         }
                         Spacer()
 
-                        Button {
-                            llmService.activateBuiltInAppleIntelligence(in: store)
-                            llmService.prewarmAppleIntelligence(store: store)
-                            prewarmConfirmation = "Motor pré-aquecido na memória M1 com sucesso!"
-                        } label: {
-                            Label("Pré-aquecer Motor (Mais Velocidade)", systemImage: "flame.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(Color(hex: "#6366F1"))
-                        .disabled(!LocalLLMRuntime.isAppleIntelligenceAvailable)
-                    }
-
-                    if !prewarmConfirmation.isEmpty {
-                        Text(prewarmConfirmation)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(Color(hex: "#10B981"))
+                        Label("Pré-aquecimento Automático Ativo", systemImage: "bolt.shield.fill")
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(Color(hex: "#6366F1").opacity(0.12)))
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                            .help("O FinSense pré-aquece o modelo da Apple Intelligence automaticamente em segundo plano ao abrir o app e a conversa, dispensando ação manual.")
                     }
                 }
                 .padding(20)

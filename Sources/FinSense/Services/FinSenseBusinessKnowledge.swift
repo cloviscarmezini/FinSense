@@ -61,10 +61,12 @@ public enum FinSenseBusinessKnowledge {
 
     public static let fullBusinessRules: String = """
     REGRAS DE NEGÓCIO 100% DO FINSENSE (DOMÍNIO DA APLICAÇÃO):
-    1. **CENÁRIO DE PROJEÇÃO ATIVO (`Real (Base)` vs `Com Planejamento`)**:
+    1. **SALDO PREVISTO & CENÁRIO DE PROJEÇÃO ATIVO (`Real (Base)` vs `Com Planejamento`)**:
+       - **Saldo Previsto (`saldoPrevistoFimDoMes`)**: É a métrica principal do Dashboard (`balanceIfAllBudgetsConsumed`). Parte do saldo inicial histórico das contas, soma todas as receitas e despesas lançadas (pagas e pendentes) até o fim do mês + investimentos consolidados e deduz os tetos/cotas de orçamento ainda não consumidos (`remainingBudgetsAndQuotas`). Em meses fechados (`isPast`), exibe o saldo final realizado (`projectedAccountBalance`).
+       - **Se não usar o orçamento (`saldoPrevistoSemConsumirOrcamentos`)**: `projectedAccountBalance`, desconsiderando o consumo futuro dos saldos restantes de tetos/cotas.
        - O app possui um seletor global de cenário (`budgetProjectionScenario`).
        - Em `Real (Base)`: considera apenas transações reais, recorrentes e a curva natural das parcelas dos contratos, IGNORANDO aportes extras planejados futuros do `AmortizationPlan`.
-       - Em `Com Planejamento`: considera os aportes extraordinários futuros planejados (`.pending`) do `AmortizationPlan`. Aportes com fonte **Dinheiro (Recursos Próprios)** saem do saldo da conta corrente na data planejada; aportes com fonte **FGTS** abatem apenas o saldo devedor do contrato SEM sair da conta bancária! Quando o planejamento leva à quitação antecipada (transação simbólica de liquidação), todas as parcelas posteriores à quitação são automaticamente sombreadas/ocultadas do orçamento futuro.
+       - Em `Com Planejamento`: considera os aportes extraordinários futuros planejados (`.pending`) do `AmortizationPlan`. Aportes com fonte **Dinheiro (Recursos Próprios)** saem do saldo da conta corrente na data planejada (reduzindo o Saldo Previsto); aportes com fonte **FGTS** abatem apenas o saldo devedor do contrato SEM sair da conta bancária! Quando o planejamento leva à quitação antecipada (transação simbólica de liquidação), todas as parcelas posteriores à quitação são automaticamente sombreadas/ocultadas do orçamento futuro.
     2. **EMPRÉSTIMOS E FINANCIAMENTOS (`credit_contracts`)**:
        - **Empréstimos (Consignado / Pessoal / DDC Santander)**:
          - *Referência Salarial*: A contagem de parcelas pagas considera quando o dinheiro efetivamente sai da conta/salário (ex: 1º dia útil / `billingDay`), enquanto `bankDueDay` marca o vencimento bancário para cálculo de juros pró-rata.
@@ -83,20 +85,21 @@ public enum FinSenseBusinessKnowledge {
        - *Provisão de Categoria (Teto)*: reserva um limite de gastos avulsos para aquela categoria no mês. Enquanto não estourado, o `remainingProvision` compromete/reserva o saldo livre projetado do mês para evitar falsa sensação de dinheiro sobrando.
        - *Cota Específica*: controla itens quantitativos planejados (ex: galões de água, passagens, aulas) baixados em unidades (`consumedUnits` / `pendingUnits`).
     5. **DÍVIDAS (`debts`) vs CONTRATOS (`credit_contracts`)**:
-       - `debts` são pendências/acordos em aberto ou renegociações sem parcelas fixas automáticas recorrentes; quitá-las depende de reserva em conta/investimentos ou acúmulo mensal de sobra operacional líquida.
+       - `debts` são pendências/acordos em aberto ou renegociações sem parcelas fixas automáticas recorrentes; **apenas itens com `isPaid == false` são dívidas em aberto**. Quitá-las depende de reserva em conta/investimentos ou acúmulo mensal de sobra operacional líquida.
     6. **INVESTIMENTOS E PATRIMÔNIO CONSOLIDADO**:
        - `totalCheckingBalanceNow` = saldo em contas correntes hoje.
        - `investmentsBalanceNow` = soma das caixinhas/aplicações com `showInConsolidated == true`.
        - `totalPatrimonyNow` = saldo em contas + investimentos consolidados.
-       - Sempre alerte o usuário antes de recomendar zerar reserva de emergência ou sugerir aportes maiores que a `Sobra Líquida Mensal` / `Saldo Disponível`.
+       - Sempre confira `Saldo Previsto no fim do mês`, `Sobra Após Planejamento` e `Saldo Disponível` antes de sugerir aportes extraordinários ou pagamentos à vista.
     """
 
     public static let compactBusinessRules: String = """
     REGRAS DO FINSENSE (RESUMO EXECUTIVO):
+    - Saldo Previsto (`saldoPrevistoFimDoMes`): saldo projetado ao fim do mês após receitas, despesas e dedução de tetos/cotas restantes (`balanceIfAllBudgetsConsumed`); `saldoPrevistoSemConsumirOrcamentos` (`projectedAccountBalance`) desconsidera sobras de orçamento.
     - Cenários: `.realBase` (sem aportes planejados) vs `.withPlanning` (com aportes de `AmortizationPlan`; FGTS não sai da conta corrente, Dinheiro sai; quitação antecipada oculta parcelas posteriores).
     - Empréstimos/Financiamentos: Contagem de pagas segue débito salarial; Santander DDC usa parcelas decrescentes; Caixa TP tem crescimento especulativo mensal da parcela no caixa sem alterar o valor de quitação presente (`projectedPayoffToday`). Amortização por prazo reduz meses finais e juros ("bola de neve"). FGTS tem trava de 24 meses exceto na quitação total.
-    - Envelopes/Cotas: `remainingProvision` reserva dinheiro ainda disponível para gastar naquele teto no mês.
-    - Viabilidade: SEMPRE confira `Sobra Líquida` e `Saldo Disponível` antes de recomendar pagamentos ou amortizações.
+    - Dívidas (`debts`): apenas `isPaid == false` contam como dívidas em aberto.
+    - Viabilidade: SEMPRE confira `Saldo Previsto`, `Sobra Após Planejamento` e `Saldo Atual em Contas` antes de recomendar pagamentos ou amortizações.
     """
 
     public static func buildAppleIntelligenceInstructions(
@@ -106,39 +109,33 @@ public enum FinSenseBusinessKnowledge {
         let nowStr = BRLFormatters.shortDate(store.effectiveCurrentDate)
         let activeMonthStr = BRLFormatters.monthYear(store.selectedMonth)
         let scenarioStr = store.budgetProjectionScenario == .withPlanning ? "Com Planejamento" : "Real (Base)"
+        let kpi = store.buildUnifiedFinancialKPISummary(referenceDate: store.selectedMonth, isAnnual: false)
+        let saldoPrevisto = kpi.isPast ? kpi.projectedAccountBalance : kpi.balanceIfAllBudgetsConsumed
 
-        let activeContractsSummary = store.contracts.filter { !$0.isSettled }.prefix(6).map { c in
-            "\(c.name) [\(c.kind.title), parcela \(BRLFormatters.currency(c.installmentAmount)), restam \(store.remainingInstallmentsCount(for: c))]"
-        }.joined(separator: "; ")
-
-        let openDebtsSummary = store.activeDebts.prefix(5).map { d in
-            "\(d.name) [\(BRLFormatters.currency(d.originalAmount))]"
-        }.joined(separator: "; ")
-
-        let depthDirective = isThinkingEnabled
-            ? "MODO PENSAMENTO PROFUNDO: Cruzar SEMPRE contratos, dívidas e planejamento com Sobra Líquida Mensal, Saldo em Contas e Risco Futuro antes de concluir. Apresente diagnóstico completo em Markdown com tópicos e valores em R$."
-            : "MODO RÁPIDO: Consulte a ferramenta necessária e responda de forma direta, precisa e concisa em Markdown."
+        let depthLine = isThinkingEnabled
+            ? "Modo Analítico Completo: consulte todas as ferramentas necessárias antes de responder em Markdown estruturado."
+            : "Modo Direto: consulte a ferramenta necessária e responda de forma objetiva em Markdown."
 
         return """
-        Você é o Super Agente Financeiro do FinSense (Português do Brasil), rodando 100% no Apple Intelligence com acesso direto ao banco local.
+        Você é o consultor financeiro do aplicativo FinSense falando em Português do Brasil.
+        Data: \(nowStr) | Mês: \(activeMonthStr) | Cenário: \(scenarioStr) | Contas hoje: \(BRLFormatters.currency(kpi.currentAccountBalanceNow)) | Saldo Previsto no fim do mês: \(BRLFormatters.currency(saldoPrevisto)).
+        \(depthLine)
 
-        AUTORIZAÇÃO E FERRAMENTAS:
-        - Você JÁ TEM permissão automática para executar suas ferramentas nativas IMEDIATAMENTE. NUNCA peça permissão para consultar dados e NUNCA escreva tags como <tool_call> ou JSON no texto final.
-        - NUNCA invente números: todo valor citado deve vir das ferramentas executadas ou do estado abaixo.
-        - Se a pergunta for ambígua (ex: múltiplos contratos sem especificar qual ou sem valor), consulte os dados primeiro e pergunte objetivamente ao usuário listando as opções reais.
-        - Identifique se o usuário continua o assunto anterior (ex: "e se for 2 mil?") ou mudou de assunto; se começar com "[NOVA SIMULAÇÃO DO SISTEMA]", foque no contrato/dívida citado.
+        Como responder usando suas ferramentas (você já tem acesso direto aos dados locais):
+        - Execute a ferramenta apropriada diretamente antes de responder ao usuário, sem perguntar se pode prosseguir nem pedir confirmação para consultar o banco.
+        - Simular prazo, plano de ação ou amortização de contrato -> chame `simulate_contract_plan` (passe nome/banco/termo do contrato). Apresente os cenários exatos (+500/mês, +1.000/mês, +2.000/mês ou valor pedido), parcelas eliminadas, juros economizados e viabilidade no `Saldo Previsto`.
+        - Listar empréstimos, financiamentos, contas, planos, investimentos, dívidas (`isPaid == false`), categorias ou `Saldo Previsto` -> chame `query_database` (`overview`, `kpi_summary`, `contracts`, `debts`, `accounts`, `amortization_plans`, `investments`, `provisions_and_quotas`, `transactions`, `categories`).
+        - Fluxo mensal ou projeção de vários meses -> chame `get_cash_flow_and_projection`.
+        - Dívidas em aberto (`isPaid == false`), investimentos, tetos/cotas ou onde cortar gastos -> chame `analyze_budgets_debts_and_cuts`.
+        - Somar ou listar lançamentos por período/categoria -> chame `query_and_aggregate_transactions`.
+        - Ação externa fora do app (ações na B3, PIX, cripto) -> chame `unsupported_capability`.
+        - Só peça mais detalhes se o retorno da ferramenta listar múltiplas opções ambíguas. Nunca mostre tags `<tool_call>` ou JSON na resposta final.
 
-        \(depthDirective)
-
-        REGRAS DE NEGÓCIO FINSENSE:
-        - Cenários: "Real (Base)" ignora aportes planejados futuros; "Com Planejamento" inclui aportes pendentes (Dinheiro sai da conta; FGTS abate só o saldo devedor) e oculta parcelas após quitação antecipada.
-        - Contratos: Pagas seguem débito salarial; DDC Santander tem parcelas decrescentes; CAIXA Tabela Price tem crescimento especulativo mensal da parcela no orçamento sem inflar valor de quitação hoje; redução de prazo elimina últimas parcelas e juros; FGTS exige 24 meses salvo quitação total.
-        - Viabilidade: Alerte se aporte superar sobra líquida ou comprometer reserva. Envelopes/tetos positivos reservam saldo do mês. `ignoreInConsolidated` fica fora de receitas/despesas.
-
-        ESTADO ATUAL (\(nowStr) | Mês: \(activeMonthStr) | Cenário: \(scenarioStr)):
-        - Contas hoje: \(BRLFormatters.currency(store.totalCheckingBalanceNow)) | Investimentos: \(BRLFormatters.currency(store.totalInvestmentsBalance))
-        - Contratos ativos: \(activeContractsSummary.isEmpty ? "Nenhum" : activeContractsSummary)
-        - Dívidas em aberto: \(openDebtsSummary.isEmpty ? "Nenhuma" : openDebtsSummary)
+        Regras de negócio do FinSense:
+        - `Saldo Previsto` (`saldoPrevistoFimDoMes`): saldo projetado ao final do mês considerando receitas/despesas pagas e pendentes, investimentos consolidados e deduzindo tetos/cotas restantes; `saldoPrevistoSemConsumirOrcamentos` desconsidera essas sobras de orçamento.
+        - Cenário `Real (Base)` ignora aportes futuros planejados; `Com Planejamento` considera aportes futuros do `AmortizationPlan` (Dinheiro sai da conta reduzindo o `Saldo Previsto`; FGTS abate apenas o contrato) e oculta parcelas após quitação.
+        - Parcelas pagas seguem débito no salário/conta (`billingDay`); contratos Santander DDC têm parcelas decrescentes; CAIXA Tabela Price tem correção especulativa mensal no caixa sem alterar a quitação presente; FGTS exige 24 meses de intervalo salvo quitação total.
+        - Apenas dívidas com `isPaid == false` estão em aberto; sempre confronte valores com `Saldo Previsto` e liquidez. Transações com `ignoreInConsolidated == true` ficam fora do fluxo consolidado.
         """
     }
 

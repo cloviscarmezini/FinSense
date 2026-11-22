@@ -15,8 +15,9 @@ public final class AIChatOrchestrator: ObservableObject {
         self.registry = registry ?? .shared
     }
 
-    /// Registra todas as 13 ferramentas nativas com acesso irrestrito ao banco local para uma instância de FinancialDataStore
+    /// Registra todas as ferramentas nativas com acesso irrestrito ao banco local para uma instância de FinancialDataStore
     public func registerStandardTools(for store: FinancialDataStore) {
+        registry.register(QueryDatabaseTool(store: store))
         registry.register(GetFinancialOverviewTool(store: store))
         registry.register(GetContractDetailsTool(store: store))
         registry.register(SimulateAmortizationTool(store: store))
@@ -587,8 +588,10 @@ public final class AIChatOrchestrator: ObservableObject {
             return calls
         }
 
-        // Turno de Financiamento / Empréstimo / Amortização / Quitação (dinâmico para QUALQUER contrato)
-        if norm.contains("quitar") || norm.contains("amortizar") || norm.contains("plano de acao") || norm.contains("financiamento") || norm.contains("emprestimo") {
+        // Turno de Financiamento / Empréstimo / Amortização / Quitação (apenas quando há intenção real de simulação/amortização/quitação)
+        let hasAmortizationIntent = norm.contains("quitar") || norm.contains("amortizar") || norm.contains("plano de acao") ||
+            ((norm.contains("simular") || norm.contains("menor prazo") || norm.contains("prazo")) && (norm.contains("financiamento") || norm.contains("emprestimo")))
+        if hasAmortizationIntent {
             let resolvedContract = matchBestContract(in: norm, store: store)
             if let contract = resolvedContract {
                 var calls: [AIToolCall] = []
@@ -605,7 +608,8 @@ public final class AIChatOrchestrator: ObservableObject {
                         "contractId": contract.id.uuidString,
                         "nameOrQuery": contract.name,
                         "extraPayment": val,
-                        "mode": "reduce_term"
+                        "mode": "reduce_term",
+                        "recurringMonthly": true
                     ]
                     let simJson = (try? String(data: JSONSerialization.data(withJSONObject: simArgs), encoding: .utf8)) ?? "{}"
                     calls.append(AIToolCall(name: "simulate_amortization", argumentsJson: simJson))
@@ -621,7 +625,12 @@ public final class AIChatOrchestrator: ObservableObject {
                     calls.append(AIToolCall(name: "get_contract_details", argumentsJson: detailsJson))
 
                     for val in [500.0, 1000.0, 2000.0] {
-                        let simArgs: [String: Any] = ["nameOrQuery": contractQuery, "extraPayment": val, "mode": "reduce_term"]
+                        let simArgs: [String: Any] = [
+                            "nameOrQuery": contractQuery,
+                            "extraPayment": val,
+                            "mode": "reduce_term",
+                            "recurringMonthly": true
+                        ]
                         let simJson = (try? String(data: JSONSerialization.data(withJSONObject: simArgs), encoding: .utf8)) ?? "{}"
                         calls.append(AIToolCall(name: "simulate_amortization", argumentsJson: simJson))
                     }
@@ -828,12 +837,25 @@ public final class AIChatOrchestrator: ObservableObject {
 
             func descSim(_ s: [String: Any]?, val: Double) -> String {
                 guard let s else { return "• Amortização de \(BRLFormatters.currency(val)): Simulação processada." }
-                let elim = (s["eliminatedInstallmentsCount"] as? Int) ?? 0
-                let saved = (s["estimatedTotalInterestSaved"] as? Double) ?? 0.0
-                let newRem = (s["newRemainingInstallments"] as? Int) ?? 0
-                let savedTime = (s["savedTimeString"] as? String) ?? "\(elim) meses"
+                var elim = (s["eliminatedInstallmentsCount"] as? Int) ?? 0
+                var saved = (s["estimatedTotalInterestSaved"] as? Double) ?? 0.0
+                var newRem = (s["newRemainingInstallments"] as? Int) ?? 0
+                var savedTime = (s["savedTimeString"] as? String) ?? "\(elim) meses"
+
+                if let rec = s["recurringMonthlyProjection"] as? [String: Any],
+                   let monthsSaved = rec["monthsSavedWithPlan"] as? Int,
+                   monthsSaved > 0 || elim == 0 {
+                    elim = monthsSaved
+                    newRem = (rec["projectedMonthsWithPlan"] as? Int) ?? newRem
+                    saved = (rec["totalInterestSaved"] as? Double) ?? saved
+                    savedTime = (rec["savedTimeWithPlan"] as? String) ?? "\(elim) meses"
+                }
+
                 return "• **Cenário (+ \(BRLFormatters.currency(val))/mês):** Elimina **\(elim) parcelas** (\(savedTime) poupados), reduzindo o prazo restante para **\(newRem) meses** e economizando **\(BRLFormatters.currency(saved))** em juros futuros."
             }
+
+            let kpiSummary = store.buildUnifiedFinancialKPISummary(referenceDate: store.selectedMonth, isAnnual: false)
+            let saldoPrevistoAtual = kpiSummary.isPast ? kpiSummary.projectedAccountBalance : kpiSummary.balanceIfAllBudgetsConsumed
 
             let systemLabel = cKind == "loan" ? "Empréstimo" : "Tabela Price"
             let md = """
@@ -845,6 +867,9 @@ public final class AIChatOrchestrator: ObservableObject {
             \(descSim(sim500, val: 500.0))
             \(descSim(sim1000, val: 1000.0))
             \(descSim(sim2000, val: 2000.0))
+
+            #### 📊 Viabilidade no Seu Caixa (Saldo Previsto):
+            • **Saldo Previsto ao Fim do Mês:** \(BRLFormatters.currency(saldoPrevistoAtual)) • **Sobra Após Planejamento:** \(BRLFormatters.currency(kpiSummary.surplusAfterPlanning))
 
             #### ⚡ Efeito Bola de Neve:
             Ao amortizar com redução de prazo, 100% do aporte extra abate o saldo devedor puro, desintegrando os juros compostos que seriam cobrados pelos próximos meses e anos.
@@ -954,6 +979,9 @@ public final class AIChatOrchestrator: ObservableObject {
             let mRef = (res["monthReference"] as? String) ?? ""
             let opNet = (res["operationalBalance"] as? Double) ?? 0.0
             let checking = (res["liquidCheckingBalanceNow"] as? Double) ?? 0.0
+            let saldoPrevisto = (res["saldoPrevistoFimDoMes"] as? Double) ?? checking
+            let saldoSemOrc = (res["saldoPrevistoSemConsumirOrcamentos"] as? Double) ?? saldoPrevisto
+            let sobraPlan = (res["sobraAposPlanejamento"] as? Double) ?? opNet
             let inc = ((res["income"] as? [String: Any])?["total"] as? Double) ?? 0.0
             let exp = ((res["expense"] as? [String: Any])?["total"] as? Double) ?? 0.0
             let rate = (res["savingsRatePercent"] as? Double) ?? 0.0
@@ -962,9 +990,11 @@ public final class AIChatOrchestrator: ObservableObject {
             ### Balanço e Fluxo de Caixa — \(mRef)
 
             • **Receitas Totais:** \(BRLFormatters.currency(inc))
-            • **Despesas Totais:** \(BRLFormatters.currency(exp))
+            • **Despesas Lançadas:** \(BRLFormatters.currency(exp))
             • **Sobra Líquida Operacional:** **\(BRLFormatters.currency(opNet))** (\(String(format: "%.1f%%", rate)) de taxa de poupança)
+            • **Sobra Após Planejamento (com Tetos/Cotas):** **\(BRLFormatters.currency(sobraPlan))**
             • **Saldo Disponível em Contas Hoje:** **\(BRLFormatters.currency(checking))**
+            • **Saldo Previsto no Fim do Mês:** **\(BRLFormatters.currency(saldoPrevisto))** *(se não usar os orçamentos restantes: \(BRLFormatters.currency(saldoSemOrc)))*
 
             \(opNet >= 0 ? "Você está operando com superávit. Esse valor pode ser direcionado para reserva de emergência ou amortização de passivos." : "Atenção: Você está operando com déficit no mês. Recomendo analisar cortes de despesas discricionárias.")
             """

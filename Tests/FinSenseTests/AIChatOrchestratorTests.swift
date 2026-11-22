@@ -454,4 +454,168 @@ final class AIChatOrchestratorTests: XCTestCase {
         // 5. Modo exclusivo Apple Intelligence ativo quando disponível
         XCTAssertTrue(LocalLLMRuntime.isAppleIntelligenceExclusiveMode)
     }
+
+    // MARK: - 8. Regressões Críticas: Empréstimo Santander (DDC/Mensal), QueryDatabase & Saldo Previsto
+
+    func testSantanderLoanLookupWithGenericQueryAndNonZeroMonthlyAmortizationPlan() async throws {
+        let (store, tempDir) = createTestStore()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let acc = BankAccount(id: UUID(), name: "Santander", initialBalance: 15000.0)
+        let catSal = CategoryItem(id: UUID(), name: "Salário", type: .income, iconSymbol: "banknote", colorHex: "#10B981")
+        let catLoan = CategoryItem(id: UUID(), name: "Empréstimos", type: .expense, iconSymbol: "creditcard", colorHex: "#EF4444")
+        store.accounts.append(acc)
+        store.categories.append(contentsOf: [catSal, catLoan])
+
+        let now = store.selectedMonth
+        store.transactions.append(
+            FinancialTransaction(name: "Salário Mensal", amount: 18000.0, date: now, type: .income, isPaid: true, categoryId: catSal.id, accountId: acc.id)
+        )
+
+        let santander = CreditContract(
+            id: UUID(),
+            kind: .loan,
+            name: "Crédito Consignado Santander",
+            contractNumber: "783694303",
+            loanSubtype: .consignado,
+            amortizationSystem: .price,
+            totalContractedAmount: 105000.0,
+            outstandingBalance: 86873.35,
+            installmentAmount: 4380.17,
+            billingDay: 2,
+            totalInstallments: 36,
+            originalTotalInstallments: 36,
+            monthlyInterestRate: 1.78,
+            startDate: store.calendar.date(byAdding: .month, value: -11, to: now) ?? now,
+            accountId: acc.id,
+            categoryId: catLoan.id,
+            pastInstallmentsElapsedAtCreation: 11
+        )
+        store.contracts.append(santander)
+
+        // 1. GetContractDetailsTool deve encontrar o contrato Santander mesmo buscando pelo termo genérico 'emprestimos'
+        let detailsTool = GetContractDetailsTool(store: store)
+        let genericLookup = try await detailsTool.execute(parameters: ["nameOrQuery": "emprestimos"])
+        XCTAssertEqual(genericLookup["status"] as? String, "success")
+        let foundContracts = genericLookup["contracts"] as? [[String: Any]] ?? []
+        XCTAssertEqual(foundContracts.count, 1)
+        XCTAssertEqual(foundContracts.first?["name"] as? String, "Crédito Consignado Santander")
+
+        // 2. SimulateAmortizationTool deve calcular projeção mensal real não-nula mesmo quando aporte único isolado elimina 0 parcelas
+        let simTool = SimulateAmortizationTool(store: store)
+        let sim500 = try await simTool.execute(parameters: [
+            "nameOrQuery": "santander",
+            "extraPayment": 500.0,
+            "mode": "reduce_term"
+        ])
+        XCTAssertEqual(sim500["status"] as? String, "success")
+        let recProj = sim500["recurringMonthlyProjection"] as? [String: Any]
+        XCTAssertNotNil(recProj)
+        XCTAssertGreaterThan((recProj?["monthsSavedWithPlan"] as? Int) ?? 0, 0, "Cenário mensal +R$ 500/mês deve eliminar parcelas reais")
+        XCTAssertGreaterThan((recProj?["totalInterestSaved"] as? Double) ?? 0.0, 0.0, "Cenário mensal +R$ 500/mês deve economizar juros futuros reais")
+
+        // 3. Orquestrador (em modo determinístico) deve exibir parcelas eliminadas > 0 e juros economizados > R$ 0,00 (nunca 'Elimina 0 parcelas')
+        let orchestrator = AIChatOrchestrator(registry: AIToolRegistry.shared)
+        orchestrator.forceDeterministicFallbackForTesting = true
+        let prompt = "[NOVA SIMULAÇÃO DO SISTEMA] Monte um plano de ação completo para eu quitar meu empréstimo \"Crédito Consignado Santander\" — Contrato 783694303 (ID \(santander.id.uuidString)) no menor prazo possível."
+        let out = await orchestrator.processTurnWithThinking(
+            userPrompt: prompt,
+            store: store,
+            modelLabel: "Apple Intelligence",
+            isThinkingEnabled: true
+        )
+        XCTAssertTrue(out.responseMarkdown.contains("Crédito Consignado Santander"))
+        XCTAssertTrue(out.responseMarkdown.contains("Saldo Previsto ao Fim do Mês"))
+        XCTAssertFalse(out.responseMarkdown.contains("Elimina **0 parcelas**"))
+        XCTAssertFalse(out.responseMarkdown.contains("economizando **R$ 0,00**"))
+    }
+
+    func testQueryDatabaseToolFullAccessAndSaldoPrevistoAndOpenVsPaidDebts() async throws {
+        let (store, tempDir) = createTestStore()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let acc = BankAccount(id: UUID(), name: "Conta Principal", initialBalance: 10000.0)
+        let catSal = CategoryItem(id: UUID(), name: "Salário", type: .income, iconSymbol: "banknote", colorHex: "#10B981")
+        let catFood = CategoryItem(id: UUID(), name: "Alimentação", type: .expense, iconSymbol: "fork.knife", colorHex: "#F59E0B")
+        store.accounts.append(acc)
+        store.categories.append(contentsOf: [catSal, catFood])
+
+        let now = store.selectedMonth
+        store.transactions.append(contentsOf: [
+            FinancialTransaction(name: "Salário", amount: 12000.0, date: now, type: .income, isPaid: true, categoryId: catSal.id, accountId: acc.id),
+            FinancialTransaction(name: "Restaurante", amount: 500.0, date: now, type: .expense, isPaid: true, categoryId: catFood.id, accountId: acc.id)
+        ])
+        let curYear = store.calendar.component(.year, from: now)
+        let curMonth = store.calendar.component(.month, from: now)
+        store.provisions.append(CategoryProvision(categoryId: catFood.id, year: curYear, month: curMonth, estimatedAmount: 1500.0))
+        store.investments.append(InvestmentItem(name: "Caixinha CDB", groupName: "Reserva", investmentAccountId: acc.id, balance: 20000.0, showInConsolidated: true))
+        store.debts.append(contentsOf: [
+            DebtItem(name: "Dívida Aberta Cartão", originalAmount: 3200.0, isPaid: false),
+            DebtItem(name: "Dívida Antiga Quitada", originalAmount: 9500.0, isPaid: true, negotiatedAmount: 4000.0, paidDate: now)
+        ])
+
+        let queryTool = QueryDatabaseTool(store: store)
+
+        // 1. kpi_summary deve bater rigorosamente com Dashboard Saldo Previsto (Card 6)
+        let kpiRes = try await queryTool.execute(parameters: ["table": "kpi_summary"])
+        let expectedKPI = store.buildUnifiedFinancialKPISummary(referenceDate: store.selectedMonth, isAnnual: false)
+        let expectedSaldoPrevisto = expectedKPI.isPast ? expectedKPI.projectedAccountBalance : expectedKPI.balanceIfAllBudgetsConsumed
+        XCTAssertEqual(kpiRes["status"] as? String, "success")
+        XCTAssertEqual((kpiRes["saldoPrevistoFimDoMes"] as? Double) ?? -1, expectedSaldoPrevisto, accuracy: 0.01)
+        XCTAssertEqual((kpiRes["saldoPrevistoSemConsumirOrcamentos"] as? Double) ?? -1, expectedKPI.projectedAccountBalance, accuracy: 0.01)
+
+        // 2. debts deve separar rigorosamente abertas (3.200) de pagas (9.500/4.000) sem misturar
+        let debtsRes = try await queryTool.execute(parameters: ["table": "debts"])
+        XCTAssertEqual(debtsRes["openDebtsCount"] as? Int, 1)
+        XCTAssertEqual((debtsRes["openDebtsTotalAmount"] as? Double) ?? -1, 3200.0, accuracy: 0.01)
+        XCTAssertEqual(debtsRes["paidDebtsCount"] as? Int, 1)
+
+        // 3. AnalyzeDebtPayoffStrategyTool também deve excluir a dívida já quitada e incluir Saldo Previsto
+        let debtStrategyTool = AnalyzeDebtPayoffStrategyTool(store: store)
+        let stratRes = try await debtStrategyTool.execute(parameters: [:])
+        XCTAssertEqual(stratRes["openDebtsCount"] as? Int, 1)
+        XCTAssertEqual((stratRes["openDebtsTotalAmount"] as? Double) ?? -1, 3200.0, accuracy: 0.01)
+        XCTAssertEqual(stratRes["paidDebtsCount"] as? Int, 1)
+        XCTAssertEqual((stratRes["saldoPrevistoFimDoMes"] as? Double) ?? -1, expectedSaldoPrevisto, accuracy: 0.01)
+
+        // 4. get_monthly_cash_flow também deve expor saldoPrevistoFimDoMes
+        let cashTool = GetMonthlyCashFlowTool(store: store)
+        let cashRes = try await cashTool.execute(parameters: [:])
+        XCTAssertEqual((cashRes["saldoPrevistoFimDoMes"] as? Double) ?? -1, expectedSaldoPrevisto, accuracy: 0.01)
+
+        // 5. FinancialDatabaseContextBuilder deve extrair corretamente aporte customizado ("R$ 1.500") sem confundir com multi-cenário
+        let finAcc = store.accounts.first!
+        let finCat = store.categories.first!
+        let caixa = CreditContract(
+            id: UUID(),
+            kind: .financing,
+            name: "Financiamento Caixa Teste",
+            contractNumber: "1.4444.0674063-2",
+            financingSubtype: .imovel,
+            amortizationSystem: .price,
+            totalContractedAmount: 324737.86,
+            outstandingBalance: 324737.86,
+            installmentAmount: 2658.04,
+            billingDay: 15,
+            totalInstallments: 360,
+            originalTotalInstallments: 360,
+            monthlyInterestRate: 0.7091667,
+            startDate: now,
+            accountId: finAcc.id,
+            categoryId: finCat.id,
+            pastInstallmentsElapsedAtCreation: 28,
+            annualNominalInterestRate: 8.51,
+            indexationRate: .tr,
+            adminFee: 25.0,
+            insuranceFee: 86.27,
+            baseInstallmentAmount: 2546.77
+        )
+        store.contracts.append(caixa)
+        let grounded = await FinancialDatabaseContextBuilder.buildGroundedContextSnapshot(
+            for: "Quanto economizo no financiamento Caixa se amortizar R$ 1.500 por mês?",
+            store: store
+        )
+        XCTAssertFalse(grounded.steps.isEmpty)
+        XCTAssertTrue(grounded.compactJson.contains("1.500,00"), "Snapshot determinístico deve simular exatamente R$ 1.500,00/mês quando solicitado")
+    }
 }

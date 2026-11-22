@@ -500,7 +500,11 @@ public final class LocalLLMRuntime {
             store: store,
             onActivity: activityCallback
         )
-        let newSession = LanguageModelSession(tools: tools, instructions: instructions)
+        let appleModel = SystemLanguageModel(
+            useCase: .general,
+            guardrails: .permissiveContentTransformations
+        )
+        let newSession = LanguageModelSession(model: appleModel, tools: tools, instructions: instructions)
         self.cachedAppleSessionBox = AppleSessionBox(newSession)
         self.cachedAppleSessionThinkingFlag = isThinkingEnabled
         self.cachedAppleSessionDataRevision = store.dataRevision
@@ -531,8 +535,8 @@ public final class LocalLLMRuntime {
 
             let temp = min(max(store.llmConfig.appleIntelligenceTemperature, 0.05), 0.9)
             let maxTokens = isThinkingEnabled
-                ? max(800, store.llmConfig.appleIntelligenceMaxResponseTokens)
-                : min(750, max(450, store.llmConfig.appleIntelligenceMaxResponseTokens / 2))
+                ? max(1200, store.llmConfig.appleIntelligenceMaxResponseTokens)
+                : min(900, max(550, store.llmConfig.appleIntelligenceMaxResponseTokens))
 
             let options = GenerationOptions(
                 temperature: isThinkingEnabled ? temp : min(temp, 0.2),
@@ -565,14 +569,71 @@ public final class LocalLLMRuntime {
                 : userPrompt
 
             if isThinkingEnabled {
-                let initialThought = "🧠 Analisando solicitação e preparando consultas ao banco FinSense..."
+                let initialThought = "🧠 Analisando solicitação e consultando banco de dados local FinSense..."
                 collectedAppleThinkingLines.append(initialThought)
                 onThinkingUpdate?(initialThought)
             }
 
+            // Para simulações iniciadas diretamente dos cards da UI, fundamenta imediatamente com os cálculos reais
+            // antes da síntese neural para eliminar latência de idas-e-voltas e garantir zero alucinação.
+            var initialExecutionPrompt = effectivePrompt
+            if isExplicitReset {
+                let snapshot = await FinancialDatabaseContextBuilder.buildGroundedContextSnapshot(
+                    for: effectivePrompt,
+                    store: store
+                )
+                for st in snapshot.steps {
+                    collectedAppleSteps.append(st)
+                    collectedAppleThinkingLines.append("• \(st)")
+                    onStepUpdate?(st)
+                }
+                if !snapshot.steps.isEmpty {
+                    onThinkingUpdate?(collectedAppleThinkingLines.joined(separator: "\n"))
+                }
+                initialExecutionPrompt = """
+                \(effectivePrompt)
+
+                Dados reais extraídos agora do banco de dados local e motores do FinSense:
+                \(snapshot.compactJson)
+
+                Apresente uma resposta objetiva em Markdown (Situação Atual, Tabela dos Cenários destacando qual oferece o MENOR prazo de quitação total, e Viabilidade no Saldo Previsto), copiando exatamente os valores em R$ fornecidos acima.
+                """
+            }
+
             do {
-                let rawReply = try await executeWithSession(session, promptText: effectivePrompt)
-                let finalClean = Self.sanitizeAssistantOutput(rawReply)
+                let rawReply = try await executeWithSession(session, promptText: initialExecutionPrompt)
+                var finalClean = Self.sanitizeAssistantOutput(rawReply)
+
+                // Zero-Hallucination Grounding Guard: caso o modelo responda sobre finanças sem executar ferramentas,
+                // busca os dados determinísticos correspondentes no banco local e refaz a síntese com fatos reais.
+                if collectedAppleSteps.isEmpty &&
+                   FinancialDatabaseContextBuilder.shouldGroundPrompt(prompt: effectivePrompt, draftReply: finalClean) {
+                    let snapshot = await FinancialDatabaseContextBuilder.buildGroundedContextSnapshot(
+                        for: effectivePrompt,
+                        store: store
+                    )
+                    for st in snapshot.steps {
+                        collectedAppleSteps.append(st)
+                        collectedAppleThinkingLines.append("• \(st)")
+                        onStepUpdate?(st)
+                    }
+                    onThinkingUpdate?(collectedAppleThinkingLines.joined(separator: "\n"))
+
+                    let groundedPrompt = """
+                    \(effectivePrompt)
+
+                    Dados reais verificados diretamente no banco local FinSense:
+                    \(snapshot.compactJson)
+
+                    Responda de forma clara em Markdown usando exatamente esses valores reais, sem inventar números nem pedir permissão para consultar dados já listados acima.
+                    """
+                    let followReply = try await executeWithSession(session, promptText: groundedPrompt)
+                    let followClean = Self.sanitizeAssistantOutput(followReply)
+                    if !followClean.isEmpty {
+                        finalClean = followClean
+                    }
+                }
+
                 let thinkingFinal = collectedAppleThinkingLines.joined(separator: "\n")
                 return (
                     finalClean.isEmpty ? "Consulta concluída nos dados locais do FinSense." : finalClean,
@@ -582,6 +643,7 @@ public final class LocalLLMRuntime {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                collectedAppleThinkingLines.append("• Reiniciando sessão limpa para liberar contexto (\(error.localizedDescription))...")
                 // Retry automático com sessão limpa e resumo mínimo caso atinja limite da janela de 4K
                 invalidateAppleSession()
                 let freshSession = ensureNativeAppleSession(
@@ -589,7 +651,7 @@ public final class LocalLLMRuntime {
                     isThinkingEnabled: isThinkingEnabled,
                     forceNew: true
                 )
-                let retryReply = try await executeWithSession(freshSession, promptText: effectivePrompt)
+                let retryReply = try await executeWithSession(freshSession, promptText: initialExecutionPrompt)
                 let finalClean = Self.sanitizeAssistantOutput(retryReply)
                 let thinkingFinal = collectedAppleThinkingLines.joined(separator: "\n")
                 return (

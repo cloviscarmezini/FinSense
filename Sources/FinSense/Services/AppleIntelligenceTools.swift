@@ -5,10 +5,10 @@ import FoundationModels
 @available(macOS 26.0, *)
 public typealias AppleToolActivityHandler = @Sendable (_ stepLabel: String, _ thinkingLine: String) -> Void
 
-// MARK: - Helper Compartilhado para Respostas Compactas
+// MARK: - Helper Compartilhado para Respostas Compactas na Janela de 4K
 
 @available(macOS 26.0, *)
-private func encodeCompactResult(_ dict: [String: Any], maxLength: Int = 1500) -> String {
+private func encodeCompactResult(_ dict: [String: Any], maxLength: Int = 2200) -> String {
     guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
           let str = String(data: data, encoding: .utf8) else {
         return "{}"
@@ -25,29 +25,31 @@ public enum AppleIntelligenceToolFactory {
         onActivity: AppleToolActivityHandler?
     ) -> [any FoundationModels.Tool] {
         return [
-            AppleOverviewTool(store: store, onActivity: onActivity),
+            AppleQueryDatabaseTool(store: store, onActivity: onActivity),
             AppleCashFlowAndProjectionTool(store: store, onActivity: onActivity),
-            AppleContractAndPlanTool(store: store, onActivity: onActivity),
-            AppleSimulateAmortizationTool(store: store, onActivity: onActivity),
+            AppleSimulateContractPlanTool(store: store, onActivity: onActivity),
             AppleTransactionsTool(store: store, onActivity: onActivity),
-            AppleBudgetsAndCutsTool(store: store, onActivity: onActivity),
-            AppleDebtsAndInvestmentsTool(store: store, onActivity: onActivity),
+            AppleBudgetsDebtsAndCutsTool(store: store, onActivity: onActivity),
             AppleUnsupportedCapabilityTool(onActivity: onActivity)
         ]
     }
 }
 
-// MARK: - 1. Overview Global do Banco Local
+// MARK: - 1. Acesso Completo ao Banco de Dados Local (10 Tabelas)
 
 @available(macOS 26.0, *)
-public struct AppleOverviewTool: FoundationModels.Tool, @unchecked Sendable {
-    public let name = "get_financial_overview"
-    public let description = "Consulta contas bancárias com saldos atuais, investimentos, todos os contratos ativos, dívidas em aberto e categorias do banco local."
+public struct AppleQueryDatabaseTool: FoundationModels.Tool, @unchecked Sendable {
+    public let name = "query_database"
+    public let description = "Lê qualquer tabela do FinSense: overview, kpi_summary (Saldo Previsto), accounts, contracts, amortization_plans, debts (abertas vs pagas), investments, transactions, provisions_and_quotas, categories."
 
     @Generable
     public struct Arguments {
-        @Guide(description: "Escopo opcional: all, accounts, contracts, debts ou investments")
-        public var scope: String?
+        @Guide(description: "Tabela: overview, kpi_summary, accounts, contracts, amortization_plans, debts, investments, transactions, provisions_and_quotas ou categories")
+        public var table: String
+        @Guide(description: "Filtro textual opcional (ex: 'santander', 'emprestimos', 'caixa')")
+        public var query: String?
+        @Guide(description: "Mês YYYY-MM opcional (ex: '2026-11')")
+        public var month: String?
     }
 
     private let store: FinancialDataStore
@@ -59,27 +61,35 @@ public struct AppleOverviewTool: FoundationModels.Tool, @unchecked Sendable {
     }
 
     public func call(arguments: Arguments) async throws -> String {
-        onActivity?("🔧 Consultando panorama global do banco de dados...", "Consultando contas, saldos, contratos ativos, dívidas e investimentos em tempo real.")
-        let tool = await MainActor.run { GetFinancialOverviewTool(store: store) }
-        let result = try await tool.execute(parameters: [:])
-        return encodeCompactResult(result, maxLength: 1650)
+        let tbl = arguments.table.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        onActivity?(
+            "🗄️ Consultando tabela '\(tbl)' no banco FinSense...",
+            "Lendo registros reais da tabela '\(tbl)'\(arguments.query.map { " (filtro: '\($0)')" } ?? "")."
+        )
+        var params: [String: Any] = ["table": tbl]
+        if let q = arguments.query, !q.isEmpty { params["query"] = q }
+        if let m = arguments.month, !m.isEmpty { params["month"] = m }
+
+        let tool = await MainActor.run { QueryDatabaseTool(store: store) }
+        let result = try await tool.execute(parameters: params)
+        return encodeCompactResult(result, maxLength: 2300)
     }
 }
 
-// MARK: - 2. Fluxo de Caixa Mensal & Projeções Futuras
+// MARK: - 2. Fluxo de Caixa Mensal (com Saldo Previsto) & Projeções Futuras
 
 @available(macOS 26.0, *)
 public struct AppleCashFlowAndProjectionTool: FoundationModels.Tool, @unchecked Sendable {
     public let name = "get_cash_flow_and_projection"
-    public let description = "Consulta receitas, despesas, contas pendentes, sobra líquida do mês (YYYY-MM) ou projeta meses futuros (2 a 36 meses)."
+    public let description = "Consulta Saldo Previsto, sobra após planejamento e fluxo de caixa do mês (YYYY-MM), ou projeta meses futuros (2 a 36 meses)."
 
     @Generable
     public struct Arguments {
-        @Guide(description: "Modo: 'month' para um mês específico ou 'range' para projeção multi-mês")
-        public var mode: String?
-        @Guide(description: "Mês de referência no formato YYYY-MM (ex: 2026-11)")
+        @Guide(description: "Modo: 'month' para fluxo e Saldo Previsto de um mês ou 'range' para projeção multi-mês")
+        public var mode: String
+        @Guide(description: "Mês YYYY-MM opcional")
         public var month: String?
-        @Guide(description: "Quantidade de meses para projeção futura (ex: 6 ou 12)")
+        @Guide(description: "Número de meses futuros se mode='range'")
         public var monthsCount: Int?
     }
 
@@ -92,41 +102,41 @@ public struct AppleCashFlowAndProjectionTool: FoundationModels.Tool, @unchecked 
     }
 
     public func call(arguments: Arguments) async throws -> String {
-        let mode = (arguments.mode ?? (arguments.monthsCount != nil ? "range" : "month")).lowercased()
+        let mode = arguments.mode.lowercased()
         if mode == "range" {
             let count = arguments.monthsCount ?? 12
-            onActivity?("📈 Projetando fluxo de caixa dos próximos \(count) meses...", "Executando projeção de receitas, despesas e saldo acumulado para \(count) meses.")
+            onActivity?("📈 Projetando fluxo de caixa dos próximos \(count) meses...", "Executando projeção de receitas, despesas, Saldo Previsto e saldo acumulado para \(count) meses.")
             var params: [String: Any] = ["numberOfMonths": count]
             if let m = arguments.month, !m.isEmpty { params["startMonth"] = m }
             let tool = await MainActor.run { GetProjectedCashFlowRangeTool(store: store) }
             let res = try await tool.execute(parameters: params)
-            return encodeCompactResult(res, maxLength: 1550)
+            return encodeCompactResult(res, maxLength: 2100)
         } else {
             let label = arguments.month ?? "mês ativo"
-            onActivity?("💵 Consultando fluxo de caixa (\(label))...", "Verificando receitas, despesas pagas/pendentes, tetos e sobra operacional.")
+            onActivity?("💵 Consultando Saldo Previsto e fluxo de caixa (\(label))...", "Calculando receitas, despesas, provisões restantes, Sobra Após Planejamento e Saldo Previsto no fim do mês.")
             var params: [String: Any] = [:]
             if let m = arguments.month, !m.isEmpty { params["referenceDate"] = m }
             let tool = await MainActor.run { GetMonthlyCashFlowTool(store: store) }
             let res = try await tool.execute(parameters: params)
-            return encodeCompactResult(res, maxLength: 1550)
+            return encodeCompactResult(res, maxLength: 2100)
         }
     }
 }
 
-// MARK: - 3. Detalhes de Contrato & Planejamento de Amortização (LoanProjectionEngine)
+// MARK: - 3. Simulação Completa via LoanProjectionEngine + Viabilidade no Saldo Previsto
 
 @available(macOS 26.0, *)
-public struct AppleContractAndPlanTool: FoundationModels.Tool, @unchecked Sendable {
-    public let name = "get_contract_and_plan"
-    public let description = "Consulta detalhes completos de empréstimo/financiamento (parcelas pagas pelo salário, saldo devedor, quitação hoje) e analisa o plano salvo ou simula plano mensal."
+public struct AppleSimulateContractPlanTool: FoundationModels.Tool, @unchecked Sendable {
+    public let name = "simulate_contract_plan"
+    public let description = "Consulta dados reais de um empréstimo/financiamento, verifica plano salvo e simula amortizações (cenários +500/mês, +1.000/mês, +2.000/mês ou valor customizado) validando Saldo Previsto."
 
     @Generable
     public struct Arguments {
-        @Guide(description: "Nome ou termo do contrato (ex: 'Caixa', 'Santander', 'Pan'). Deixe vazio para listar todos.")
-        public var query: String?
-        @Guide(description: "Opcional: valor de aporte mensal extra para simular no plano de longo prazo")
-        public var simulateMonthlyExtra: Double?
-        @Guide(description: "Origem opcional da simulação: 'cash' (Dinheiro) ou 'fgts'")
+        @Guide(description: "Nome, banco ou número do contrato (ex: 'Santander', 'Caixa', 'emprestimos')")
+        public var contractQuery: String
+        @Guide(description: "Valor extra mensal opcional em reais (omita para simular +500, +1.000 e +2.000/mês)")
+        public var extraPayment: Double?
+        @Guide(description: "Origem opcional: 'cash' ou 'fgts'")
         public var source: String?
     }
 
@@ -139,102 +149,162 @@ public struct AppleContractAndPlanTool: FoundationModels.Tool, @unchecked Sendab
     }
 
     public func call(arguments: Arguments) async throws -> String {
-        let q = arguments.query?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if let monthlyExtra = arguments.simulateMonthlyExtra, monthlyExtra > 0 {
-            onActivity?("📊 Projetando plano com aporte mensal em '\(q.isEmpty ? "contrato" : q)'...", "Rodando LoanProjectionEngine com aportes mensais de R$ \(Int(monthlyExtra)) (\(arguments.source ?? "cash")).")
-            var params: [String: Any] = ["simulateMonthlyExtraAmount": monthlyExtra]
-            if !q.isEmpty { params["nameOrQuery"] = q }
-            if let src = arguments.source { params["simulateSource"] = src }
-            let tool = await MainActor.run { GetLoanProjectionAndPlanTool(store: store) }
-            let res = try await tool.execute(parameters: params)
-            return encodeCompactResult(res, maxLength: 1650)
-        } else {
-            onActivity?("🏦 Consultando contrato '\(q.isEmpty ? "todos" : q)'...", "Lendo saldo devedor real, quitação presente e planejamento de amortização.")
-            let detailsTool = await MainActor.run { GetContractDetailsTool(store: store) }
-            let detailsRes = try await detailsTool.execute(parameters: q.isEmpty ? [:] : ["nameOrQuery": q])
-            var combined: [String: Any] = ["details": detailsRes]
-            if let contracts = detailsRes["contracts"] as? [[String: Any]],
-               contracts.count == 1,
-               let cid = contracts.first?["id"] as? String {
-                let planTool = await MainActor.run { GetLoanProjectionAndPlanTool(store: store) }
-                if let planRes = try? await planTool.execute(parameters: ["contractId": cid]),
-                   (planRes["hasSavedPlanOnDatabase"] as? Bool) == true {
-                    combined["savedPlanProjection"] = planRes
-                }
-            }
-            return encodeCompactResult(combined, maxLength: 1700)
-        }
-    }
-}
+        let q = arguments.contractQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let srcStr = (arguments.source ?? "cash").lowercased()
 
-// MARK: - 4. Simulação Direta de Amortização (Empréstimos e Financiamentos)
-
-@available(macOS 26.0, *)
-public struct AppleSimulateAmortizationTool: FoundationModels.Tool, @unchecked Sendable {
-    public let name = "simulate_amortization"
-    public let description = "Simula amortização extra em empréstimo ou financiamento (redução de prazo ou parcela) sem alterar os dados reais."
-
-    @Generable
-    public struct Arguments {
-        @Guide(description: "Nome do contrato (ex: 'Caixa', 'Santander', 'Habitacao')")
-        public var contractQuery: String
-        @Guide(description: "Valor do aporte extra em reais (ex: 500, 1000, 2000)")
-        public var extraPayment: Double
-        @Guide(description: "Modo: 'reduce_term' (padrão) ou 'reduce_installment'")
-        public var mode: String?
-        @Guide(description: "Se true, projeta esse aporte mensalmente até quitar via LoanProjectionEngine")
-        public var recurringMonthly: Bool?
-    }
-
-    private let store: FinancialDataStore
-    private let onActivity: AppleToolActivityHandler?
-
-    public init(store: FinancialDataStore, onActivity: AppleToolActivityHandler?) {
-        self.store = store
-        self.onActivity = onActivity
-    }
-
-    public func call(arguments: Arguments) async throws -> String {
         onActivity?(
-            "⚡ Simulando amortização de R$ \(Int(arguments.extraPayment)) em '\(arguments.contractQuery)'...",
-            "Executando motor de amortização para +\(BRLFormatters.currency(arguments.extraPayment)) em '\(arguments.contractQuery)' (modo: \(arguments.mode ?? "reduce_term"), mensal: \(arguments.recurringMonthly ?? false))."
+            "⚡ Analisando contrato e simulando cenários em '\(q.isEmpty ? "contratos" : q)'...",
+            "Executando LoanProjectionEngine + verificação de Saldo Previsto para '\(q)'."
         )
-        let tool = await MainActor.run { SimulateAmortizationTool(store: store) }
-        let res = try await tool.execute(parameters: [
-            "nameOrQuery": arguments.contractQuery,
-            "extraPayment": arguments.extraPayment,
-            "mode": arguments.mode ?? "reduce_term",
-            "recurringMonthly": arguments.recurringMonthly ?? true
-        ])
-        return encodeCompactResult(res, maxLength: 1600)
+
+        var detailsParams: [String: Any] = ["kind": "any"]
+        if let uuid = UUID(uuidString: q) {
+            detailsParams["contractId"] = uuid.uuidString
+        } else if !q.isEmpty {
+            detailsParams["nameOrQuery"] = q
+        }
+
+        let detailsTool = await MainActor.run { GetContractDetailsTool(store: store) }
+        let detailsRes = try await detailsTool.execute(parameters: detailsParams)
+
+        let matchedContracts = (detailsRes["contracts"] as? [[String: Any]]) ?? []
+        if matchedContracts.isEmpty {
+            return encodeCompactResult(detailsRes, maxLength: 2100)
+        }
+
+        let primaryContract = matchedContracts.first!
+        let resolvedId = (primaryContract["id"] as? String) ?? ""
+        let resolvedName = (primaryContract["name"] as? String) ?? q
+
+        if matchedContracts.count > 1 && UUID(uuidString: q) == nil && (arguments.extraPayment ?? 0) <= 0 {
+            let cashFlowTool = await MainActor.run { GetMonthlyCashFlowTool(store: store) }
+            let cashRes = try? await cashFlowTool.execute(parameters: [:])
+            let payload: [String: Any] = [
+                "status": "multiple_contracts_found",
+                "message": "Foram encontrados \(matchedContracts.count) contratos correspondentes. Informe os dados reais abaixo ao usuário e pergunte qual contrato deseja simular detalhadamente.",
+                "contracts": matchedContracts,
+                "cashFlowKPI": [
+                    "saldoPrevistoFimDoMes": cashRes?["saldoPrevistoFimDoMes"] ?? 0.0,
+                    "sobraAposPlanejamento": cashRes?["sobraAposPlanejamento"] ?? 0.0
+                ]
+            ]
+            return encodeCompactResult(payload, maxLength: 2300)
+        }
+
+        let planTool = await MainActor.run { GetLoanProjectionAndPlanTool(store: store) }
+        let savedPlanRes = try? await planTool.execute(parameters: ["contractId": resolvedId])
+
+        let simTool = await MainActor.run { SimulateAmortizationTool(store: store) }
+        let valuesToSimulate: [Double] = {
+            if let custom = arguments.extraPayment, custom > 0 {
+                return [custom]
+            }
+            return [500.0, 1000.0, 2000.0]
+        }()
+
+        var scenarios: [[String: Any]] = []
+        for extra in valuesToSimulate {
+            if srcStr == "fgts" {
+                if let fgtsRes = try? await planTool.execute(parameters: [
+                    "contractId": resolvedId,
+                    "simulateMonthlyExtraAmount": extra,
+                    "simulateSource": "fgts",
+                    "simulateMode": "reduce_term"
+                ]) {
+                    scenarios.append([
+                        "aporteExtraMensal": BRLFormatters.currency(extra),
+                        "origem": "FGTS",
+                        "parcelasEliminadasTotal": fgtsRes["monthsSaved"] ?? 0,
+                        "novoPrazoRestanteMeses": fgtsRes["projectedActiveMonths"] ?? 0,
+                        "prazoOriginalRestanteMeses": fgtsRes["originalRemainingMonths"] ?? 0,
+                        "economiaTotalDeJurosNoContrato": BRLFormatters.currency((fgtsRes["totalInterestSaved"] as? Double) ?? 0.0),
+                        "novaDataDeQuitacaoTotal": fgtsRes["projectedMaturityDate"] ?? "",
+                        "alertasFGTS": fgtsRes["fgtsWarnings"] ?? []
+                    ])
+                }
+            } else {
+                let res = try await simTool.execute(parameters: [
+                    "contractId": resolvedId,
+                    "nameOrQuery": resolvedName,
+                    "extraPayment": extra,
+                    "mode": "reduce_term",
+                    "recurringMonthly": true
+                ])
+                let rec = (res["recurringMonthlyProjection"] as? [String: Any]) ?? [:]
+                let recMonths = (rec["monthsSavedWithPlan"] as? Int) ?? 0
+                let recInterest = (rec["totalInterestSaved"] as? Double) ?? 0.0
+                let expectedEndCash = (rec["expectedMonthEndCashBalanceAfterExtra"] as? Double) ?? (res["currentSaldoPrevistoFimDoMes"] as? Double) ?? 0.0
+                scenarios.append([
+                    "aporteExtraMensal": BRLFormatters.currency(extra),
+                    "origem": "Dinheiro",
+                    "parcelasEliminadasTotal": recMonths,
+                    "novoPrazoRestanteMeses": rec["projectedMonthsWithPlan"] ?? res["newRemainingInstallments"] ?? 0,
+                    "economiaTotalDeJurosNoContrato": BRLFormatters.currency(recInterest),
+                    "novaDataDeQuitacaoTotal": rec["projectedPayoffDate"] ?? "",
+                    "saldoPrevistoFimDoMesComEsseAporte": BRLFormatters.currency(expectedEndCash),
+                    "viavelNoSaldoPrevisto": expectedEndCash >= 0
+                ])
+            }
+        }
+
+        let cashTool = await MainActor.run { GetMonthlyCashFlowTool(store: store) }
+        let cashRes = try? await cashTool.execute(parameters: [:])
+
+        let contractSummary: [String: Any] = [
+            "id": resolvedId,
+            "nome": resolvedName,
+            "tipo": primaryContract["subtype"] ?? primaryContract["kind"] ?? "contrato",
+            "numeroContrato": primaryContract["contractNumber"] ?? "",
+            "saldoDevedorAtualHoje": BRLFormatters.currency((primaryContract["outstandingBalance"] as? Double) ?? 0.0),
+            "valorParaQuitarHoje": BRLFormatters.currency((primaryContract["projectedPayoffToday"] as? Double) ?? (primaryContract["outstandingBalance"] as? Double) ?? 0.0),
+            "valorDaParcelaMensal": BRLFormatters.currency((primaryContract["installmentAmount"] as? Double) ?? 0.0),
+            "parcelasPagas": primaryContract["paidInstallmentsCount"] ?? 0,
+            "parcelasRestantes": primaryContract["remainingInstallments"] ?? 0,
+            "totalParcelas": primaryContract["totalInstallments"] ?? 0
+        ]
+
+        var combined: [String: Any] = [
+            "status": "success",
+            "contrato": contractSummary,
+            "cenariosSimuladosComAportesMensais": scenarios,
+            "viabilidadeCaixa": [
+                "saldoEmContasHoje": BRLFormatters.currency((cashRes?["liquidCheckingBalanceNow"] as? Double) ?? 0.0),
+                "saldoPrevistoFimDoMesAtual": BRLFormatters.currency((cashRes?["saldoPrevistoFimDoMes"] as? Double) ?? 0.0),
+                "saldoPrevistoSemConsumirOrcamentos": BRLFormatters.currency((cashRes?["saldoPrevistoSemConsumirOrcamentos"] as? Double) ?? 0.0),
+                "sobraMensalAposPlanejamento": BRLFormatters.currency((cashRes?["sobraAposPlanejamento"] as? Double) ?? 0.0)
+            ]
+        ]
+
+        if let savedPlan = savedPlanRes, (savedPlan["hasSavedPlanOnDatabase"] as? Bool) == true {
+            combined["planoDeAmortizacaoSalvoNoBanco"] = [
+                "mesesEconomizados": savedPlan["monthsSaved"] ?? 0,
+                "economiaTotalDeJurosNoContrato": BRLFormatters.currency((savedPlan["totalInterestSaved"] as? Double) ?? 0.0),
+                "dataQuitacaoPrevista": savedPlan["projectedMaturityDate"] ?? "",
+                "aportesPendentesCount": savedPlan["plannedItemsCount"] ?? 0
+            ]
+        }
+
+        return encodeCompactResult(combined, maxLength: 2350)
     }
 }
 
-// MARK: - 5. Consulta & Analítica de Transações (Qualquer Período / Agrupamento)
+// MARK: - 4. Consulta & Analítica de Transações (Qualquer Período / Agrupamento)
 
 @available(macOS 26.0, *)
 public struct AppleTransactionsTool: FoundationModels.Tool, @unchecked Sendable {
     public let name = "query_and_aggregate_transactions"
-    public let description = "Agrupa/soma transações (por categoria, mês, conta ou descrição) ou lista lançamentos individuais em qualquer período."
+    public let description = "Soma/agrupa transações por categoria, mês ou descrição, ou lista lançamentos individuais."
 
     @Generable
     public struct Arguments {
-        @Guide(description: "'summary' para totais agrupados ou 'list' para lançamentos individuais")
-        public var mode: String?
-        @Guide(description: "Data inicial YYYY-MM-DD opcional")
-        public var startDate: String?
-        @Guide(description: "Data final YYYY-MM-DD opcional")
-        public var endDate: String?
+        @Guide(description: "Modo: 'summary' para totais agrupados ou 'list' para lançamentos")
+        public var mode: String
         @Guide(description: "Mês específico YYYY-MM opcional")
         public var month: String?
-        @Guide(description: "Filtro textual na descrição ou detalhes")
-        public var searchQuery: String?
-        @Guide(description: "Nome da categoria opcional")
-        public var categoryName: String?
-        @Guide(description: "Dimensão de agrupamento para summary: category, month, account, description")
+        @Guide(description: "Texto de busca em descrição/categoria")
+        public var query: String?
+        @Guide(description: "Agrupamento para summary: category, month, account ou description")
         public var groupBy: String?
-        @Guide(description: "Tipo: expense, income ou all")
-        public var type: String?
     }
 
     private let store: FinancialDataStore
@@ -246,43 +316,41 @@ public struct AppleTransactionsTool: FoundationModels.Tool, @unchecked Sendable 
     }
 
     public func call(arguments: Arguments) async throws -> String {
-        let mode = (arguments.mode ?? "summary").lowercased()
+        let mode = arguments.mode.lowercased()
         var params: [String: Any] = [:]
-        if let v = arguments.startDate, !v.isEmpty { params["startDate"] = v }
-        if let v = arguments.endDate, !v.isEmpty { params["endDate"] = v }
-        if let v = arguments.month, !v.isEmpty { params["month"] = v }
-        if let v = arguments.searchQuery, !v.isEmpty { params["searchQuery"] = v }
-        if let v = arguments.categoryName, !v.isEmpty { params["categoryName"] = v }
-        if let v = arguments.type, !v.isEmpty { params["type"] = v }
+        if let m = arguments.month, !m.isEmpty { params["month"] = m }
+        if let q = arguments.query, !q.isEmpty { params["searchQuery"] = q }
 
         if mode == "list" {
-            onActivity?("🧾 Listando lançamentos financeiros...", "Filtrando transações locais (\(arguments.searchQuery ?? arguments.categoryName ?? arguments.month ?? "recentes")).")
+            onActivity?("🧾 Listando lançamentos financeiros...", "Filtrando transações locais.")
             params["limit"] = 20
             let tool = await MainActor.run { QueryTransactionsTool(store: store) }
             let res = try await tool.execute(parameters: params)
-            return encodeCompactResult(res, maxLength: 1600)
+            return encodeCompactResult(res, maxLength: 2100)
         } else {
             onActivity?("🔍 Agregando e somando transações...", "Consolidando transações agrupadas por \(arguments.groupBy ?? "category").")
             if let g = arguments.groupBy, !g.isEmpty { params["groupBy"] = g }
             let tool = await MainActor.run { AggregateTransactionsTool(store: store) }
             let res = try await tool.execute(parameters: params)
-            return encodeCompactResult(res, maxLength: 1600)
+            return encodeCompactResult(res, maxLength: 2100)
         }
     }
 }
 
-// MARK: - 6. Orçamentos (Tetos/Cotas) & Análise de Cortes Discricionários
+// MARK: - 5. Orçamentos, Cortes Discricionários, Dívidas em Aberto e Investimentos
 
 @available(macOS 26.0, *)
-public struct AppleBudgetsAndCutsTool: FoundationModels.Tool, @unchecked Sendable {
-    public let name = "analyze_budgets_and_cuts"
-    public let description = "Consulta tetos orçamentários (provisões), cotas de itens e analisa onde cortar gastos flexíveis para liberar uma meta mensal."
+public struct AppleBudgetsDebtsAndCutsTool: FoundationModels.Tool, @unchecked Sendable {
+    public let name = "analyze_budgets_debts_and_cuts"
+    public let description = "Consulta dívidas em aberto reais (somente isPaid == false), investimentos, tetos/cotas e sugestões de corte considerando o Saldo Previsto."
 
     @Generable
     public struct Arguments {
-        @Guide(description: "Mês YYYY-MM opcional (padrão mês ativo)")
-        public var month: String?
-        @Guide(description: "Meta mensal em reais que precisa liberar com cortes (opcional, ex: 2000)")
+        @Guide(description: "Foco: 'debts', 'budgets', 'cuts' ou 'all'")
+        public var focus: String
+        @Guide(description: "Nome da dívida específica opcional")
+        public var debtQuery: String?
+        @Guide(description: "Meta mensal opcional em reais para cortes")
         public var targetMonthlyAmount: Double?
     }
 
@@ -295,68 +363,45 @@ public struct AppleBudgetsAndCutsTool: FoundationModels.Tool, @unchecked Sendabl
     }
 
     public func call(arguments: Arguments) async throws -> String {
-        if let target = arguments.targetMonthlyAmount, target > 0 {
-            onActivity?("✂️ Analisando cortes para liberar R$ \(Int(target))/mês...", "Cruzando gastos discricionários com sobra operacional para meta de \(BRLFormatters.currency(target)).")
-            var params: [String: Any] = ["targetExtraPayment": target]
-            if let m = arguments.month, !m.isEmpty { params["referenceMonth"] = m }
-            let tool = await MainActor.run { AnalyzeDiscretionarySpendingTool(store: store) }
-            let res = try await tool.execute(parameters: params)
-            return encodeCompactResult(res, maxLength: 1600)
-        } else {
-            onActivity?("📌 Verificando tetos, envelopes e cotas...", "Consultando provisões restantes, tetos de categorias e gastos discricionários.")
-            var params: [String: Any] = [:]
-            if let m = arguments.month, !m.isEmpty { params["month"] = m }
-            let capsTool = await MainActor.run { GetBudgetCapsStatusTool(store: store) }
+        let focus = arguments.focus.lowercased()
+        var output: [String: Any] = [:]
+
+        if focus == "cuts" || (arguments.targetMonthlyAmount ?? 0) > 0 {
+            let target = arguments.targetMonthlyAmount ?? 0
+            onActivity?("✂️ Analisando cortes de gastos...", "Avaliando gastos discricionários e impacto no Saldo Previsto.")
             let discTool = await MainActor.run { AnalyzeDiscretionarySpendingTool(store: store) }
-            let capsRes = try await capsTool.execute(parameters: params)
-            let discRes = try await discTool.execute(parameters: arguments.month.map { ["referenceMonth": $0] } ?? [:])
-            return encodeCompactResult(["capsAndQuotas": capsRes, "discretionaryTop": discRes], maxLength: 1650)
+            output["discretionaryCuts"] = try await discTool.execute(parameters: ["targetExtraPayment": target])
         }
+
+        if focus == "all" || focus == "budgets" {
+            onActivity?("📌 Consultando tetos e cotas de orçamento...", "Lendo envelopes e cotas específicas do mês.")
+            let capsTool = await MainActor.run { GetBudgetCapsStatusTool(store: store) }
+            output["budgetsAndQuotas"] = try await capsTool.execute(parameters: [:])
+        }
+
+        if focus == "all" || focus == "debts" || (arguments.debtQuery?.isEmpty == false) {
+            onActivity?("💎 Analisando dívidas em aberto e investimentos...", "Consultando exclusivamente dívidas pendentes (isPaid == false), Saldo Previsto e liquidez em investimentos.")
+            let debtTool = await MainActor.run { AnalyzeDebtPayoffStrategyTool(store: store) }
+            let invTool = await MainActor.run { GetInvestmentsSummaryTool(store: store) }
+            let debtParams: [String: Any] = (arguments.debtQuery?.isEmpty == false) ? ["nameOrQuery": arguments.debtQuery!] : [:]
+            output["debtsAnalysis"] = try await debtTool.execute(parameters: debtParams)
+            output["investmentsSummary"] = try await invTool.execute(parameters: [:])
+        }
+
+        return encodeCompactResult(output, maxLength: 2300)
     }
 }
 
-// MARK: - 7. Dívidas em Aberto & Estratégia + Investimentos
-
-@available(macOS 26.0, *)
-public struct AppleDebtsAndInvestmentsTool: FoundationModels.Tool, @unchecked Sendable {
-    public let name = "get_debts_and_investments"
-    public let description = "Analisa prazo e viabilidade para quitar dívidas em aberto e detalha carteira de investimentos / reservas."
-
-    @Generable
-    public struct Arguments {
-        @Guide(description: "Nome da dívida específica opcional (ex: 'Mercado Pago')")
-        public var debtQuery: String?
-    }
-
-    private let store: FinancialDataStore
-    private let onActivity: AppleToolActivityHandler?
-
-    public init(store: FinancialDataStore, onActivity: AppleToolActivityHandler?) {
-        self.store = store
-        self.onActivity = onActivity
-    }
-
-    public func call(arguments: Arguments) async throws -> String {
-        onActivity?("💎 Analisando dívidas e carteira de investimentos...", "Calculando capacidade mensal de quitação e conferindo liquidez em investimentos.")
-        let debtTool = await MainActor.run { AnalyzeDebtPayoffStrategyTool(store: store) }
-        let invTool = await MainActor.run { GetInvestmentsSummaryTool(store: store) }
-        let debtParams: [String: Any] = (arguments.debtQuery?.isEmpty == false) ? ["nameOrQuery": arguments.debtQuery!] : [:]
-        let debtRes = try await debtTool.execute(parameters: debtParams)
-        let invRes = try await invTool.execute(parameters: [:])
-        return encodeCompactResult(["debtsStrategy": debtRes, "investments": invRes], maxLength: 1650)
-    }
-}
-
-// MARK: - 8. Fallback Mandatório para Ações Externas Não Suportadas
+// MARK: - 6. Fallback Mandatório para Ações Externas Não Suportadas
 
 @available(macOS 26.0, *)
 public struct AppleUnsupportedCapabilityTool: FoundationModels.Tool, @unchecked Sendable {
     public let name = "unsupported_capability"
-    public let description = "Chame quando o usuário pedir ação externa impossível no FinSense (comprar ações B3, fazer PIX, comprar cripto, contratar empréstimo)."
+    public let description = "Registra ação externa impossível no FinSense (comprar ações B3, fazer PIX, comprar cripto, contratar novo empréstimo)."
 
     @Generable
     public struct Arguments {
-        @Guide(description: "O que o usuário pediu")
+        @Guide(description: "Pedido externo do usuário")
         public var requestedCapability: String
         @Guide(description: "Motivo resumido")
         public var reason: String

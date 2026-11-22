@@ -225,7 +225,7 @@ public struct DebtsView: View {
                 Spacer()
 
                 Button {
-                    let question = "[NOVA SIMULAÇÃO DO SISTEMA] Usando como referência o meu histórico real de receitas, despesas e saldo disponível, em quanto tempo devo quitar a dívida \"\(debt.name)\" (ID \(debt.id.uuidString)) e qual a melhor estratégia?"
+                    let question = "[NOVA SIMULAÇÃO DO SISTEMA] Consultando exclusivamente minhas dívidas em aberto reais, meu Saldo Previsto no fim do mês, saldo atual em contas, investimentos consolidados e histórico de receitas/despesas, em quanto tempo consigo quitar a dívida \"\(debt.name)\" (ID \(debt.id.uuidString)) e qual a estratégia mais segura sem comprometer o caixa?"
                     store.requireInstalledLLM(forFeature: "Simular Prazo da Dívida '\(debt.name)' na IA Local") {
                         store.isAIChatPresented = true
                         Task {
