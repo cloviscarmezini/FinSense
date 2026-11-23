@@ -192,6 +192,7 @@ public struct CloudSyncSettingsCardView: View {
         case .disabled: return .secondary.opacity(0.6)
         case .synced: return Color(hex: "#10B981")
         case .syncing: return Color(hex: "#F59E0B")
+        case .remoteUpdatesAvailable: return Color(hex: "#0EA5E9")
         case .outOfSync: return Color(hex: "#F59E0B")
         case .authError: return Color(hex: "#EF4444")
         }

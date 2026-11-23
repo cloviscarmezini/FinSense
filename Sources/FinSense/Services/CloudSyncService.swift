@@ -3,6 +3,9 @@ import Foundation
 import Combine
 import Network
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 @MainActor
 public final class CloudSyncService: ObservableObject {
@@ -11,6 +14,8 @@ public final class CloudSyncService: ObservableObject {
     @Published public var syncProgress: Double = 0.0
     @Published public var pendingMutationsCount: Int = 0
     @Published public var lastSyncDate: Date? = nil
+    @Published public var hasRemoteUpdates: Bool = false
+    @Published public var remoteLatestRevision: Int64 = 0
 
     // Progressão de Envio Inicial (Seed)
     @Published public var isSeeding: Bool = false
@@ -18,7 +23,19 @@ public final class CloudSyncService: ObservableObject {
     @Published public var seedStatusText: String = ""
 
     // Configurações persistidas
-    @AppStorage("cloud_sync_enabled") public var isEnabled: Bool = false
+    @AppStorage("cloud_sync_enabled") public var isEnabled: Bool = false {
+        didSet {
+            if !isEnabled {
+                hasRemoteUpdates = false
+                lastStatusETag = nil
+            }
+            evaluateInitialStatus()
+            updateRemoteStatusPollingSchedule()
+            if isEnabled {
+                checkRemoteUpdatesIfNeeded(force: true)
+            }
+        }
+    }
     @AppStorage("cloud_sync_auto_sync") public var isAutoSyncEnabled: Bool = true {
         didSet {
             if isAutoSyncEnabled && canSync && pendingMutationsCount > 0 {
@@ -26,9 +43,19 @@ public final class CloudSyncService: ObservableObject {
             }
         }
     }
-    @AppStorage("cloud_sync_base_url") public var baseURLString: String = "http://localhost:8080/api/v1"
+    @AppStorage("cloud_sync_base_url") public var baseURLString: String = "http://localhost:8080/api/v1" {
+        didSet {
+            lastStatusETag = nil
+        }
+    }
     @AppStorage("cloud_sync_client_id") public var clientId: String = UUID().uuidString
-    @AppStorage("cloud_sync_last_revision") public var lastServerRevision: Int = 0
+    @AppStorage("cloud_sync_last_revision") public var lastServerRevision: Int = 0 {
+        didSet {
+            if oldValue != lastServerRevision {
+                lastStatusETag = nil
+            }
+        }
+    }
 
     public var canSync: Bool {
         AuthService.shared.isAuthenticated && isEnabled
@@ -38,6 +65,13 @@ public final class CloudSyncService: ObservableObject {
     private let outboxFileURL: URL
     private var debounceTimer: AnyCancellable? = nil
     private var authCancellable: AnyCancellable? = nil
+    private var statusPollingTimer: AnyCancellable? = nil
+    private var lifecycleObservers: [NSObjectProtocol] = []
+    private var isCheckingRemoteStatus: Bool = false
+    private var lastRemoteCheckAt: Date = .distantPast
+    private var lastStatusETag: String? = nil
+    private var consecutiveStatusCheckFailures: Int = 0
+    private var isAppActive: Bool = true
     private let networkMonitor = NWPathMonitor()
     private var isNetworkAvailable: Bool = true
     private weak var store: FinancialDataStore?
@@ -48,13 +82,27 @@ public final class CloudSyncService: ObservableObject {
         loadOutboxQueue()
         startNetworkMonitoring()
         startAuthMonitoring()
+        startLifecycleMonitoring()
         evaluateInitialStatus()
+        updateRemoteStatusPollingSchedule()
+    }
+
+    deinit {
+        statusPollingTimer?.cancel()
+        debounceTimer?.cancel()
+        networkMonitor.cancel()
+        for obs in lifecycleObservers {
+            NotificationCenter.default.removeObserver(obs)
+        }
     }
 
     public func resetSyncState() {
         lastServerRevision = 0
         lastSyncDate = nil
         syncProgress = 0.0
+        hasRemoteUpdates = false
+        remoteLatestRevision = 0
+        lastStatusETag = nil
         outboxQueue.removeAll()
         saveOutboxQueue()
         pendingMutationsCount = 0
@@ -74,27 +122,148 @@ public final class CloudSyncService: ObservableObject {
             .sink { [weak self] isAuth in
                 guard let self else { return }
                 self.evaluateInitialStatus()
+                self.updateRemoteStatusPollingSchedule()
                 if isAuth {
                     if !self.isEnabled {
                         self.isEnabled = true
                     }
+                    self.checkRemoteUpdatesIfNeeded(force: true)
                     if self.isAutoSyncEnabled {
                         self.scheduleSync(delaySeconds: 0.5)
                     }
+                } else {
+                    self.hasRemoteUpdates = false
+                    self.lastStatusETag = nil
                 }
             }
     }
 
+    private func startLifecycleMonitoring() {
+        #if canImport(AppKit)
+        let didBecomeActive = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isAppActive = true
+                self.updateRemoteStatusPollingSchedule()
+                self.checkRemoteUpdatesIfNeeded(force: false)
+            }
+        }
+        let didResignActive = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isAppActive = false
+                self.updateRemoteStatusPollingSchedule()
+            }
+        }
+        lifecycleObservers = [didBecomeActive, didResignActive]
+        #endif
+    }
+
     public func evaluateInitialStatus() {
         if !canSync {
-            syncStatus = .disabled
+            if syncStatus != .disabled { syncStatus = .disabled }
         } else if !outboxQueue.isEmpty {
-            syncStatus = .outOfSync(pendingCount: outboxQueue.count, reason: "Alterações pendentes")
+            let reason = hasRemoteUpdates ? "Alterações locais e na nuvem pendentes" : "Alterações pendentes"
+            let next: SyncStatus = .outOfSync(pendingCount: outboxQueue.count, reason: reason)
+            if syncStatus != next { syncStatus = next }
+        } else if hasRemoteUpdates {
+            let next: SyncStatus = .remoteUpdatesAvailable(latestRevision: max(remoteLatestRevision, Int64(lastServerRevision)))
+            if syncStatus != next { syncStatus = next }
         } else if let last = lastSyncDate {
-            syncStatus = .synced(lastSync: last)
+            let next: SyncStatus = .synced(lastSync: last)
+            if syncStatus != next { syncStatus = next }
         } else {
             syncStatus = .synced(lastSync: Date())
         }
+    }
+
+    private func currentPollingInterval() -> TimeInterval {
+        let exponent = min(2, consecutiveStatusCheckFailures)
+        return min(180.0, 45.0 * pow(2.0, Double(exponent)))
+    }
+
+    private func updateRemoteStatusPollingSchedule() {
+        statusPollingTimer?.cancel()
+        statusPollingTimer = nil
+
+        guard canSync, isAppActive, isNetworkAvailable else { return }
+        let interval = currentPollingInterval()
+        statusPollingTimer = Timer.publish(every: interval, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.checkRemoteUpdatesIfNeeded(force: false)
+            }
+    }
+
+    public func checkRemoteUpdatesIfNeeded(force: Bool = false) {
+        guard canSync, isNetworkAvailable, !isSyncing, !isSeeding, !isCheckingRemoteStatus else { return }
+        if !force && Date().timeIntervalSince(lastRemoteCheckAt) < 12.0 {
+            return
+        }
+
+        isCheckingRemoteStatus = true
+        lastRemoteCheckAt = Date()
+        let baseURL = baseURLString
+        let currentClientId = clientId
+        let sinceRev = Int64(lastServerRevision)
+        let currentETag = lastStatusETag
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await BackendAPIClient.shared.fetchSyncStatus(
+                    baseURL: baseURL,
+                    clientId: currentClientId,
+                    sinceRevision: sinceRev,
+                    ifNoneMatch: currentETag
+                )
+                await MainActor.run {
+                    self.isCheckingRemoteStatus = false
+                    let hadFailures = self.consecutiveStatusCheckFailures > 0
+                    self.consecutiveStatusCheckFailures = 0
+                    if let etag = result.etag {
+                        self.lastStatusETag = etag
+                    }
+                    if !result.notModified, let status = result.status {
+                        self.applyRemoteStatusCheckResult(status)
+                    }
+                    if hadFailures {
+                        self.updateRemoteStatusPollingSchedule()
+                    }
+                }
+            } catch let err as URLError where err.code == .userAuthenticationRequired {
+                await MainActor.run {
+                    self.isCheckingRemoteStatus = false
+                    self.syncStatus = .authError(message: "Sessão expirada. Faça login novamente.")
+                }
+            } catch {
+                await MainActor.run {
+                    self.isCheckingRemoteStatus = false
+                    self.consecutiveStatusCheckFailures = min(self.consecutiveStatusCheckFailures + 1, 4)
+                    self.updateRemoteStatusPollingSchedule()
+                }
+            }
+        }
+    }
+
+    public func applyRemoteStatusCheckResult(_ result: CloudSyncStatusResponseDTO) {
+        let remoteDetected = result.hasChanges || result.serverReset
+        if remoteLatestRevision != result.latestRevision {
+            remoteLatestRevision = result.latestRevision
+        }
+        if hasRemoteUpdates != remoteDetected {
+            hasRemoteUpdates = remoteDetected
+        }
+        guard !isSyncing && !isSeeding else { return }
+        evaluateInitialStatus()
     }
 
     private func startNetworkMonitoring() {
@@ -102,8 +271,12 @@ public final class CloudSyncService: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.isNetworkAvailable = (path.status == .satisfied)
-                if self.isNetworkAvailable && self.canSync && self.isAutoSyncEnabled {
-                    self.scheduleSync(delaySeconds: 1.0)
+                self.updateRemoteStatusPollingSchedule()
+                if self.isNetworkAvailable && self.canSync {
+                    self.checkRemoteUpdatesIfNeeded(force: false)
+                    if self.isAutoSyncEnabled {
+                        self.scheduleSync(delaySeconds: 1.0)
+                    }
                 } else if !self.isNetworkAvailable && self.canSync {
                     self.syncStatus = .outOfSync(pendingCount: self.outboxQueue.count, reason: "Sem conexão com a internet")
                 }
@@ -329,6 +502,9 @@ public final class CloudSyncService: ObservableObject {
         await MainActor.run {
             self.lastSyncDate = now
             self.syncProgress = 1.0
+            self.hasRemoteUpdates = false
+            self.remoteLatestRevision = Int64(self.lastServerRevision)
+            self.lastStatusETag = nil
             if self.outboxQueue.isEmpty {
                 self.syncStatus = .synced(lastSync: now)
             } else {

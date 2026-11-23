@@ -31,9 +31,18 @@ public struct SyncStatusIndicatorView: View {
                                 .tint(Color(hex: "#F59E0B"))
                         }
                     } else {
-                        Image(systemName: syncService.syncStatus.iconSymbol)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(iconColor)
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: syncService.syncStatus.iconSymbol)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(iconColor)
+
+                            if syncService.hasRemoteUpdates {
+                                Circle()
+                                    .fill(Color(hex: "#F59E0B"))
+                                    .frame(width: 6, height: 6)
+                                    .offset(x: 2, y: -2)
+                            }
+                        }
                     }
                 }
                 .frame(width: 20, height: 20)
@@ -52,6 +61,7 @@ public struct SyncStatusIndicatorView: View {
         case .disabled: return .secondary.opacity(0.6)
         case .synced: return Color(hex: "#10B981")
         case .syncing: return Color(hex: "#F59E0B")
+        case .remoteUpdatesAvailable: return Color(hex: "#0EA5E9")
         case .outOfSync: return Color(hex: "#F59E0B")
         case .authError: return Color(hex: "#EF4444")
         }
@@ -140,7 +150,10 @@ public struct SyncDetailPopoverContent: View {
                 Button {
                     syncService.performSync()
                 } label: {
-                    Label("Sincronizar Agora", systemImage: "arrow.clockwise")
+                    Label(
+                        syncService.hasRemoteUpdates ? "Baixar Atualizações" : "Sincronizar Agora",
+                        systemImage: syncService.hasRemoteUpdates ? "icloud.and.arrow.down.fill" : "arrow.clockwise"
+                    )
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(syncService.isSyncing || syncService.isSeeding || !syncService.canSync)
@@ -156,6 +169,7 @@ public struct SyncDetailPopoverContent: View {
         case .disabled: return .secondary.opacity(0.6)
         case .synced: return Color(hex: "#10B981")
         case .syncing: return Color(hex: "#F59E0B")
+        case .remoteUpdatesAvailable: return Color(hex: "#0EA5E9")
         case .outOfSync: return Color(hex: "#F59E0B")
         case .authError: return Color(hex: "#EF4444")
         }

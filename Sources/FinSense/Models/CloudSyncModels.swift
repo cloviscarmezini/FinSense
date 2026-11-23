@@ -6,6 +6,7 @@ public enum SyncStatus: Equatable {
     case disabled
     case synced(lastSync: Date)
     case syncing
+    case remoteUpdatesAvailable(latestRevision: Int64)
     case outOfSync(pendingCount: Int, reason: String)
     case authError(message: String)
 
@@ -14,6 +15,7 @@ public enum SyncStatus: Equatable {
         case .disabled: return "icloud"
         case .synced: return "checkmark.icloud.fill"
         case .syncing: return "arrow.triangle.2.circlepath.icloud.fill"
+        case .remoteUpdatesAvailable: return "icloud.and.arrow.down.fill"
         case .outOfSync: return "exclamationmark.icloud.fill"
         case .authError: return "xmark.icloud.fill"
         }
@@ -27,11 +29,43 @@ public enum SyncStatus: Equatable {
             return "Sincronizado em \(BRLFormatters.dateTime(date))"
         case .syncing:
             return "Sincronizando com o servidor..."
+        case .remoteUpdatesAvailable(let rev):
+            return "Atualizações na nuvem disponíveis (rev. \(rev)) • Clique para atualizar"
         case .outOfSync(let count, let reason):
             return "\(count) alteração(ões) pendente(s) • \(reason)"
         case .authError(let msg):
             return "Erro de autenticação: \(msg)"
         }
+    }
+}
+
+public struct CloudSyncStatusResponseDTO: Codable, Equatable {
+    public let latestRevision: Int64
+    public let hasChanges: Bool
+    public let serverReset: Bool
+
+    public init(latestRevision: Int64, hasChanges: Bool, serverReset: Bool = false) {
+        self.latestRevision = latestRevision
+        self.hasChanges = hasChanges
+        self.serverReset = serverReset
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case latestRevision = "latest_revision"
+        case hasChanges = "has_changes"
+        case serverReset = "server_reset"
+    }
+}
+
+public struct CloudSyncStatusCheckResult: Equatable {
+    public let status: CloudSyncStatusResponseDTO?
+    public let etag: String?
+    public let notModified: Bool
+
+    public init(status: CloudSyncStatusResponseDTO?, etag: String?, notModified: Bool) {
+        self.status = status
+        self.etag = etag
+        self.notModified = notModified
     }
 }
 

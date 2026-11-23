@@ -78,6 +78,62 @@ public final class BackendAPIClient {
         }
     }
 
+    // MARK: - Lightweight Cloud Status Check
+    public func fetchSyncStatus(
+        baseURL: String,
+        clientId: String,
+        sinceRevision: Int64,
+        ifNoneMatch: String? = nil
+    ) async throws -> CloudSyncStatusCheckResult {
+        var components = URLComponents(string: "\(baseURL)/sync/status")
+        components?.queryItems = [
+            URLQueryItem(name: "since_revision", value: String(max(0, sinceRevision))),
+            URLQueryItem(name: "client_id", value: clientId)
+        ]
+        guard let url = components?.url else { throw URLError(.badURL) }
+
+        func perform(_ token: String?) async throws -> (Data, HTTPURLResponse) {
+            var req = URLRequest(url: url)
+            req.httpMethod = "GET"
+            req.timeoutInterval = 8.0
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            if let ifNoneMatch, !ifNoneMatch.isEmpty {
+                req.setValue(ifNoneMatch, forHTTPHeaderField: "If-None-Match")
+            }
+            if let token {
+                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            let (data, response) = try await session.data(for: req)
+            guard let httpRes = response as? HTTPURLResponse else {
+                throw URLError(.badServerResponse)
+            }
+            return (data, httpRes)
+        }
+
+        let initialToken = await AuthService.shared.accessToken
+        var (data, httpRes) = try await perform(initialToken)
+        if httpRes.statusCode == 401 {
+            let renewed = await AuthService.shared.renewTokens(baseURL: baseURL)
+            if renewed, let newToken = await AuthService.shared.accessToken {
+                (data, httpRes) = try await perform(newToken)
+            } else {
+                throw URLError(.userAuthenticationRequired)
+            }
+        }
+
+        let responseETag = httpRes.value(forHTTPHeaderField: "ETag") ?? ifNoneMatch
+        if httpRes.statusCode == 304 {
+            return CloudSyncStatusCheckResult(status: nil, etag: responseETag, notModified: true)
+        }
+        guard (200...299).contains(httpRes.statusCode) else {
+            throw URLError(httpRes.statusCode == 401 ? .userAuthenticationRequired : .badServerResponse)
+        }
+
+        let decoded = try JSONDecoder().decode(CloudSyncStatusResponseDTO.self, from: data)
+        return CloudSyncStatusCheckResult(status: decoded, etag: responseETag, notModified: false)
+    }
+
     // MARK: - Reset Cloud Data
     public func resetCloudData(baseURL: String, targets: [String]? = nil) async throws {
         guard let url = URL(string: "\(baseURL)/sync/reset") else { throw URLError(.badURL) }
