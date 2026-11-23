@@ -794,7 +794,7 @@ public struct AnalyzeDiscretionarySpendingTool: AIToolProtocol {
         let targetExtra = extractDouble(parameters["targetExtraPayment"]) ?? 0.0
 
         let monthTxs = store.transactionsForMonth(targetDate)
-            .filter { $0.type == .expense && !$0.ignoreInConsolidated && store.isTransactionVisibleInCurrentScenario($0) }
+            .filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment && store.isTransactionVisibleInCurrentScenario($0) }
         let totalExpense = monthTxs.reduce(0.0) { $0 + store.effectiveTransactionAmount(for: $1) }
 
         let essentialKeywords: Set<String> = [
@@ -1249,6 +1249,28 @@ public struct GetFinancialOverviewTool: AIToolProtocol {
             ["name": cat.name, "type": cat.type.rawValue]
         }
 
+        let creditCardsJson: [[String: Any]] = store.creditCards.map { card in
+            let used = store.usedLimit(for: card.id)
+            let avail = store.availableLimit(for: card.id)
+            let cycle = CreditCardEngine.allocateInvoice(forPurchaseDate: store.selectedMonth, card: card)
+            let invSummary = store.invoiceSummary(for: card.id, year: cycle.year, month: cycle.month)
+            return [
+                "id": card.id.uuidString,
+                "name": card.name,
+                "brand": card.brand.rawValue,
+                "totalLimit": card.totalLimit,
+                "usedLimit": used,
+                "availableLimit": avail,
+                "closingDay": card.closingDay,
+                "bestPurchaseDay": card.bestPurchaseDay,
+                "dueDay": card.dueDay,
+                "currentInvoiceMonth": cycle.month,
+                "currentInvoiceYear": cycle.year,
+                "currentInvoiceAmount": invSummary?.totalAmount ?? 0.0,
+                "currentInvoiceStatus": invSummary?.status.rawValue ?? CreditCardInvoiceStatus.open.rawValue
+            ]
+        }
+
         let activeContracts = store.contracts.filter { !$0.isSettled }
         let totalLiabilities = activeContracts.reduce(0.0) { $0 + store.currentOutstandingBalance(for: $1) }
         let totalOpenDebts = store.activeDebts.reduce(0.0) { $0 + $1.originalAmount }
@@ -1264,9 +1286,12 @@ public struct GetFinancialOverviewTool: AIToolProtocol {
                 "totalPatrimonyNow": store.totalConsolidatedPatrimonyNow,
                 "totalActiveCreditContractsBalance": totalLiabilities,
                 "totalOpenDebtsAmount": totalOpenDebts,
+                "creditCardsCount": store.creditCards.count,
+                "totalCreditCardsUsedLimit": store.creditCards.reduce(0.0) { $0 + store.usedLimit(for: $1.id) },
                 "transactionsCount": store.transactions.count
             ],
             "accounts": accountsJson,
+            "creditCards": creditCardsJson,
             "contracts": contractsJson,
             "debts": debtsJson,
             "investments": investmentsJson,
@@ -1517,7 +1542,7 @@ public struct AggregateTransactionsTool: AIToolProtocol {
 
         let typeFilter = ((parameters["type"] as? String) ?? "expense").lowercased()
         if typeFilter == "expense" {
-            txs = txs.filter { $0.type == .expense }
+            txs = txs.filter { $0.type == .expense && !$0.isCreditCardInvoicePayment }
         } else if typeFilter == "income" {
             txs = txs.filter { $0.type == .income }
         }
@@ -1802,7 +1827,7 @@ public struct QueryDatabaseTool: AIToolProtocol {
             "table": [
                 "type": "string",
                 "enum": [
-                    "overview", "kpi_summary", "accounts", "contracts",
+                    "overview", "kpi_summary", "accounts", "credit_cards", "credit_card_invoices", "contracts",
                     "amortization_plans", "debts", "investments",
                     "transactions", "provisions_and_quotas", "categories"
                 ],
@@ -1921,6 +1946,75 @@ public struct QueryDatabaseTool: AIToolProtocol {
                 "count": list.count,
                 "totalCheckingBalanceNow": store.totalCheckingBalanceNow,
                 "rows": rows
+            ]
+
+        case "credit_cards":
+            var list = store.creditCards
+            if !query.isEmpty {
+                list = list.filter {
+                    normalizeSearchToken($0.name).contains(query) ||
+                    normalizeSearchToken($0.brand.rawValue).contains(query) ||
+                    $0.lastFourDigits.contains(query)
+                }
+            }
+            let rows: [[String: Any]] = list.prefix(limit).map { card in
+                let used = store.usedLimit(for: card.id)
+                let avail = store.availableLimit(for: card.id)
+                let cycle = CreditCardEngine.allocateInvoice(forPurchaseDate: targetDate, card: card)
+                let invSummary = store.invoiceSummary(for: card.id, year: cycle.year, month: cycle.month)
+                return [
+                    "id": card.id.uuidString,
+                    "name": card.name,
+                    "brand": card.brand.rawValue,
+                    "lastFourDigits": card.lastFourDigits,
+                    "totalLimit": card.totalLimit,
+                    "usedLimit": used,
+                    "availableLimit": avail,
+                    "closingDay": card.closingDay,
+                    "bestPurchaseDay": card.bestPurchaseDay,
+                    "dueDay": card.dueDay,
+                    "defaultPaymentAccount": card.defaultPaymentAccountId.flatMap { store.account(for: $0)?.name } ?? "Automática",
+                    "referenceInvoiceLabel": invSummary?.monthYearLabel ?? "",
+                    "referenceInvoiceAmount": invSummary?.totalAmount ?? 0.0,
+                    "referenceInvoiceStatus": invSummary?.status.rawValue ?? CreditCardInvoiceStatus.open.rawValue
+                ]
+            }
+            return [
+                "status": "success",
+                "table": "credit_cards",
+                "count": list.count,
+                "rows": rows
+            ]
+
+        case "credit_card_invoices":
+            let cal = store.calendar
+            let refYear = cal.component(.year, from: targetDate)
+            let refMonth = cal.component(.month, from: targetDate)
+            var invoiceRows: [[String: Any]] = []
+            for card in store.creditCards {
+                if !query.isEmpty && !normalizeSearchToken(card.name).contains(query) {
+                    continue
+                }
+                if let summary = store.invoiceSummary(for: card.id, year: refYear, month: refMonth) {
+                    if !includeSettledOrPaid && summary.status == .paid { continue }
+                    invoiceRows.append([
+                        "cardId": card.id.uuidString,
+                        "cardName": card.name,
+                        "monthYear": summary.monthYearLabel,
+                        "yearMonthKey": summary.yearMonthKey,
+                        "status": summary.status.rawValue,
+                        "totalAmount": summary.totalAmount,
+                        "closingDate": BRLFormatters.shortDate(summary.closingDate),
+                        "dueDate": BRLFormatters.shortDate(summary.dueDate),
+                        "transactionsCount": summary.transactions.count
+                    ])
+                }
+            }
+            return [
+                "status": "success",
+                "table": "credit_card_invoices",
+                "count": invoiceRows.count,
+                "rows": Array(invoiceRows.prefix(limit))
             ]
 
         case "contracts":
@@ -2153,6 +2247,10 @@ public struct QueryDatabaseTool: AIToolProtocol {
             return "kpi_summary"
         case "account", "accounts", "conta", "contas":
             return "accounts"
+        case "credit_card", "credit_cards", "cartao", "cartoes", "cartao_credito":
+            return "credit_cards"
+        case "credit_card_invoice", "credit_card_invoices", "fatura", "faturas":
+            return "credit_card_invoices"
         case "contract", "contracts", "contrato", "contratos", "emprestimo", "emprestimos", "financiamento", "financiamentos":
             return "contracts"
         case "amortization_plan", "amortization_plans", "plano", "planos", "amortizacoes":
@@ -2197,6 +2295,7 @@ public enum FinancialDatabaseContextBuilder {
             "simul", "amortiz", "quit", "fluxo", "projet", "gast", "despes",
             "receit", "teto", "cota", "provis", "invest", "conta", "parcela",
             "orcament", "caixa", "sobra", "patrimon", "quanto",
+            "cartao", "cartoes", "fatura", "limite", "credito", "melhor dia",
             "dolar", "euro", "bitcoin", "btc", "usd", "cambio", "cotacao",
             "selic", "cdi", "ipca", "inflacao", "tesouro", "cdb", "lci", "lca", "fii"
         ]
@@ -2303,7 +2402,16 @@ public enum FinancialDatabaseContextBuilder {
             }
         }
 
-        // 3. Investimentos
+        // 3. Investimentos & Cartões de Crédito
+        if norm.contains("cartao") || norm.contains("fatura") || norm.contains("limite") {
+            executedSteps.append("💳 Consultando cartões de crédito e faturas no banco FinSense...")
+            if let cardsRes = try? await QueryDatabaseTool(store: store).execute(parameters: ["table": "credit_cards"]) {
+                bundle["creditCards"] = cardsRes
+            }
+            if let invsRes = try? await QueryDatabaseTool(store: store).execute(parameters: ["table": "credit_card_invoices"]) {
+                bundle["creditCardInvoices"] = invsRes
+            }
+        }
         if norm.contains("invest") || norm.contains("reserv") || norm.contains("caixinha") || norm.contains("divid") {
             executedSteps.append("🗄️ Consultando tabela 'investments' no banco FinSense...")
             if let invRes = try? await QueryDatabaseTool(store: store).execute(parameters: ["table": "investments"]) {

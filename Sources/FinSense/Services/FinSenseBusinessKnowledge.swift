@@ -86,7 +86,10 @@ public enum FinSenseBusinessKnowledge {
        - *Cota Específica*: controla itens quantitativos planejados (ex: galões de água, passagens, aulas) baixados em unidades (`consumedUnits` / `pendingUnits`).
     5. **DÍVIDAS (`debts`) vs CONTRATOS (`credit_contracts`)**:
        - `debts` são pendências/acordos em aberto ou renegociações sem parcelas fixas automáticas recorrentes; **apenas itens com `isPaid == false` são dívidas em aberto**. Quitá-las depende de reserva em conta/investimentos ou acúmulo mensal de sobra operacional líquida.
-    6. **INVESTIMENTOS E PATRIMÔNIO CONSOLIDADO**:
+    6. **CARTÕES DE CRÉDITO, FATURAS E SEPARAÇÃO COMPETÊNCIA vs. CAIXA (`credit_cards` / `credit_card_invoices`)**:
+       - **Compras no Cartão (`isCreditCardExpense == true`)**: entram nos gráficos por categoria, orçamentos/tetos e despesas do mês da compra/parcela (**Regime de Competência**) e consomem o limite disponível do cartão. **NÃO** saem do saldo bancário no ato da compra. A alocação automática compara o dia da compra com `closingDay`: compras a partir do dia de fechamento caem na fatura do mês seguinte; parcelas usam centavos exatos (sobra na 1ª parcela).
+       - **Pagamento de Fatura (`isCreditCardInvoicePayment == true`)**: lançamento projetado automaticamente no vencimento (`dueDay`) para toda fatura > R$ 0,00 vinculada à conta bancária de pagamento. **SAI** do saldo bancário e do `Saldo Previsto` no mês do vencimento (**Regime de Caixa**), mas **NUNCA** conta como nova despesa nos gráficos de categoria ou orçamentos (evitando contagem dupla). Ao confirmar "Pagar Fatura", a fatura passa a `Paga`, o débito bancário é efetivado e o limite do cartão é restabelecido.
+    7. **INVESTIMENTOS E PATRIMÔNIO CONSOLIDADO**:
        - `totalCheckingBalanceNow` = saldo em contas correntes hoje.
        - `investmentsBalanceNow` = soma das caixinhas/aplicações com `showInConsolidated == true`.
        - `totalPatrimonyNow` = saldo em contas + investimentos consolidados.
@@ -99,6 +102,7 @@ public enum FinSenseBusinessKnowledge {
     - Cenários: `.realBase` (sem aportes planejados) vs `.withPlanning` (com aportes de `AmortizationPlan`; FGTS não sai da conta corrente, Dinheiro sai; quitação antecipada oculta parcelas posteriores).
     - Empréstimos/Financiamentos: Contagem de pagas segue débito salarial; Santander DDC usa parcelas decrescentes; Caixa TP tem crescimento especulativo mensal da parcela no caixa sem alterar o valor de quitação presente (`projectedPayoffToday`). Amortização por prazo reduz meses finais e juros ("bola de neve"). FGTS tem trava de 24 meses exceto na quitação total.
     - Dívidas (`debts`): apenas `isPaid == false` contam como dívidas em aberto.
+    - Cartões de Crédito: compras contam em Competência (gráficos/categorias/orçamentos) e consomem limite sem debitar conta corrente; apenas o Pagamento de Fatura (`isCreditCardInvoicePayment`) debita o caixa bancário no vencimento e nunca entra nos gráficos por categoria (zero contagem dupla).
     - Viabilidade: SEMPRE confira `Saldo Previsto`, `Sobra Após Planejamento` e `Saldo Atual em Contas` antes de recomendar pagamentos ou amortizações.
     """
 
@@ -124,7 +128,7 @@ public enum FinSenseBusinessKnowledge {
         Como responder usando suas ferramentas (você já tem acesso direto aos dados locais):
         - Execute a ferramenta apropriada diretamente antes de responder ao usuário, sem perguntar se pode prosseguir nem pedir confirmação para consultar o banco.
         - Simular prazo, plano de ação ou amortização de contrato -> chame `simulate_contract_plan` (passe nome/banco/termo do contrato). Apresente os cenários exatos (+500/mês, +1.000/mês, +2.000/mês ou valor pedido), parcelas eliminadas, juros economizados e viabilidade no `Saldo Previsto`.
-        - Listar empréstimos, financiamentos, contas, planos, investimentos, dívidas (`isPaid == false`), categorias ou `Saldo Previsto` -> chame `query_database` (`overview`, `kpi_summary`, `contracts`, `debts`, `accounts`, `amortization_plans`, `investments`, `provisions_and_quotas`, `transactions`, `categories`).
+        - Listar empréstimos, financiamentos, contas, cartões de crédito, faturas, planos, investimentos, dívidas (`isPaid == false`), categorias ou `Saldo Previsto` -> chame `query_database` (`overview`, `kpi_summary`, `accounts`, `credit_cards`, `credit_card_invoices`, `contracts`, `debts`, `amortization_plans`, `investments`, `provisions_and_quotas`, `transactions`, `categories`).
         - Fluxo mensal ou projeção de vários meses -> chame `get_cash_flow_and_projection`.
         - Dívidas em aberto (`isPaid == false`), investimentos, tetos/cotas ou onde cortar gastos -> chame `analyze_budgets_debts_and_cuts`.
         - Somar ou listar lançamentos por período/categoria -> chame `query_and_aggregate_transactions`.

@@ -5,6 +5,7 @@ import Foundation
 public enum RAGEntityType: String, Codable, CaseIterable, Hashable {
     case transaction = "Transação"
     case account = "Conta Bancária"
+    case creditCard = "Cartão de Crédito"
     case category = "Categoria"
     case investment = "Investimento"
     case debt = "Dívida"
@@ -113,12 +114,47 @@ public final class FinancialRAGIndex {
             ))
         }
 
+        // 1b. Indexa Cartões de Crédito e Fatura Corrente
+        for card in store.creditCards {
+            let used = store.usedLimit(for: card.id)
+            let avail = store.availableLimit(for: card.id)
+            let cycle = CreditCardEngine.allocateInvoice(forPurchaseDate: store.selectedMonth, card: card)
+            let inv = store.invoiceSummary(for: card.id, year: cycle.year, month: cycle.month)
+            let payAcc = card.defaultPaymentAccountId.flatMap { store.account(for: $0)?.name } ?? "Automática"
+            let text = """
+            Cartão de Crédito: \(card.name) (\(card.brand.rawValue)). \
+            Limite Total: \(BRLFormatters.currency(card.totalLimit)). \
+            Limite Utilizado: \(BRLFormatters.currency(used)). \
+            Limite Disponível: \(BRLFormatters.currency(avail)). \
+            Fecha dia \(card.closingDay), melhor dia de compra \(card.bestPurchaseDay), vence dia \(card.dueDay). \
+            Conta de pagamento: \(payAcc). \
+            Fatura \(inv?.monthYearLabel ?? ""): \(BRLFormatters.currency(inv?.totalAmount ?? 0)) (\(inv?.status.rawValue ?? "Aberta")).
+            """
+            docs.append(makeDocument(
+                id: "creditcard_\(card.id.uuidString)",
+                entityId: card.id,
+                entityType: .creditCard,
+                title: "Cartão de Crédito: \(card.name)",
+                content: text,
+                date: card.createdAt,
+                amount: used,
+                accountId: card.defaultPaymentAccountId,
+                metadata: [
+                    "name": card.name,
+                    "brand": card.brand.rawValue,
+                    "totalLimit": String(card.totalLimit),
+                    "usedLimit": String(used),
+                    "availableLimit": String(avail)
+                ]
+            ))
+        }
+
         // 2. Indexa Categorias com gastos do mês selecionado e acumulado
         for cat in store.categories {
             let monthTxs = store.transactionsForMonth(store.selectedMonth)
-                .filter { $0.categoryId == cat.id && !$0.ignoreInConsolidated }
+                .filter { $0.categoryId == cat.id && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment }
             let monthTotal = monthTxs.reduce(0.0) { $0 + $1.amount }
-            let allTxs = store.transactions.filter { $0.categoryId == cat.id && !$0.ignoreInConsolidated }
+            let allTxs = store.transactions.filter { $0.categoryId == cat.id && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment }
             let allTotal = allTxs.reduce(0.0) { $0 + $1.amount }
             let env = store.provisionEnvelope(forCategory: cat.id, in: store.selectedMonth)
             let envDesc = env.map {
@@ -2356,18 +2392,18 @@ public final class AgenticFinancialEngine {
 
         if isSpecificMonth {
             let m = briefing.targetMonth
-            targetTxs = store.transactionsForMonth(m).filter { $0.type == .expense && !$0.ignoreInConsolidated }
+            targetTxs = store.transactionsForMonth(m).filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment }
             periodLabel = BRLFormatters.monthYear(m)
         } else {
             let yearFiltered = store.transactions.filter { tx in
-                guard tx.type == .expense && !tx.ignoreInConsolidated else { return false }
+                guard tx.type == .expense && !tx.ignoreInConsolidated && !tx.isCreditCardInvoicePayment else { return false }
                 return cal.component(.year, from: tx.date) == targetYear
             }
             if !yearFiltered.isEmpty {
                 targetTxs = yearFiltered
                 periodLabel = String(targetYear)
             } else {
-                targetTxs = store.transactions.filter { $0.type == .expense && !$0.ignoreInConsolidated }
+                targetTxs = store.transactions.filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment }
                 periodLabel = "todo o histórico"
             }
         }
@@ -3810,7 +3846,7 @@ public final class AgenticFinancialEngine {
     ) -> (markdown: String, followUps: [String]) {
         memory.pendingQuestionKind = nil
         let monthLabel = BRLFormatters.monthYear(targetMonth)
-        let txs = store.transactionsForMonth(targetMonth).filter { !$0.ignoreInConsolidated && $0.type == .expense }
+        let txs = store.transactionsForMonth(targetMonth).filter { !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment && $0.type == .expense }
         let paidTxs = txs.filter(\.isPaid).sorted { $0.amount > $1.amount }
         let unpaidTxs = txs.filter { !$0.isPaid }.sorted { $0.date < $1.date }
 
@@ -4152,7 +4188,7 @@ public final class AgenticFinancialEngine {
         // Sub-intenção D: Visão Detalhada de Receitas e Despesas do Mês + Ranking de Categorias
         let breakdownExp = store.categoryBreakdown(for: targetMonth, type: .expense)
         let breakdownInc = store.categoryBreakdown(for: targetMonth, type: .income)
-        let topTransactions = monthTxs.filter { $0.type == .expense }.sorted { $0.amount > $1.amount }.prefix(10)
+        let topTransactions = monthTxs.filter { $0.type == .expense && !$0.isCreditCardInvoicePayment }.sorted { $0.amount > $1.amount }.prefix(10)
 
         let catLines = breakdownExp.isEmpty
             ? "• Nenhuma despesa em \(monthLabel)."
