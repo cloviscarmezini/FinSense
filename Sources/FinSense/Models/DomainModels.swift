@@ -123,6 +123,7 @@ public enum DashboardPeriodMode: String, Codable, CaseIterable, Identifiable, Ha
 public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
     case transactions
     case accounts
+    case creditCards
     case categories
     case investments
     case loans
@@ -136,6 +137,7 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .transactions: return "Transações (Despesas e Receitas)"
         case .accounts: return "Contas Bancárias"
+        case .creditCards: return "Cartões de Crédito e Faturas"
         case .categories: return "Categorias"
         case .investments: return "Investimentos"
         case .loans: return "Empréstimos"
@@ -148,7 +150,8 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
     public var subtitle: String {
         switch self {
         case .transactions: return "Remove todos os lançamentos passados, atuais e futuros"
-        case .accounts: return "Remove todas as contas cadastradas"
+        case .accounts: return "Remove todas as contas bancárias cadastradas"
+        case .creditCards: return "Remove todos os cartões, faturas e projeções vinculadas"
         case .categories: return "Remove as categorias atuais da base"
         case .investments: return "Remove todos os grupos e saldos de investimentos"
         case .loans: return "Remove todos os contratos de empréstimos"
@@ -162,6 +165,7 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .transactions: return "arrow.left.arrow.right.circle.fill"
         case .accounts: return "building.columns.fill"
+        case .creditCards: return "creditcard.fill"
         case .categories: return "square.grid.2x2.fill"
         case .investments: return "chart.line.uptrend.xyaxis.circle.fill"
         case .loans: return "banknote.fill"
@@ -2923,6 +2927,7 @@ public struct ExportedAssetFile: Codable, Hashable, Identifiable {
 
 public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Codable {
     case accounts = "accounts"
+    case creditCards = "creditCards"
     case categories = "categories"
     case transactions = "transactions"
     case investments = "investments"
@@ -2940,6 +2945,8 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
             return "Transações (Receitas e Despesas)"
         case .accounts:
             return "Contas Bancárias e Carteiras"
+        case .creditCards:
+            return "Cartões de Crédito e Faturas"
         case .categories:
             return "Categorias"
         case .investments:
@@ -2963,6 +2970,8 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
             return "Lançamentos de receitas e despesas do extrato"
         case .accounts:
             return "Contas correntes, carteiras e saldos iniciais"
+        case .creditCards:
+            return "Cartões, limites, ciclos, faturas e pagamentos vinculados"
         case .categories:
             return "Categorias personalizadas e padrões de receitas/despesas"
         case .investments:
@@ -2976,7 +2985,7 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
         case .provisions:
             return "Tetos mensais por categoria e cotas de itens específicos"
         case .assets:
-            return "Imagens personalizadas de contas/dívidas e anexos de transações"
+            return "Imagens personalizadas de contas/cartões/dívidas e anexos"
         }
     }
 
@@ -2984,6 +2993,7 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
         switch self {
         case .transactions: return "arrow.left.arrow.right.circle.fill"
         case .accounts: return "building.columns.fill"
+        case .creditCards: return "creditcard.fill"
         case .categories: return "square.grid.2x2.fill"
         case .investments: return "chart.line.uptrend.xyaxis.circle.fill"
         case .loans: return "banknote.fill"
@@ -3006,6 +3016,7 @@ public struct ImportableExpenseDraft: Identifiable, Hashable {
     public var isPaid: Bool
     public var categoryId: UUID
     public var accountId: UUID
+    public var creditCardId: UUID?
     public var isDuplicate: Bool
     public var isSelected: Bool
 
@@ -3020,6 +3031,7 @@ public struct ImportableExpenseDraft: Identifiable, Hashable {
         isPaid: Bool = true,
         categoryId: UUID,
         accountId: UUID,
+        creditCardId: UUID? = nil,
         isDuplicate: Bool = false,
         isSelected: Bool = true
     ) {
@@ -3033,6 +3045,7 @@ public struct ImportableExpenseDraft: Identifiable, Hashable {
         self.isPaid = isPaid
         self.categoryId = categoryId
         self.accountId = accountId
+        self.creditCardId = creditCardId
         self.isDuplicate = isDuplicate
         self.isSelected = isSelected
     }

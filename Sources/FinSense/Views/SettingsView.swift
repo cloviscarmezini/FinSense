@@ -347,7 +347,7 @@ public struct GeneralSettingsSectionView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Exportação Completa da Base de Dados")
                                 .font(.title3.bold())
-                            Text("Exporta automaticamente 100% dos seus dados financeiros (Categorias, Contas, Transações, Investimentos, Empréstimos, Financiamentos, Dívidas, Previsões/Cotas e Assets/Anexos) em pacote otimizado e comprimido, excluindo apenas os modelos de IA baixados.")
+                            Text("Exporta automaticamente 100% dos seus dados financeiros (Categorias, Contas, Cartões de Crédito e Faturas, Transações, Investimentos, Empréstimos, Financiamentos, Dívidas, Previsões/Cotas e Assets/Anexos) em pacote otimizado e comprimido, excluindo apenas os modelos de IA baixados.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -392,7 +392,7 @@ public struct GeneralSettingsSectionView: View {
                     Divider()
 
                     // Grade informativa de tudo o que é incluído na exportação completa
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 10) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 2), spacing: 10) {
                         ForEach(ExportDataTarget.allCases) { target in
                             HStack(spacing: 10) {
                                 Image(systemName: "checkmark.seal.fill")
@@ -479,7 +479,7 @@ public struct GeneralSettingsSectionView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Importação Seletiva e Validada de Dados")
                                 .font(.title3.bold())
-                            Text("Selecione um arquivo de backup (.fcbackup ou .json) e escolha quais itens deseja importar (Categorias, Contas, Transações, Investimentos, Empréstimos, Financiamentos, Dívidas, Previsões e Assets). Inclui barra de progresso assíncrona, validação automática de consistência referencial e bloqueio de itens duplicados.")
+                            Text("Selecione um arquivo de backup (.fcbackup ou .json) e escolha quais itens deseja importar (Categorias, Contas, Cartões de Crédito/Faturas, Transações, Investimentos, Empréstimos, Financiamentos, Dívidas, Previsões e Assets). Inclui barra de progresso assíncrona, validação automática de consistência referencial e bloqueio de itens duplicados.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -572,9 +572,10 @@ public struct GeneralSettingsSectionView: View {
                         .font(.caption.bold())
                         .foregroundStyle(.secondary)
 
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 3), spacing: 12) {
                         summaryBadge(title: "Transações", count: store.transactions.count, icon: "arrow.left.arrow.right.circle.fill")
-                        summaryBadge(title: "Contas & Cartões", count: store.accounts.count + store.creditCards.count, icon: "building.columns.fill")
+                        summaryBadge(title: "Contas", count: store.accounts.count, icon: "building.columns.fill")
+                        summaryBadge(title: "Cartões & Faturas", count: store.creditCards.count, icon: "creditcard.fill")
                         summaryBadge(title: "Categorias", count: store.categories.count, icon: "square.grid.2x2.fill")
                         summaryBadge(title: "Investimentos", count: store.investments.count, icon: "chart.line.uptrend.xyaxis.circle.fill")
                         summaryBadge(title: "Empréstimos", count: store.contracts.filter { $0.kind == .loan }.count, icon: "banknote.fill")
@@ -664,10 +665,11 @@ public struct GeneralSettingsSectionView: View {
     private func exportCountLabel(for target: ExportDataTarget) -> String {
         switch target {
         case .transactions: return "\(store.transactions.count)"
-        case .accounts:
-            return store.creditCards.isEmpty
-                ? "\(store.accounts.count)"
-                : "\(store.accounts.count) + \(store.creditCards.count) cart."
+        case .accounts: return "\(store.accounts.count)"
+        case .creditCards:
+            return store.creditCardInvoices.isEmpty
+                ? "\(store.creditCards.count)"
+                : "\(store.creditCards.count) (\(store.creditCardInvoices.count) fat.)"
         case .categories: return "\(store.categories.count)"
         case .investments: return "\(store.investments.count)"
         case .loans:
@@ -1440,10 +1442,11 @@ public struct ResetFromScratchConfirmationSheet: View {
     private func countLabel(for target: ResetDataTarget) -> String {
         switch target {
         case .transactions: return "\(store.transactions.count)"
-        case .accounts:
-            return store.creditCards.isEmpty
-                ? "\(store.accounts.count)"
-                : "\(store.accounts.count) + \(store.creditCards.count) cart."
+        case .accounts: return "\(store.accounts.count)"
+        case .creditCards:
+            return store.creditCardInvoices.isEmpty
+                ? "\(store.creditCards.count)"
+                : "\(store.creditCards.count) (\(store.creditCardInvoices.count) fat.)"
         case .categories: return "\(store.categories.count)"
         case .investments: return "\(store.investments.count)"
         case .loans:

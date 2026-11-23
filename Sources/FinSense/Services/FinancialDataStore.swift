@@ -111,6 +111,8 @@ public struct PreparedDatabaseImportPackage {
 
 public struct SelectiveImportExecutionResult {
     public var importedAccounts: Int = 0
+    public var importedCreditCards: Int = 0
+    public var importedCreditCardInvoices: Int = 0
     public var importedCategories: Int = 0
     public var importedTransactions: Int = 0
     public var importedInvestments: Int = 0
@@ -128,6 +130,7 @@ public struct SelectiveImportExecutionResult {
     public var importedCounts: [ExportDataTarget: Int] {
         [
             .accounts: importedAccounts,
+            .creditCards: importedCreditCards,
             .categories: importedCategories,
             .transactions: importedTransactions,
             .investments: importedInvestments,
@@ -140,7 +143,7 @@ public struct SelectiveImportExecutionResult {
     }
 
     public var totalImportedItems: Int {
-        importedAccounts + importedCategories + importedTransactions + importedInvestments +
+        importedAccounts + importedCreditCards + importedCategories + importedTransactions + importedInvestments +
         importedLoans + importedFinancings + importedDebts + importedProvisionsAndQuotas + importedAssets
     }
 }
@@ -688,10 +691,36 @@ public final class FinancialDataStore: ObservableObject {
             hasSeededInitialStatement = false
         }
         if targets.contains(.accounts) {
+            let deletedAccountIds = Set(accounts.map(\.id))
             accounts.removeAll()
+            if !targets.contains(.creditCards) {
+                for idx in creditCards.indices {
+                    if let defAcc = creditCards[idx].defaultPaymentAccountId, deletedAccountIds.contains(defAcc) {
+                        creditCards[idx].defaultPaymentAccountId = nil
+                    }
+                }
+                for idx in creditCardInvoices.indices {
+                    if let paidAcc = creditCardInvoices[idx].paidFromAccountId, deletedAccountIds.contains(paidAcc) {
+                        creditCardInvoices[idx].paidFromAccountId = nil
+                    }
+                }
+            }
+        }
+        if targets.contains(.creditCards) {
+            let deletedCardIds = Set(creditCards.map(\.id))
             creditCards.removeAll()
             creditCardInvoices.removeAll()
             selectedCreditCardIdForDetail = nil
+            if !targets.contains(.transactions) {
+                transactions.removeAll { tx in
+                    tx.isCreditCardInvoicePayment && (tx.creditCardId.map { deletedCardIds.contains($0) } ?? true)
+                }
+                for idx in transactions.indices where transactions[idx].creditCardId.map({ deletedCardIds.contains($0) }) ?? false {
+                    transactions[idx].creditCardId = nil
+                    transactions[idx].creditCardInvoiceYearMonthKey = nil
+                    transactions[idx].creditCardInvoiceId = nil
+                }
+            }
         }
         if targets.contains(.categories) {
             categories.removeAll()
@@ -865,8 +894,8 @@ public final class FinancialDataStore: ObservableObject {
         return FinancialDatabaseSnapshot(
             schemaVersion: 2,
             accounts: targets.contains(.accounts) ? accounts : [],
-            creditCards: targets.contains(.accounts) ? creditCards : [],
-            creditCardInvoices: targets.contains(.accounts) ? creditCardInvoices : [],
+            creditCards: targets.contains(.creditCards) ? creditCards : [],
+            creditCardInvoices: targets.contains(.creditCards) ? creditCardInvoices : [],
             categories: targets.contains(.categories) ? categories : [],
             transactions: targets.contains(.transactions) ? transactions : [],
             investments: targets.contains(.investments) ? investments : [],
@@ -1111,23 +1140,34 @@ public final class FinancialDataStore: ObservableObject {
 
         var analyses: [ExportDataTarget: ImportTargetAnalysis] = [:]
 
-        // 1. Contas (e Cartões de Crédito integrados)
-        let snapCards = snapshot.creditCards ?? []
-        let existingCardIds = Set(creditCards.map(\.id))
-        let existingCardKeys = Set(creditCards.map { "\(Self.normalizeKey($0.name))|\($0.closingDay)|\($0.dueDay)" })
+        // 1. Contas Bancárias
         let accDups = snapshot.accounts.filter {
             existingAccIds.contains($0.id) || existingAccKeys.contains("\(Self.normalizeKey($0.name))|\($0.bankPresetId ?? "")")
         }.count
+        analyses[.accounts] = ImportTargetAnalysis(
+            target: .accounts,
+            totalCount: snapshot.accounts.count,
+            newCount: max(0, snapshot.accounts.count - accDups),
+            duplicateCount: accDups
+        )
+
+        // 1b. Cartões de Crédito e Faturas
+        let snapCards = snapshot.creditCards ?? []
+        let snapInvoices = snapshot.creditCardInvoices ?? []
+        let existingCardIds = Set(creditCards.map(\.id))
+        let existingCardKeys = Set(creditCards.map { "\(Self.normalizeKey($0.name))|\($0.closingDay)|\($0.dueDay)" })
         let cardDups = snapCards.filter {
             existingCardIds.contains($0.id) || existingCardKeys.contains("\(Self.normalizeKey($0.name))|\($0.closingDay)|\($0.dueDay)")
         }.count
-        let totalAccAndCards = snapshot.accounts.count + snapCards.count
-        let totalAccCardDups = accDups + cardDups
-        analyses[.accounts] = ImportTargetAnalysis(
-            target: .accounts,
-            totalCount: totalAccAndCards,
-            newCount: max(0, totalAccAndCards - totalAccCardDups),
-            duplicateCount: totalAccCardDups
+        let creditCardsTotal = snapCards.isEmpty && !snapInvoices.isEmpty ? snapInvoices.count : snapCards.count
+        let creditCardsDups = snapCards.isEmpty && !snapInvoices.isEmpty
+            ? snapInvoices.filter { inv in creditCardInvoices.contains { $0.id == inv.id || ($0.creditCardId == inv.creditCardId && $0.yearMonthKey == inv.yearMonthKey) } }.count
+            : cardDups
+        analyses[.creditCards] = ImportTargetAnalysis(
+            target: .creditCards,
+            totalCount: creditCardsTotal,
+            newCount: max(0, creditCardsTotal - creditCardsDups),
+            duplicateCount: creditCardsDups
         )
 
         // 2. Categorias
@@ -1406,7 +1446,7 @@ public final class FinancialDataStore: ObservableObject {
             }
         }
 
-        // 2.1 Cartões de Crédito & Faturas (integrados às Contas ou referenciados por transações importadas)
+        // 2.1 Cartões de Crédito & Faturas (selecionáveis via .creditCards ou criados por consistência se referenciados por transações)
         let sourceCardsById = Dictionary(uniqueKeysWithValues: (snapshot.creditCards ?? []).map { ($0.id, $0) })
         var creditCardIdMap: [UUID: UUID] = [:]
         var existingCardById = Set(creditCards.map(\.id))
@@ -1439,10 +1479,24 @@ public final class FinancialDataStore: ObservableObject {
                 res.autoCreatedDependenciesCount += 1
                 return newCard.id
             }
-            return sourceCardId
+            // Fallback seguro caso o JSON traga lançamento de cartão sem o objeto do cartão
+            let fallbackCard = CreditCard(
+                id: sourceCardId,
+                name: "Cartão Importado",
+                totalLimit: 5_000,
+                closingDay: 25,
+                dueDay: 5,
+                defaultPaymentAccountId: accounts.first?.id
+            )
+            creditCards.append(fallbackCard)
+            existingCardById.insert(fallbackCard.id)
+            creditCardIdMap[sourceCardId] = fallbackCard.id
+            res.autoCreatedDependenciesCount += 1
+            return fallbackCard.id
         }
 
-        if selectedTargets.contains(.accounts) {
+        if selectedTargets.contains(.creditCards) {
+            onProgress?(0.32, "Validando e importando cartões de crédito e faturas...")
             for srcCard in (snapshot.creditCards ?? []) {
                 let key = "\(Self.normalizeKey(srcCard.name))|\(srcCard.closingDay)|\(srcCard.dueDay)"
                 if existingCardById.contains(srcCard.id) {
@@ -1461,19 +1515,24 @@ public final class FinancialDataStore: ObservableObject {
                     existingCardById.insert(importedCard.id)
                     existingCardByKey[key] = importedCard.id
                     creditCardIdMap[srcCard.id] = importedCard.id
-                    res.importedAccounts += 1
+                    res.importedCreditCards += 1
                 }
             }
         }
 
         var invoiceIdMap: [UUID: UUID] = [:]
-        if selectedTargets.contains(.accounts) || selectedTargets.contains(.transactions) {
+        var importedOrReferencedInvoiceIndices: [Int] = []
+        if selectedTargets.contains(.creditCards) || selectedTargets.contains(.transactions) {
             var existingInvIds = Set(creditCardInvoices.map(\.id))
             var existingInvKeys: [String: UUID] = [:]
             for inv in creditCardInvoices {
                 existingInvKeys["\(inv.creditCardId.uuidString)|\(inv.yearMonthKey)"] = inv.id
             }
             for srcInv in (snapshot.creditCardInvoices ?? []) {
+                let shouldAutoCreateFromCardTx = selectedTargets.contains(.creditCards) || snapshot.transactions.contains {
+                    $0.creditCardInvoiceId == srcInv.id || ($0.creditCardId == srcInv.creditCardId && $0.creditCardInvoiceYearMonthKey == srcInv.yearMonthKey)
+                }
+                guard shouldAutoCreateFromCardTx else { continue }
                 let mappedCardId = ensureValidCreditCardId(for: srcInv.creditCardId)
                 let key = "\(mappedCardId.uuidString)|\(srcInv.yearMonthKey)"
                 if existingInvIds.contains(srcInv.id) {
@@ -1487,9 +1546,13 @@ public final class FinancialDataStore: ObservableObject {
                         newInv.paidFromAccountId = ensureValidAccountId(for: paidAcc)
                     }
                     creditCardInvoices.append(newInv)
+                    importedOrReferencedInvoiceIndices.append(creditCardInvoices.count - 1)
                     existingInvIds.insert(newInv.id)
                     existingInvKeys[key] = newInv.id
                     invoiceIdMap[srcInv.id] = newInv.id
+                    if selectedTargets.contains(.creditCards) {
+                        res.importedCreditCardInvoices += 1
+                    }
                 }
             }
         }
@@ -1676,6 +1739,7 @@ public final class FinancialDataStore: ObservableObject {
 
         // 7. Transações (ou parcelas vinculadas a contratos recém-importados para manter consistência das parcelas restantes)
         onProgress?(0.78, "Importando transações e validando vínculos (\(snapshot.transactions.count) registros)...")
+        var transactionIdMap: [UUID: UUID] = [:]
         let shouldImportAllTransactions = selectedTargets.contains(.transactions)
         if shouldImportAllTransactions || !newlyImportedContractIds.isEmpty {
             let preExistingTxIds = Set(transactions.map(\.id))
@@ -1694,6 +1758,7 @@ public final class FinancialDataStore: ObservableObject {
                 let sig = transactionSignature(name: srcTx.name, amount: srcTx.amount, date: srcTx.date, type: srcTx.type)
                 let isPreExistingDuplicate: Bool = {
                     if preExistingTxIds.contains(srcTx.id) {
+                        transactionIdMap[srcTx.id] = srcTx.id
                         if let count = preExistingTxSigCounts[sig], count > 0 {
                             preExistingTxSigCounts[sig] = count - 1
                         }
@@ -1715,6 +1780,7 @@ public final class FinancialDataStore: ObservableObject {
                 if currentTxIds.contains(newTx.id) {
                     newTx.id = UUID()
                 }
+                transactionIdMap[srcTx.id] = newTx.id
                 if let oldCardId = srcTx.creditCardId {
                     let mappedCardId = ensureValidCreditCardId(for: oldCardId)
                     newTx.creditCardId = mappedCardId
@@ -1750,6 +1816,14 @@ public final class FinancialDataStore: ObservableObject {
                 transactions.append(newTx)
                 currentTxIds.insert(newTx.id)
                 res.importedTransactions += 1
+            }
+
+            // Remapeia paymentTransactionId nas faturas importadas para refletir o ID real na base destino
+            for idx in importedOrReferencedInvoiceIndices where creditCardInvoices.indices.contains(idx) {
+                if let oldPayTxId = creditCardInvoices[idx].paymentTransactionId,
+                   let mappedPayTxId = transactionIdMap[oldPayTxId] {
+                    creditCardInvoices[idx].paymentTransactionId = mappedPayTxId
+                }
             }
         }
 
@@ -1806,9 +1880,9 @@ public final class FinancialDataStore: ObservableObject {
         }
         if res.importedTransactions > 0 {
             sortTransactions()
-            if !creditCards.isEmpty {
-                syncAllCreditCardInvoices(saveAfter: false)
-            }
+        }
+        if !creditCards.isEmpty && (res.importedTransactions > 0 || res.importedCreditCards > 0 || res.importedCreditCardInvoices > 0) {
+            syncAllCreditCardInvoices(saveAfter: false)
         }
         if importedPlansCount > 0 {
             if let importedScenario = snapshot.budgetProjectionScenario {
@@ -1854,6 +1928,16 @@ public final class FinancialDataStore: ObservableObject {
             localAccByNormName[Self.normalizeKey(acc.name)] = acc.id
         }
 
+        var sourceCardsById: [UUID: String] = [:]
+        for card in (snapshot.creditCards ?? []) {
+            sourceCardsById[card.id] = card.name
+        }
+        let existingCardIds = Set(creditCards.map(\.id))
+        var localCardByNormName: [String: UUID] = [:]
+        for card in creditCards {
+            localCardByNormName[Self.normalizeKey(card.name)] = card.id
+        }
+
         let preExistingTxIds = Set(transactions.map(\.id))
         var remainingPreExistingTxSigCounts: [String: Int] = [:]
         remainingPreExistingTxSigCounts.reserveCapacity(transactions.count)
@@ -1876,7 +1960,22 @@ public final class FinancialDataStore: ObservableObject {
                 return inferCategoryId(forTitle: tx.name, type: tx.type)
             }()
 
+            let resolvedCreditCardId: UUID? = {
+                guard let cid = tx.creditCardId, tx.transactionOrigin != .creditCardInvoicePayment else {
+                    return nil
+                }
+                if existingCardIds.contains(cid) { return cid }
+                if let srcCardName = sourceCardsById[cid],
+                   let matched = localCardByNormName[Self.normalizeKey(srcCardName)] {
+                    return matched
+                }
+                return nil
+            }()
+
             let resolvedAccountId: UUID = {
+                if let cardId = resolvedCreditCardId {
+                    return cardId
+                }
                 if existingAccIds.contains(tx.accountId) {
                     return tx.accountId
                 }
@@ -1912,6 +2011,7 @@ public final class FinancialDataStore: ObservableObject {
                 isPaid: tx.isPaid,
                 categoryId: resolvedCategoryId,
                 accountId: resolvedAccountId,
+                creditCardId: resolvedCreditCardId,
                 isDuplicate: duplicate,
                 isSelected: !duplicate
             )
@@ -1951,6 +2051,7 @@ public final class FinancialDataStore: ObservableObject {
         }
         var currentTxIds = preExistingTxIds
 
+        var importedCardCycles: [(UUID, Int)] = []
         for draft in drafts where draft.isSelected {
             let cleanDesc = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !cleanDesc.isEmpty, draft.amount > 0 else { continue }
@@ -1979,9 +2080,9 @@ public final class FinancialDataStore: ObservableObject {
                 ? draft.categoryId
                 : inferCategoryId(forTitle: cleanDesc, type: draft.type)
 
-            let validAccountId = validAccIds.contains(draft.accountId)
-                ? draft.accountId
-                : fallbackAccId
+            let validCard = draft.type == .expense ? creditCard(for: draft.creditCardId) : nil
+            let validAccountId = validCard?.id ?? (validAccIds.contains(draft.accountId) ? draft.accountId : fallbackAccId)
+            let allocatedCycle = validCard.map { CreditCardEngine.allocateInvoice(forPurchaseDate: draft.date, card: $0, calendar: calendar) }
 
             let txId: UUID = {
                 if let orig = draft.originalTransactionId, !currentTxIds.contains(orig) {
@@ -1997,17 +2098,25 @@ public final class FinancialDataStore: ObservableObject {
                 amount: abs(draft.amount),
                 date: draft.date,
                 type: draft.type,
-                isPaid: draft.isPaid,
+                isPaid: validCard != nil ? false : draft.isPaid,
                 categoryId: validCategoryId,
-                accountId: validAccountId
+                accountId: validAccountId,
+                creditCardId: validCard?.id,
+                creditCardInvoiceYearMonthKey: allocatedCycle?.yearMonthKey
             )
             transactions.append(newTx)
             currentTxIds.insert(txId)
+            if let cardId = validCard?.id, let ymKey = allocatedCycle?.yearMonthKey {
+                importedCardCycles.append((cardId, ymKey))
+            }
             imported += 1
         }
 
         if imported > 0 {
             sortTransactions()
+            for (cardId, ymKey) in importedCardCycles {
+                syncCreditCardInvoice(cardId: cardId, yearMonthKey: ymKey, saveAfter: false)
+            }
             save()
             cloudSyncService?.enqueueAllLocalData()
             if cloudSyncService?.isAutoSyncEnabled == true {
