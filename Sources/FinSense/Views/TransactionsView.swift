@@ -24,6 +24,7 @@ public struct TransactionsView: View {
     @State private var installmentPendingRealPaymentConfirmation: FinancialTransaction? = nil
     @State private var selectedTransactionIds: Set<UUID> = []
     @State private var showBulkPaymentConfirmation: Bool = false
+    @State private var payingCreditCardInvoiceSummary: CreditCardInvoiceSummary? = nil
 
     public init(store: FinancialDataStore, llmService: LocalLLMService) {
         self.store = store
@@ -56,7 +57,7 @@ public struct TransactionsView: View {
             if let typeFilter = enforcedTypeFromSubmenu, tx.type != typeFilter {
                 return false
             }
-            if let accFilter = selectedAccountFilter, tx.accountId != accFilter {
+            if let accFilter = selectedAccountFilter, tx.accountId != accFilter && tx.creditCardId != accFilter {
                 return false
             }
             if let catFilter = selectedCategoryFilter, tx.categoryId != catFilter {
@@ -68,7 +69,7 @@ public struct TransactionsView: View {
             let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !q.isEmpty {
                 let catName = store.category(for: tx.categoryId)?.name ?? ""
-                let accName = store.account(for: tx.accountId)?.name ?? ""
+                let accName = store.account(for: tx.accountId)?.name ?? store.creditCard(for: tx.creditCardId)?.name ?? ""
                 let matches = tx.name.localizedCaseInsensitiveContains(q) ||
                               tx.details.localizedCaseInsensitiveContains(q) ||
                               catName.localizedCaseInsensitiveContains(q) ||
@@ -518,8 +519,14 @@ public struct TransactionsView: View {
                     ForEach(store.accounts) { acc in
                         Text(acc.name).tag(UUID?.some(acc.id))
                     }
+                    if !store.creditCards.isEmpty {
+                        Divider()
+                        ForEach(store.creditCards) { card in
+                            Text("💳 \(card.name)").tag(UUID?.some(card.id))
+                        }
+                    }
                 }
-                .frame(width: 155)
+                .frame(width: 175)
 
                 Toggle("Só Pendentes", isOn: $onlyPendingFilter)
                     .toggleStyle(.checkbox)
@@ -678,6 +685,11 @@ public struct TransactionsView: View {
         }
         .sheet(item: $installmentPendingRealPaymentConfirmation) { tx in
             ConfirmInstallmentPaymentModalSheet(store: store, transaction: tx)
+        }
+        .sheet(item: $payingCreditCardInvoiceSummary) { summary in
+            if let card = store.creditCard(for: summary.cardId) {
+                PayCreditCardInvoiceSheet(store: store, card: card, summary: summary)
+            }
         }
         .alert(
             transactionPendingDeletion?.isPartOfSeries == true
@@ -945,6 +957,7 @@ public struct TransactionsView: View {
     private func transactionRow(_ tx: FinancialTransaction) -> some View {
         let cat = store.category(for: tx.categoryId)
         let acc = store.account(for: tx.accountId)
+        let card = store.creditCard(for: tx.creditCardId)
         let isFuture = store.isDateInFuture(tx.date, referenceNow: store.effectiveCurrentDate)
         let projStatus = store.transactionProjectionStatus(for: tx)
         let isShadowed = projStatus == .shadowed
@@ -952,7 +965,7 @@ public struct TransactionsView: View {
         let isPayoffPlannedAmort = !isShadowed && store.isPlannedAmortizationFullPayoff(tx)
         let effectiveAmount = store.effectiveTransactionAmount(for: tx)
         let correctionBreakdown = store.installmentCorrectionBreakdown(for: tx)
-        let isEligibleForBulk = !tx.isPaid && !isShadowed
+        let isEligibleForBulk = !tx.isPaid && !isShadowed && !tx.isCreditCardExpense
         let isBulkSelected = isEligibleForBulk && selectedTransactionIds.contains(tx.id)
 
         HStack(spacing: 14) {
@@ -1074,6 +1087,29 @@ public struct TransactionsView: View {
                             .foregroundStyle(.orange)
                     }
 
+                    if tx.isCreditCardInvoicePayment {
+                        Label("Pagamento de Fatura", systemImage: "creditcard.and.123")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color(hex: "#6366F1").opacity(0.18)))
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                    } else if tx.isCreditCardExpense, let card {
+                        let invLabel: String = {
+                            if let ym = tx.creditCardInvoiceYearMonthKey {
+                                let c = CreditCardEngine.yearMonthComponents(fromKey: ym)
+                                return " • Fatura \(CreditCardEngine.shortInvoiceLabel(year: c.year, month: c.month))"
+                            }
+                            return ""
+                        }()
+                        Label("💳 \(card.name)\(invLabel)", systemImage: "creditcard.fill")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color(hex: card.colorHex).opacity(0.16)))
+                            .foregroundStyle(Color(hex: card.colorHex))
+                    }
+
                     if let attName = tx.attachmentName, let attPath = tx.attachmentPath {
                         Button {
                             NSWorkspace.shared.open(URL(fileURLWithPath: attPath))
@@ -1104,6 +1140,10 @@ public struct TransactionsView: View {
                         Text("• \(acc.name)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                    } else if let card, tx.isCreditCardExpense {
+                        Text("• 💳 \(card.name)")
+                            .font(.caption)
+                            .foregroundStyle(Color(hex: card.colorHex))
                     }
 
                     if !tx.details.isEmpty {
@@ -1117,55 +1157,104 @@ public struct TransactionsView: View {
 
             Spacer()
 
-            // Paid / Received Status & Action Button (com confirmação explícita)
-            Button {
-                if !tx.isPaid && correctionBreakdown != nil {
-                    installmentPendingRealPaymentConfirmation = tx
-                } else {
-                    transactionPendingPaymentToggle = tx
-                }
-            } label: {
-                let buttonLabel: String = {
-                    if tx.isPaid {
-                        return tx.type == .expense ? "Pago" : "Recebido"
-                    }
-                    if isPayoffPlannedAmort { return "Confirmar Liquidação" }
-                    if isPlannedAmort { return "Confirmar Pagamento" }
-                    if correctionBreakdown != nil { return "Confirmar Valor & Pagar" }
-                    return tx.type == .expense ? "Pagar" : "Receber"
+            // Paid / Received Status & Action Button (com confirmação explícita / tratamento próprio de Cartão)
+            if tx.isCreditCardExpense {
+                let invoiceSum: CreditCardInvoiceSummary? = {
+                    guard let cid = tx.creditCardId, let ym = tx.creditCardInvoiceYearMonthKey else { return nil }
+                    let comps = CreditCardEngine.yearMonthComponents(fromKey: ym)
+                    return store.invoiceSummary(for: cid, year: comps.year, month: comps.month)
                 }()
-                let buttonIcon: String = {
-                    if tx.isPaid { return "checkmark.circle.fill" }
-                    if isPayoffPlannedAmort || isPlannedAmort { return "checkmark.seal.fill" }
-                    return tx.type == .expense ? "creditcard.fill" : "arrow.down.circle.fill"
-                }()
-                let buttonTint: Color = {
-                    if tx.isPaid { return .green }
-                    if isPayoffPlannedAmort { return Color(hex: "#10B981") }
-                    if isPlannedAmort { return Color(hex: "#6366F1") }
-                    return tx.type == .expense ? Color(hex: "#0284C7") : Color(hex: "#10B981")
-                }()
+                let invStatus = invoiceSum?.status ?? .open
+                let invColor = Color(hex: invStatus.colorHex)
 
-                HStack(spacing: 5) {
-                    Image(systemName: buttonIcon)
-                    Text(buttonLabel)
-                        .font(.caption.weight(.bold))
+                Button {
+                    if let cid = tx.creditCardId {
+                        store.selectedCreditCardIdForDetail = cid
+                    }
+                    store.selectedDestination = .creditCards
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: invStatus.iconSymbol)
+                        Text(invStatus == .paid ? "Fatura Paga" : "Na Fatura (\(invStatus.rawValue))")
+                            .font(.caption.weight(.bold))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule()
+                            .fill(invColor.opacity(0.14))
+                            .overlay(
+                                Capsule()
+                                    .stroke(invColor.opacity(0.35), lineWidth: 1)
+                            )
+                    )
+                    .foregroundStyle(invColor)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(
-                    Capsule()
-                        .fill(tx.isPaid ? Color.green.opacity(0.14) : buttonTint.opacity(0.16))
-                        .overlay(
-                            Capsule()
-                                .stroke(tx.isPaid ? Color.clear : buttonTint.opacity(0.45), lineWidth: 1)
-                        )
-                )
-                .foregroundStyle(buttonTint)
+                .buttonStyle(.plain)
+                .help("Compra lançada no cartão de crédito (Regime de Competência). Clique para abrir a fatura correspondente em Cartões de Crédito.")
+            } else {
+                Button {
+                    if tx.isCreditCardInvoicePayment,
+                       !tx.isPaid,
+                       let cid = tx.creditCardId,
+                       let ym = tx.creditCardInvoiceYearMonthKey {
+                        let comps = CreditCardEngine.yearMonthComponents(fromKey: ym)
+                        if let summary = store.invoiceSummary(for: cid, year: comps.year, month: comps.month) {
+                            payingCreditCardInvoiceSummary = summary
+                            return
+                        }
+                    }
+                    if !tx.isPaid && correctionBreakdown != nil {
+                        installmentPendingRealPaymentConfirmation = tx
+                    } else {
+                        transactionPendingPaymentToggle = tx
+                    }
+                } label: {
+                    let buttonLabel: String = {
+                        if tx.isPaid {
+                            return tx.type == .expense ? "Pago" : "Recebido"
+                        }
+                        if tx.isCreditCardInvoicePayment { return "Pagar Fatura" }
+                        if isPayoffPlannedAmort { return "Confirmar Liquidação" }
+                        if isPlannedAmort { return "Confirmar Pagamento" }
+                        if correctionBreakdown != nil { return "Confirmar Valor & Pagar" }
+                        return tx.type == .expense ? "Pagar" : "Receber"
+                    }()
+                    let buttonIcon: String = {
+                        if tx.isPaid { return "checkmark.circle.fill" }
+                        if tx.isCreditCardInvoicePayment { return "creditcard.and.123" }
+                        if isPayoffPlannedAmort || isPlannedAmort { return "checkmark.seal.fill" }
+                        return tx.type == .expense ? "creditcard.fill" : "arrow.down.circle.fill"
+                    }()
+                    let buttonTint: Color = {
+                        if tx.isPaid { return .green }
+                        if tx.isCreditCardInvoicePayment { return Color(hex: "#6366F1") }
+                        if isPayoffPlannedAmort { return Color(hex: "#10B981") }
+                        if isPlannedAmort { return Color(hex: "#6366F1") }
+                        return tx.type == .expense ? Color(hex: "#0284C7") : Color(hex: "#10B981")
+                    }()
+
+                    HStack(spacing: 5) {
+                        Image(systemName: buttonIcon)
+                        Text(buttonLabel)
+                            .font(.caption.weight(.bold))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule()
+                            .fill(tx.isPaid ? Color.green.opacity(0.14) : buttonTint.opacity(0.16))
+                            .overlay(
+                                Capsule()
+                                    .stroke(tx.isPaid ? Color.clear : buttonTint.opacity(0.45), lineWidth: 1)
+                            )
+                    )
+                    .foregroundStyle(buttonTint)
+                }
+                .buttonStyle(.plain)
+                .disabled(isShadowed)
+                .help(tx.isCreditCardInvoicePayment && !tx.isPaid ? "Abrir tela de pagamento da fatura para revisar conta bancária, data e valor" : (isPayoffPlannedAmort ? "Confirmar pagamento desta liquidação planejada e quitar o contrato" : (isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (!tx.isPaid && correctionBreakdown != nil ? "Abrir modal para confirmar o valor real final da parcela e os juros efetivados na ocasião" : (tx.isPaid ? "Clique para desfazer liquidação (com confirmação)" : (isFuture ? "Pagar/Receber agora (a transação será movida para hoje após confirmação)" : (tx.type == .expense ? "Pagar transação (com confirmação)" : "Receber transação (com confirmação)")))))))
             }
-            .buttonStyle(.plain)
-            .disabled(isShadowed)
-            .help(isPayoffPlannedAmort ? "Confirmar pagamento desta liquidação planejada e quitar o contrato" : (isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (!tx.isPaid && correctionBreakdown != nil ? "Abrir modal para confirmar o valor real final da parcela e os juros efetivados na ocasião" : (tx.isPaid ? "Clique para desfazer liquidação (com confirmação)" : (isFuture ? "Pagar/Receber agora (a transação será movida para hoje após confirmação)" : (tx.type == .expense ? "Pagar transação (com confirmação)" : "Receber transação (com confirmação)"))))))
 
             // Amount
             VStack(alignment: .trailing, spacing: 1) {
@@ -1256,6 +1345,7 @@ public struct TransactionEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     public let existingTransaction: FinancialTransaction?
+    public let initialCreditCardId: UUID?
 
     @State private var type: TransactionType
     @State private var name: String = ""
@@ -1265,6 +1355,8 @@ public struct TransactionEditorSheet: View {
     @State private var isPaid: Bool = true // Marcado por default quando não está no futuro!
     @State private var categoryId: UUID = UUID()
     @State private var accountId: UUID = UUID()
+    @State private var paymentMethodIsCard: Bool = false
+    @State private var selectedCreditCardId: UUID? = nil
     @State private var ignoreInConsolidated: Bool = false
     @State private var attachmentPath: String? = nil
     @State private var attachmentName: String? = nil
@@ -1283,11 +1375,13 @@ public struct TransactionEditorSheet: View {
         store: FinancialDataStore,
         llmService: LocalLLMService,
         initialType: TransactionType,
-        existingTransaction: FinancialTransaction? = nil
+        existingTransaction: FinancialTransaction? = nil,
+        initialCreditCardId: UUID? = nil
     ) {
         self.store = store
         self.llmService = llmService
         self.existingTransaction = existingTransaction
+        self.initialCreditCardId = initialCreditCardId
         _type = State(initialValue: existingTransaction?.type ?? initialType)
     }
 
@@ -1386,7 +1480,45 @@ public struct TransactionEditorSheet: View {
                         }
                     }
 
-                    if store.accounts.isEmpty {
+                    if type == .expense && !store.creditCards.isEmpty {
+                        Picker("Meio de Pagamento", selection: $paymentMethodIsCard) {
+                            Text("Conta Bancária / Dinheiro").tag(false)
+                            Text("Cartão de Crédito").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    if paymentMethodIsCard && type == .expense && !store.creditCards.isEmpty {
+                        Picker("Cartão de Crédito", selection: $selectedCreditCardId) {
+                            ForEach(store.creditCards) { card in
+                                Text("💳 \(card.name) (Disp: \(BRLFormatters.currency(store.availableLimit(for: card.id))))")
+                                    .tag(UUID?.some(card.id))
+                            }
+                        }
+
+                        if let card = store.creditCard(for: selectedCreditCardId) {
+                            let allocated = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card)
+                            let dates = CreditCardEngine.closingAndDueDates(
+                                forInvoiceYear: allocated.year,
+                                month: allocated.month,
+                                card: card
+                            )
+                            HStack(spacing: 8) {
+                                Image(systemName: "calendar.badge.clock")
+                                    .foregroundStyle(Color(hex: card.colorHex))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Esta compra entrará na fatura de \(CreditCardEngine.fullInvoiceLabel(year: allocated.year, month: allocated.month)).")
+                                        .font(.caption.weight(.semibold))
+                                    Text("Fechamento dia \(card.closingDay) (\(BRLFormatters.shortDate(dates.closingDate))) • Vencimento dia \(card.dueDay) (\(BRLFormatters.shortDate(dates.dueDate))).")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                            }
+                            .padding(8)
+                            .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: card.colorHex).opacity(0.08)))
+                        }
+                    } else if store.accounts.isEmpty {
                         HStack {
                             Text("Nenhuma conta cadastrada.")
                                 .font(.caption)
@@ -1419,6 +1551,22 @@ public struct TransactionEditorSheet: View {
                         .pickerStyle(.segmented)
 
                         if recurrenceMode == .installment && type == .expense {
+                            if paymentMethodIsCard {
+                                HStack(spacing: 6) {
+                                    Text("Parcelamento rápido:")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    ForEach([2, 3, 6, 10, 12], id: \.self) { count in
+                                        Button("\(count)x") {
+                                            installmentsOrMonthsCount = count
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .tint(installmentsOrMonthsCount == count ? Color.accentColor : .secondary)
+                                        .controlSize(.small)
+                                    }
+                                }
+                            }
+
                             EditableIntegerStepperField(
                                 label: "Quantidade de Parcelas (Digite ou ajuste)",
                                 value: $installmentsOrMonthsCount,
@@ -1426,10 +1574,18 @@ public struct TransactionEditorSheet: View {
                                 unitSuffix: "parcelas"
                             )
                             if let totalVal = BRLFormatters.parseAmount(amountText), totalVal > 0 {
-                                let perInstallment = totalVal / Double(installmentsOrMonthsCount)
-                                Text("Serão criadas \(installmentsOrMonthsCount) parcelas mensais de \(BRLFormatters.currency(perInstallment)) somando o valor cheio de \(BRLFormatters.currency(totalVal)).")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                let parts = CreditCardEngine.splitInstallmentsExactCents(totalAmount: totalVal, count: installmentsOrMonthsCount)
+                                let firstPart = parts.first ?? 0
+                                let tailPart = parts.last ?? firstPart
+                                if abs(firstPart - tailPart) > 0.001 {
+                                    Text("1ª parcela de \(BRLFormatters.currency(firstPart)) + \(installmentsOrMonthsCount - 1)x de \(BRLFormatters.currency(tailPart)) somando exatamente \(BRLFormatters.currency(totalVal)).")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("Serão criadas \(installmentsOrMonthsCount) parcelas mensais de \(BRLFormatters.currency(firstPart)) somando o valor cheio de \(BRLFormatters.currency(totalVal)).")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         } else if recurrenceMode == .repeated {
                             EditableIntegerStepperField(
@@ -1463,15 +1619,24 @@ public struct TransactionEditorSheet: View {
                 }
 
                 Section("Status, Consolidação e Anexo") {
-                    Toggle(
-                        type == .expense ? "Pago (Desmarque para despesa não paga)" : "Recebido (Desmarque para receita pendente)",
-                        isOn: $isPaid
-                    )
+                    if paymentMethodIsCard && type == .expense {
+                        Label(
+                            "Lançamento em Cartão de Crédito: entra nos gráficos/orçamentos por Competência e debita da conta bancária apenas no pagamento da fatura.",
+                            systemImage: "creditcard.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Toggle(
+                            type == .expense ? "Pago (Desmarque para despesa não paga)" : "Recebido (Desmarque para receita pendente)",
+                            isOn: $isPaid
+                        )
 
-                    if isSelectedDateInFuture && isPaid {
-                        Text("Data no futuro (\(BRLFormatters.shortDate(date))): ao salvar como \(type == .expense ? "paga" : "recebida"), a transação será movida para a data de hoje (\(BRLFormatters.shortDate(Date()))).")
-                            .font(.caption2)
-                            .foregroundStyle(.orange)
+                        if isSelectedDateInFuture && isPaid {
+                            Text("Data no futuro (\(BRLFormatters.shortDate(date))): ao salvar como \(type == .expense ? "paga" : "recebida"), a transação será movida para a data de hoje (\(BRLFormatters.shortDate(Date()))).")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                        }
                     }
 
                     Toggle(
@@ -1543,6 +1708,13 @@ public struct TransactionEditorSheet: View {
                 isPaid = existing.isPaid
                 categoryId = existing.categoryId
                 accountId = existing.accountId
+                if let cardId = existing.creditCardId {
+                    paymentMethodIsCard = true
+                    selectedCreditCardId = cardId
+                } else {
+                    paymentMethodIsCard = false
+                    selectedCreditCardId = store.creditCards.first?.id
+                }
                 ignoreInConsolidated = existing.ignoreInConsolidated
                 attachmentPath = existing.attachmentPath
                 attachmentName = existing.attachmentName
@@ -1555,6 +1727,13 @@ public struct TransactionEditorSheet: View {
                 isPaid = !store.isDateInFuture(defaultDate)
                 categoryId = store.fallbackCategoryId(for: type)
                 accountId = store.accounts.first?.id ?? UUID()
+                if let initCardId = initialCreditCardId, store.creditCard(for: initCardId) != nil {
+                    paymentMethodIsCard = true
+                    selectedCreditCardId = initCardId
+                } else {
+                    paymentMethodIsCard = false
+                    selectedCreditCardId = store.creditCards.first?.id
+                }
             }
         }
         .sheet(isPresented: $showEmbeddedStatementImporter) {
@@ -1613,9 +1792,17 @@ public struct TransactionEditorSheet: View {
             validationError = "Informe o nome da transação."
             return
         }
-        guard !store.accounts.isEmpty else {
-            validationError = "Cadastre pelo menos uma conta bancária em Configurações → Contas antes de lançar transações."
-            return
+        let isCardExpense = (paymentMethodIsCard && type == .expense)
+        if isCardExpense {
+            guard let chosenCardId = selectedCreditCardId, store.creditCard(for: chosenCardId) != nil else {
+                validationError = "Selecione um cartão de crédito válido."
+                return
+            }
+        } else {
+            guard !store.accounts.isEmpty else {
+                validationError = "Cadastre pelo menos uma conta bancária em Configurações → Contas antes de lançar transações."
+                return
+            }
         }
         guard let parsedAmount = BRLFormatters.parseAmount(amountText), parsedAmount > 0 else {
             validationError = "Informe um valor válido maior que zero."
@@ -1623,7 +1810,9 @@ public struct TransactionEditorSheet: View {
         }
 
         let now = store.effectiveCurrentDate
-        let effectivePaid = isPaid
+        let effectiveCardId: UUID? = isCardExpense ? selectedCreditCardId : nil
+        let effectivePaid = isCardExpense ? false : isPaid
+        let effectiveAccountId = effectiveCardId ?? accountId
 
         if var existing = existingTransaction {
             let didChangeDate = !store.calendar.isDate(date, inSameDayAs: existing.date)
@@ -1631,16 +1820,17 @@ public struct TransactionEditorSheet: View {
             if didChangeDate {
                 effectiveDate = date
             } else {
-                effectiveDate = (isPaid && !existing.isPaid && store.isDateInFuture(date, referenceNow: now)) ? now : date
+                effectiveDate = (!isCardExpense && isPaid && !existing.isPaid && store.isDateInFuture(date, referenceNow: now)) ? now : date
             }
             existing.name = trimmedName
             existing.details = details.trimmingCharacters(in: .whitespacesAndNewlines)
             existing.amount = parsedAmount
             existing.date = effectiveDate
             existing.type = type
-            existing.isPaid = effectivePaid
+            existing.isPaid = isCardExpense ? existing.isPaid : effectivePaid
             existing.categoryId = categoryId
-            existing.accountId = accountId
+            existing.accountId = effectiveAccountId
+            existing.creditCardId = effectiveCardId
             existing.ignoreInConsolidated = ignoreInConsolidated
             existing.attachmentPath = attachmentPath
             existing.attachmentName = attachmentName
@@ -1653,7 +1843,7 @@ public struct TransactionEditorSheet: View {
                 dismiss()
             }
         } else {
-            let effectiveDate = (isPaid && store.isDateInFuture(date, referenceNow: now)) ? now : date
+            let effectiveDate = (!isCardExpense && isPaid && store.isDateInFuture(date, referenceNow: now)) ? now : date
             store.createTransaction(
                 name: trimmedName,
                 details: details.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1662,14 +1852,15 @@ public struct TransactionEditorSheet: View {
                 type: type,
                 isPaid: effectivePaid,
                 categoryId: categoryId,
-                accountId: accountId,
+                accountId: effectiveAccountId,
                 attachmentPath: attachmentPath,
                 attachmentName: attachmentName,
                 ignoreInConsolidated: ignoreInConsolidated,
                 recurrenceMode: recurrenceMode,
                 installmentsOrMonthsCount: installmentsOrMonthsCount,
                 recurrenceFrequency: recurrenceFrequency,
-                referenceNow: now
+                referenceNow: now,
+                creditCardId: effectiveCardId
             )
             dismiss()
         }
@@ -1750,12 +1941,18 @@ public struct StatementImportSheet: View {
                     }
                 }
 
-                Picker("Conta Destino", selection: $selectedAccountId) {
+                Picker("Conta / Cartão Destino", selection: $selectedAccountId) {
                     ForEach(store.accounts) { acc in
                         Text(acc.name).tag(acc.id)
                     }
+                    if !store.creditCards.isEmpty {
+                        Divider()
+                        ForEach(store.creditCards) { card in
+                            Text("💳 \(card.name)").tag(card.id)
+                        }
+                    }
                 }
-                .frame(width: 220)
+                .frame(width: 230)
 
                 Spacer()
 
@@ -2012,8 +2209,8 @@ public struct StatementImportSheet: View {
                 Spacer()
 
                 Button {
-                    guard !store.accounts.isEmpty else {
-                        importSummaryMessage = "Atenção: Cadastre pelo menos uma conta bancária em Configurações → Contas antes de importar transações."
+                    guard !store.accounts.isEmpty || !store.creditCards.isEmpty else {
+                        importSummaryMessage = "Atenção: Cadastre pelo menos uma conta bancária ou cartão em Configurações → Contas antes de importar transações."
                         return
                     }
                     let summary = store.importParsedTransactions(
@@ -2039,6 +2236,7 @@ public struct StatementImportSheet: View {
         .onAppear {
             selectedAccountId = store.accounts.first(where: { $0.bankPresetId == "itau" })?.id
                 ?? store.accounts.first?.id
+                ?? store.creditCards.first?.id
                 ?? UUID()
         }
         .sheet(item: $editingParsedItem) { itemToEdit in

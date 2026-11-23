@@ -574,7 +574,7 @@ public struct GeneralSettingsSectionView: View {
 
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 12), count: 4), spacing: 12) {
                         summaryBadge(title: "Transações", count: store.transactions.count, icon: "arrow.left.arrow.right.circle.fill")
-                        summaryBadge(title: "Contas", count: store.accounts.count, icon: "building.columns.fill")
+                        summaryBadge(title: "Contas & Cartões", count: store.accounts.count + store.creditCards.count, icon: "building.columns.fill")
                         summaryBadge(title: "Categorias", count: store.categories.count, icon: "square.grid.2x2.fill")
                         summaryBadge(title: "Investimentos", count: store.investments.count, icon: "chart.line.uptrend.xyaxis.circle.fill")
                         summaryBadge(title: "Empréstimos", count: store.contracts.filter { $0.kind == .loan }.count, icon: "banknote.fill")
@@ -664,7 +664,10 @@ public struct GeneralSettingsSectionView: View {
     private func exportCountLabel(for target: ExportDataTarget) -> String {
         switch target {
         case .transactions: return "\(store.transactions.count)"
-        case .accounts: return "\(store.accounts.count)"
+        case .accounts:
+            return store.creditCards.isEmpty
+                ? "\(store.accounts.count)"
+                : "\(store.accounts.count) + \(store.creditCards.count) cart."
         case .categories: return "\(store.categories.count)"
         case .investments: return "\(store.investments.count)"
         case .loans:
@@ -1437,7 +1440,10 @@ public struct ResetFromScratchConfirmationSheet: View {
     private func countLabel(for target: ResetDataTarget) -> String {
         switch target {
         case .transactions: return "\(store.transactions.count)"
-        case .accounts: return "\(store.accounts.count)"
+        case .accounts:
+            return store.creditCards.isEmpty
+                ? "\(store.accounts.count)"
+                : "\(store.accounts.count) + \(store.creditCards.count) cart."
         case .categories: return "\(store.categories.count)"
         case .investments: return "\(store.investments.count)"
         case .loans:
@@ -1764,13 +1770,17 @@ public struct AccountsManagementSectionView: View {
     @State private var accountPendingDeletion: BankAccount? = nil
     @State private var draggedAccountId: UUID? = nil
 
+    @State private var showCreateCardSheet: Bool = false
+    @State private var editingCard: CreditCard? = nil
+    @State private var cardPendingDeletion: CreditCard? = nil
+
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Contas Bancárias & Carteiras")
+                    Text("Contas Bancárias, Carteiras & Cartões de Crédito")
                         .font(.title3.bold())
-                    Text("Base inicial com os principais bancos e ícones oficiais, opção de anexar imagem da máquina e reordenação arrastando e soltando")
+                    Text("Base inicial com os principais bancos e ícones oficiais, gestão integrada de cartões e reordenação arrastando e soltando")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -1782,6 +1792,12 @@ public struct AccountsManagementSectionView: View {
                         .padding(.trailing, 8)
                 }
                 Button {
+                    showCreateCardSheet = true
+                } label: {
+                    Label("Adicionar Cartão", systemImage: "creditcard.fill")
+                }
+                .buttonStyle(.bordered)
+                Button {
                     showCreateAccountSheet = true
                 } label: {
                     Label("Adicionar Conta", systemImage: "plus.circle.fill")
@@ -1789,98 +1805,236 @@ public struct AccountsManagementSectionView: View {
                 .buttonStyle(.borderedProminent)
             }
 
-            if store.accounts.isEmpty {
+            if store.accounts.isEmpty && store.creditCards.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "building.columns")
                         .font(.system(size: 42))
                         .foregroundStyle(.secondary)
-                    Text("Nenhuma conta cadastrada")
+                    Text("Nenhuma conta ou cartão cadastrado")
                         .font(.headline)
-                    Text("Adicione uma conta escolhendo entre a base inicial de bancos brasileiros ou anexando um ícone/imagem da sua máquina.")
+                    Text("Adicione uma conta bancária ou cartão de crédito escolhendo entre a base inicial de bancos brasileiros ou anexando um ícone/imagem da sua máquina.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Button("Adicionar Primeira Conta") {
-                        showCreateAccountSheet = true
+                    HStack(spacing: 10) {
+                        Button("Adicionar Primeira Conta") {
+                            showCreateAccountSheet = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button("Cadastrar Cartão de Crédito") {
+                            showCreateCardSheet = true
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.borderedProminent)
                 }
                 .frame(maxWidth: .infinity, minHeight: 240)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
-                        ForEach(store.accounts) { account in
-                            let currentBal = store.currentBalance(forAccount: account.id)
-                            let isDragging = draggedAccountId == account.id
-                            HStack(spacing: 14) {
-                                Image(systemName: "line.3.horizontal")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                    .help("Arraste para reordenar esta conta")
+                    VStack(alignment: .leading, spacing: 20) {
+                        if !store.accounts.isEmpty {
+                            LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
+                                ForEach(store.accounts) { account in
+                                    let currentBal = store.currentBalance(forAccount: account.id)
+                                    let isDragging = draggedAccountId == account.id
+                                    HStack(spacing: 14) {
+                                        Image(systemName: "line.3.horizontal")
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundStyle(.secondary)
+                                            .help("Arraste para reordenar esta conta")
 
-                                AccountAvatarView(account: account, size: 48)
+                                        AccountAvatarView(account: account, size: 48)
 
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(account.name)
-                                        .font(.headline)
-                                    if !account.agency.isEmpty || !account.accountNumber.isEmpty {
-                                        Text("Agência: \(account.agency) • Conta: \(account.accountNumber)")
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(account.name)
+                                                .font(.headline)
+                                            if !account.agency.isEmpty || !account.accountNumber.isEmpty {
+                                                Text("Agência: \(account.agency) • Conta: \(account.accountNumber)")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            Text("Saldo Inicial: \(BRLFormatters.currency(account.initialBalance))")
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                        }
+
+                                        Spacer()
+
+                                        VStack(alignment: .trailing, spacing: 6) {
+                                            Text(BRLFormatters.currency(currentBal))
+                                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                                .foregroundStyle(currentBal >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+
+                                            HStack(spacing: 6) {
+                                                Button {
+                                                    editingAccount = account
+                                                } label: {
+                                                    Image(systemName: "pencil")
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+
+                                                Button(role: .destructive) {
+                                                    accountPendingDeletion = account
+                                                } label: {
+                                                    Image(systemName: "trash")
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+                                            }
+                                        }
+                                    }
+                                    .padding(16)
+                                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .stroke(isDragging ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDragging ? 2 : 1)
+                                    )
+                                    .opacity(isDragging ? 0.65 : 1.0)
+                                    .onDrag {
+                                        draggedAccountId = account.id
+                                        return NSItemProvider(object: account.id.uuidString as NSString)
+                                    }
+                                    .onDrop(
+                                        of: [UTType.text],
+                                        delegate: AccountReorderDropDelegate(
+                                            targetAccountId: account.id,
+                                            draggedAccountId: $draggedAccountId,
+                                            store: store
+                                        )
+                                    )
+                                }
+                            }
+                            .animation(.easeInOut(duration: 0.18), value: store.accounts.map(\.id))
+                        }
+
+                        // MARK: Seção de Cartões de Crédito Integrada às Contas
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Label("Cartões de Crédito (\(store.creditCards.count))", systemImage: "creditcard.fill")
+                                    .font(.headline)
+                                Spacer()
+                                if !store.creditCards.isEmpty {
+                                    Button {
+                                        store.selectedDestination = .creditCards
+                                    } label: {
+                                        Label("Abrir Painel Completo de Faturas", systemImage: "arrow.up.right.square")
+                                            .font(.caption.weight(.semibold))
+                                    }
+                                    .buttonStyle(.link)
+                                }
+                            }
+
+                            if store.creditCards.isEmpty {
+                                HStack(spacing: 12) {
+                                    Image(systemName: "creditcard")
+                                        .font(.title2)
+                                        .foregroundStyle(.secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Nenhum cartão de crédito cadastrado")
+                                            .font(.subheadline.weight(.semibold))
+                                        Text("Cadastre um cartão com limite total, dia de fechamento, melhor dia de compra e vencimento da fatura.")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
-                                    Text("Saldo Inicial: \(BRLFormatters.currency(account.initialBalance))")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("Adicionar Cartão") {
+                                        showCreateCardSheet = true
+                                    }
+                                    .buttonStyle(.bordered)
                                 }
+                                .padding(14)
+                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                            } else {
+                                LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
+                                    ForEach(store.creditCards) { card in
+                                        let used = store.usedLimit(for: card.id)
+                                        let available = store.availableLimit(for: card.id)
+                                        let ratio = card.totalLimit > 0 ? min(1.0, max(0.0, used / card.totalLimit)) : 0.0
+                                        let payBank = card.defaultPaymentAccountId.flatMap { store.account(for: $0)?.name } ?? "Automática"
 
-                                Spacer()
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            HStack(spacing: 12) {
+                                                AccountAvatarView(
+                                                    customImagePath: card.customImagePath,
+                                                    bankPresetId: card.bankPresetId,
+                                                    fallbackSymbol: card.iconSymbol,
+                                                    colorHex: card.colorHex,
+                                                    size: 46
+                                                )
+                                                VStack(alignment: .leading, spacing: 3) {
+                                                    HStack(spacing: 6) {
+                                                        Text(card.name)
+                                                            .font(.headline)
+                                                        Text(card.brand.shortBadge)
+                                                            .font(.system(size: 10, weight: .bold))
+                                                            .padding(.horizontal, 6)
+                                                            .padding(.vertical, 2)
+                                                            .background(Capsule().fill(Color(hex: card.colorHex).opacity(0.16)))
+                                                            .foregroundStyle(Color(hex: card.colorHex))
+                                                    }
+                                                    Text("Fecha dia \(card.closingDay) • Melhor compra \(card.bestPurchaseDay) • Vence dia \(card.dueDay)")
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                    Text("Conta débito: \(payBank)")
+                                                        .font(.caption2)
+                                                        .foregroundStyle(.secondary)
+                                                }
+                                                Spacer()
+                                            }
 
-                                VStack(alignment: .trailing, spacing: 6) {
-                                    Text(BRLFormatters.currency(currentBal))
-                                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                                        .foregroundStyle(currentBal >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
+                                            ProgressView(value: ratio)
+                                                .tint(used > card.totalLimit ? .red : Color(hex: card.colorHex))
 
-                                    HStack(spacing: 6) {
-                                        Button {
-                                            editingAccount = account
-                                        } label: {
-                                            Image(systemName: "pencil")
+                                            HStack {
+                                                Text("Utilizado: \(BRLFormatters.currency(used))")
+                                                    .font(.caption.weight(.semibold))
+                                                    .foregroundStyle(used > 0 ? .orange : .secondary)
+                                                Spacer()
+                                                Text("Disponível: \(BRLFormatters.currency(available)) / \(BRLFormatters.currency(card.totalLimit))")
+                                                    .font(.caption.weight(.semibold))
+                                                    .foregroundStyle(available > 0 ? .green : .red)
+                                            }
+
+                                            HStack(spacing: 8) {
+                                                Button {
+                                                    store.selectedCreditCardIdForDetail = card.id
+                                                    store.selectedDestination = .creditCards
+                                                } label: {
+                                                    Label("Ver Faturas", systemImage: "doc.text.magnifyingglass")
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+
+                                                Spacer()
+
+                                                Button {
+                                                    editingCard = card
+                                                } label: {
+                                                    Image(systemName: "pencil")
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+
+                                                Button(role: .destructive) {
+                                                    cardPendingDeletion = card
+                                                } label: {
+                                                    Image(systemName: "trash")
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+                                            }
                                         }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
-
-                                        Button(role: .destructive) {
-                                            accountPendingDeletion = account
-                                        } label: {
-                                            Image(systemName: "trash")
-                                        }
-                                        .buttonStyle(.bordered)
-                                        .controlSize(.small)
+                                        .padding(16)
+                                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 14)
+                                                .stroke(Color(hex: card.colorHex).opacity(0.24), lineWidth: 1)
+                                        )
                                     }
                                 }
                             }
-                            .padding(16)
-                            .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .stroke(isDragging ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDragging ? 2 : 1)
-                            )
-                            .opacity(isDragging ? 0.65 : 1.0)
-                            .onDrag {
-                                draggedAccountId = account.id
-                                return NSItemProvider(object: account.id.uuidString as NSString)
-                            }
-                            .onDrop(
-                                of: [UTType.text],
-                                delegate: AccountReorderDropDelegate(
-                                    targetAccountId: account.id,
-                                    draggedAccountId: $draggedAccountId,
-                                    store: store
-                                )
-                            )
                         }
                     }
-                    .animation(.easeInOut(duration: 0.18), value: store.accounts.map(\.id))
                 }
             }
         }
@@ -1889,6 +2043,30 @@ public struct AccountsManagementSectionView: View {
         }
         .sheet(item: $editingAccount) { acc in
             AccountEditorSheet(store: store, existingAccount: acc)
+        }
+        .sheet(isPresented: $showCreateCardSheet) {
+            CreditCardEditorSheet(store: store, existingCard: nil)
+        }
+        .sheet(item: $editingCard) { card in
+            CreditCardEditorSheet(store: store, existingCard: card)
+        }
+        .alert(
+            "Confirmar Exclusão de Cartão",
+            isPresented: Binding(
+                get: { cardPendingDeletion != nil },
+                set: { if !$0 { cardPendingDeletion = nil } }
+            ),
+            presenting: cardPendingDeletion
+        ) { card in
+            Button("Excluir Cartão", role: .destructive) {
+                store.deleteCreditCard(card.id)
+                cardPendingDeletion = nil
+            }
+            Button("Cancelar", role: .cancel) {
+                cardPendingDeletion = nil
+            }
+        } message: { card in
+            Text("Deseja realmente excluir o cartão \"\(card.name)\"? As compras existentes terão a vinculação removida e projeções em aberto serão canceladas.")
         }
         .alert(
             "Confirmar Exclusão de Conta",
@@ -1939,6 +2117,7 @@ public struct AccountEditorSheet: View {
 
     public let existingAccount: BankAccount?
 
+    @State private var isCreditCardMode: Bool = false
     @State private var name: String = ""
     @State private var selectedPresetId: String? = "itau"
     @State private var customImagePath: String? = nil
@@ -1947,35 +2126,105 @@ public struct AccountEditorSheet: View {
     @State private var initialBalanceText: String = ""
     @State private var agency: String = ""
     @State private var accountNumber: String = ""
+    // Campos específicos quando isCreditCardMode == true
+    @State private var closingDay: Int = 25
+    @State private var bestPurchaseDay: Int = 26
+    @State private var bestPurchaseManuallyEdited: Bool = false
+    @State private var dueDay: Int = 5
+    @State private var defaultPaymentAccountId: UUID? = nil
+    @State private var cardBrand: CreditCardBrand = .mastercard
+    @State private var lastFourDigits: String = ""
     @State private var errorMsg: String? = nil
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(existingAccount == nil ? "Cadastro de Conta" : "Editar Conta")
-                .font(.title2.bold())
+            HStack {
+                Text(existingAccount == nil ? (isCreditCardMode ? "Cadastro de Cartão de Crédito" : "Cadastro de Conta") : "Editar Conta")
+                    .font(.title2.bold())
+                Spacer()
+                if existingAccount == nil {
+                    Picker("Tipo", selection: $isCreditCardMode) {
+                        Text("Conta Bancária / Carteira").tag(false)
+                        Text("Cartão de Crédito").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 310)
+                }
+            }
 
             Form {
-                Section("Dados da Conta") {
-                    BorderedTextField(
-                        label: "Nome da Conta",
-                        placeholder: "Ex: Itaú Unibanco, Nubank, Santander",
-                        text: $name
-                    )
-                    HStack(alignment: .bottom, spacing: 12) {
-                        BRLCurrencyTextField(
-                            label: "Saldo Inicial (R$)",
-                            text: $initialBalanceText
-                        )
+                if isCreditCardMode {
+                    Section("Dados do Cartão de Crédito") {
                         BorderedTextField(
-                            label: "Agência (Opcional)",
-                            placeholder: "Ex: 0001",
-                            text: $agency
+                            label: "Nome do Cartão",
+                            placeholder: "Ex: Cartão Principal, Cartão da Mãe",
+                            text: $name
                         )
+                        HStack(alignment: .bottom, spacing: 12) {
+                            BRLCurrencyTextField(
+                                label: "Limite Total de Crédito (R$)",
+                                text: $initialBalanceText
+                            )
+                            BorderedTextField(
+                                label: "Final (4 dígitos, opc.)",
+                                placeholder: "Ex: 4821",
+                                text: $lastFourDigits
+                            )
+                            .frame(width: 155)
+                            Picker("Bandeira", selection: $cardBrand) {
+                                ForEach(CreditCardBrand.allCases) { b in
+                                    Text(b.rawValue).tag(b)
+                                }
+                            }
+                            .frame(width: 185)
+                        }
+                        HStack(alignment: .bottom, spacing: 12) {
+                            EditableIntegerStepperField(
+                                label: "Dia Fechamento",
+                                value: $closingDay,
+                                range: 1...31
+                            )
+                            EditableIntegerStepperField(
+                                label: "Melhor Dia Compra",
+                                value: $bestPurchaseDay,
+                                range: 1...31
+                            )
+                            EditableIntegerStepperField(
+                                label: "Dia Vencimento",
+                                value: $dueDay,
+                                range: 1...31
+                            )
+                        }
+                        Picker("Conta Padrão de Pagamento (Opcional)", selection: $defaultPaymentAccountId) {
+                            Text("Selecionar automaticamente").tag(UUID?.none)
+                            ForEach(store.accounts) { acc in
+                                Text(acc.name).tag(UUID?.some(acc.id))
+                            }
+                        }
+                    }
+                } else {
+                    Section("Dados da Conta") {
                         BorderedTextField(
-                            label: "Conta (Opcional)",
-                            placeholder: "Ex: 12345-6",
-                            text: $accountNumber
+                            label: "Nome da Conta",
+                            placeholder: "Ex: Itaú Unibanco, Nubank, Santander",
+                            text: $name
                         )
+                        HStack(alignment: .bottom, spacing: 12) {
+                            BRLCurrencyTextField(
+                                label: "Saldo Inicial (R$)",
+                                text: $initialBalanceText
+                            )
+                            BorderedTextField(
+                                label: "Agência (Opcional)",
+                                placeholder: "Ex: 0001",
+                                text: $agency
+                            )
+                            BorderedTextField(
+                                label: "Conta (Opcional)",
+                                placeholder: "Ex: 12345-6",
+                                text: $accountNumber
+                            )
+                        }
                     }
                 }
 
@@ -2065,22 +2314,42 @@ public struct AccountEditorSheet: View {
             HStack {
                 Button("Cancelar") { dismiss() }
                 Spacer()
-                Button(existingAccount == nil ? "Salvar Conta" : "Atualizar Conta") {
+                Button(existingAccount == nil ? (isCreditCardMode ? "Cadastrar Cartão" : "Salvar Conta") : "Atualizar Conta") {
                     let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !cleanName.isEmpty else {
-                        errorMsg = "Informe o nome da conta."
+                        errorMsg = isCreditCardMode ? "Informe o nome do cartão." : "Informe o nome da conta."
                         return
                     }
-                    let initBal = BRLFormatters.parseAmount(initialBalanceText) ?? 0.0
-                    let symbol = BrazilianBanksCatalog.preset(for: selectedPresetId)?.symbolName ?? "building.columns.fill"
+                    let amountVal = BRLFormatters.parseAmount(initialBalanceText) ?? 0.0
+                    let symbol = BrazilianBanksCatalog.preset(for: selectedPresetId)?.symbolName ?? (isCreditCardMode ? "creditcard.fill" : "building.columns.fill")
 
-                    if var existing = existingAccount {
+                    if isCreditCardMode && existingAccount == nil {
+                        guard amountVal > 0 else {
+                            errorMsg = "Informe um limite total maior que R$ 0,00."
+                            return
+                        }
+                        let created = store.addCreditCard(
+                            name: cleanName,
+                            totalLimit: amountVal,
+                            closingDay: closingDay,
+                            bestPurchaseDay: bestPurchaseDay,
+                            dueDay: dueDay,
+                            defaultPaymentAccountId: defaultPaymentAccountId,
+                            brand: cardBrand,
+                            bankPresetId: selectedPresetId,
+                            customImagePath: customImagePath,
+                            iconSymbol: "creditcard.fill",
+                            colorHex: colorHex,
+                            lastFourDigits: lastFourDigits
+                        )
+                        store.selectedCreditCardIdForDetail = created.id
+                    } else if var existing = existingAccount {
                         existing.name = cleanName
                         existing.bankPresetId = selectedPresetId
                         existing.customImagePath = customImagePath
                         existing.iconSymbol = symbol
                         existing.colorHex = colorHex
-                        existing.initialBalance = initBal
+                        existing.initialBalance = amountVal
                         existing.agency = agency
                         existing.accountNumber = accountNumber
                         store.updateAccount(existing)
@@ -2091,7 +2360,7 @@ public struct AccountEditorSheet: View {
                             customImagePath: customImagePath,
                             iconSymbol: symbol,
                             colorHex: colorHex,
-                            initialBalance: initBal,
+                            initialBalance: amountVal,
                             agency: agency,
                             accountNumber: accountNumber
                         )
@@ -2102,7 +2371,21 @@ public struct AccountEditorSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 640, height: 540)
+        .frame(width: 660, height: isCreditCardMode ? 620 : 540)
+        .onChange(of: closingDay) { _, newClosing in
+            if !bestPurchaseManuallyEdited {
+                bestPurchaseDay = CreditCardEngine.suggestedBestPurchaseDay(forClosingDay: newClosing)
+            }
+        }
+        .onChange(of: bestPurchaseDay) { _, newBest in
+            if newBest != CreditCardEngine.suggestedBestPurchaseDay(forClosingDay: closingDay) {
+                bestPurchaseManuallyEdited = true
+            }
+        }
+        .onChange(of: lastFourDigits) { _, newVal in
+            let digits = String(newVal.filter { $0.isNumber }.prefix(4))
+            if digits != newVal { lastFourDigits = digits }
+        }
         .onAppear {
             if let existing = existingAccount {
                 name = existing.name
@@ -2112,6 +2395,9 @@ public struct AccountEditorSheet: View {
                 initialBalanceText = BRLFormatters.currency(existing.initialBalance)
                 agency = existing.agency
                 accountNumber = existing.accountNumber
+            } else {
+                defaultPaymentAccountId = store.accounts.first?.id
+                bestPurchaseDay = CreditCardEngine.suggestedBestPurchaseDay(forClosingDay: closingDay)
             }
         }
         .alert("Confirmar Remoção de Imagem", isPresented: $showRemoveImageConfirmation) {

@@ -685,6 +685,107 @@ public struct DashboardView: View {
                             .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                     )
                 }
+
+                // MARK: - Credit Cards Quick Overview (Limites & Faturas)
+                if !store.creditCards.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Label("Cartões de Crédito", systemImage: "creditcard.fill")
+                                .font(.headline)
+                            Spacer()
+                            Button("Abrir Faturas & Limites") {
+                                store.selectedDestination = .creditCards
+                            }
+                            .buttonStyle(.link)
+                            .font(.caption)
+                        }
+
+                        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+                            ForEach(store.creditCards) { card in
+                                let used = store.usedLimit(for: card.id)
+                                let available = store.availableLimit(for: card.id)
+                                let ratio = card.totalLimit > 0 ? min(1.0, max(0.0, used / card.totalLimit)) : 0.0
+                                let activeCycle = CreditCardEngine.allocateInvoice(forPurchaseDate: store.selectedMonth, card: card)
+                                let invoiceSum = store.invoiceSummary(for: card.id, year: activeCycle.year, month: activeCycle.month)
+
+                                Button {
+                                    store.selectedCreditCardIdForDetail = card.id
+                                    store.selectedDestination = .creditCards
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack(spacing: 10) {
+                                            AccountAvatarView(
+                                                customImagePath: card.customImagePath,
+                                                bankPresetId: card.bankPresetId,
+                                                fallbackSymbol: card.iconSymbol,
+                                                colorHex: card.colorHex,
+                                                size: 34
+                                            )
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(card.name)
+                                                    .font(.subheadline.weight(.semibold))
+                                                    .foregroundStyle(.primary)
+                                                    .lineLimit(1)
+                                                Text("Fecha \(card.closingDay) • Vence \(card.dueDay)")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                            Spacer()
+                                            if let invoiceSum {
+                                                Text(invoiceSum.status.rawValue)
+                                                    .font(.system(size: 10, weight: .bold))
+                                                    .padding(.horizontal, 7)
+                                                    .padding(.vertical, 2)
+                                                    .background(Capsule().fill(Color(hex: invoiceSum.status.colorHex).opacity(0.16)))
+                                                    .foregroundStyle(Color(hex: invoiceSum.status.colorHex))
+                                            }
+                                        }
+
+                                        ProgressView(value: ratio)
+                                            .tint(used > card.totalLimit ? .red : Color(hex: card.colorHex))
+
+                                        HStack {
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text("Fatura \(activeCycle.month)/\(activeCycle.year % 100)")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                                Text(BRLFormatters.currency(invoiceSum?.totalAmount ?? 0))
+                                                    .font(.caption.bold())
+                                                    .foregroundStyle(.primary)
+                                            }
+                                            Spacer()
+                                            VStack(alignment: .trailing, spacing: 1) {
+                                                Text("Disponível")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                                Text(BRLFormatters.currency(available))
+                                                    .font(.caption.bold())
+                                                    .foregroundStyle(available > 0 ? .green : .red)
+                                            }
+                                        }
+                                    }
+                                    .padding(12)
+                                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.03)))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(Color(hex: card.colorHex).opacity(0.20), lineWidth: 1)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(18)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                    )
+                }
             }
             .padding(24)
         }

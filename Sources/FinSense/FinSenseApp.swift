@@ -127,6 +127,7 @@ public struct MainContentView: View {
                         }
 
                         sidebarRow(.investments)
+                        sidebarRow(.creditCards)
                     }
 
                     Section("Passivos & Contratos") {
@@ -250,6 +251,8 @@ public struct MainContentView: View {
                     DashboardView(store: store, llmService: llmService)
                 case .transactions:
                     TransactionsView(store: store, llmService: llmService)
+                case .creditCards:
+                    CreditCardsView(store: store, llmService: llmService)
                 case .investments:
                     InvestmentsView(store: store)
                 case .loans:
