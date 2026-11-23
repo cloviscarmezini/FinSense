@@ -449,4 +449,109 @@ final class PlanningInsightsAndIntraMonthTests: XCTestCase {
         XCTAssertEqual(deltas.monthlyReviews?.first?.isCompleted, true)
         XCTAssertEqual(deltas.mlBehavioralProfiles?.first?.trainingEpochCount, 4)
     }
+
+    // MARK: - 6. Cenários Novembro / Dezembro / Janeiro (Acumulado + Normalização Passada + 2 Níveis + ML Insights)
+
+    func testIntraMonthNovDecJanScenariosAndTwoLevelAlerts() {
+        let store = makeIsolatedStore()
+        let refNow = date(year: 2026, month: 11, day: 23, hour: 10)
+        store.simulatedCurrentDate = refNow
+
+        // Mês anterior (Outubro) termina com acumulado de R$ 200
+        let acc = BankAccount(name: "Conta Corrente", initialBalance: 200.0)
+        store.accounts = [acc]
+
+        let expCat = store.categories.first(where: { $0.type == .expense })!
+        let provCat = store.categories.last(where: { $0.type == .expense && $0.id != expCat.id }) ?? expCat
+        let incCat = store.categories.first(where: { $0.type == .income })!
+
+        // Novembro (Data atual = 23/11)
+        let novTx1 = FinancialTransaction(name: "Despesa 1", amount: 100, date: date(year: 2026, month: 11, day: 1), type: .expense, isPaid: true, categoryId: expCat.id, accountId: acc.id)
+        let novTx2 = FinancialTransaction(name: "Despesa 2", amount: 110, date: date(year: 2026, month: 11, day: 4), type: .expense, isPaid: true, categoryId: expCat.id, accountId: acc.id)
+        let novRec1 = FinancialTransaction(name: "Receita 1", amount: 110, date: date(year: 2026, month: 11, day: 5), type: .income, isPaid: true, categoryId: incCat.id, accountId: acc.id)
+        let novTx3 = FinancialTransaction(name: "Despesa 3", amount: 90, date: date(year: 2026, month: 11, day: 22), type: .expense, isPaid: true, categoryId: expCat.id, accountId: acc.id)
+        let novTx4 = FinancialTransaction(name: "Despesa 4", amount: 50, date: date(year: 2026, month: 11, day: 25), type: .expense, isPaid: false, categoryId: expCat.id, accountId: acc.id)
+
+        // Dezembro (mês futuro): acumulado Nov = -40; provisões sem data = R$ 900
+        let decRec1 = FinancialTransaction(name: "Receita Dez", amount: 1000, date: date(year: 2026, month: 12, day: 1), type: .income, isPaid: false, categoryId: incCat.id, accountId: acc.id)
+        let decTx1 = FinancialTransaction(name: "Despesa Dez 1", amount: 100, date: date(year: 2026, month: 12, day: 2), type: .expense, isPaid: false, categoryId: expCat.id, accountId: acc.id)
+        let decTx2 = FinancialTransaction(name: "Despesa Dez 2", amount: 400, date: date(year: 2026, month: 12, day: 5), type: .expense, isPaid: false, categoryId: expCat.id, accountId: acc.id)
+
+        // Janeiro 2027 (mês futuro): acumulado Dez com previsões = -440; sem previsões em Jan
+        let janRec1 = FinancialTransaction(name: "Receita Jan", amount: 1040, date: date(year: 2027, month: 1, day: 1), type: .income, isPaid: false, categoryId: incCat.id, accountId: acc.id)
+        let janTx1 = FinancialTransaction(name: "Despesa Jan 1", amount: 100, date: date(year: 2027, month: 1, day: 2), type: .expense, isPaid: false, categoryId: expCat.id, accountId: acc.id)
+        let janTx2 = FinancialTransaction(name: "Despesa Jan 2", amount: 400, date: date(year: 2027, month: 1, day: 5), type: .expense, isPaid: false, categoryId: expCat.id, accountId: acc.id)
+        let janTx3 = FinancialTransaction(name: "Despesa Jan 3", amount: 150, date: date(year: 2027, month: 1, day: 6), type: .expense, isPaid: false, categoryId: expCat.id, accountId: acc.id)
+        let janTx4 = FinancialTransaction(name: "Despesa Jan 4", amount: 200, date: date(year: 2027, month: 1, day: 25), type: .expense, isPaid: false, categoryId: expCat.id, accountId: acc.id)
+
+        store.transactions = [
+            novTx1, novTx2, novRec1, novTx3, novTx4,
+            decRec1, decTx1, decTx2,
+            janRec1, janTx1, janTx2, janTx3, janTx4
+        ]
+        store.setCategoryProvision(
+            categoryId: provCat.id,
+            estimatedAmount: 900.0,
+            for: date(year: 2026, month: 12, day: 1),
+            repeatForFutureMonths: false,
+            editScope: .onlyThisMonth
+        )
+        store.invalidateDerivedCaches()
+
+        // 1. Validação Novembro
+        let novAnalysis = store.buildIntraMonthCashFlowAnalysis(for: date(year: 2026, month: 11, day: 1), referenceNow: refNow)
+        XCTAssertEqual(novAnalysis.openingBalance, 200.0, accuracy: 0.01)
+        XCTAssertEqual(novAnalysis.closingBalance, -40.0, accuracy: 0.01)
+        XCTAssertEqual(novAnalysis.cutoffTransactionIds, Set([novTx2.id, novTx4.id]))
+        XCTAssertEqual(novAnalysis.recoveryTransactionIds, Set([novRec1.id]))
+        XCTAssertEqual(novAnalysis.alertLevel, .confirmedDeficit)
+        XCTAssertEqual(novAnalysis.alertableOccasions.count, 1)
+        XCTAssertEqual(novAnalysis.alertableOccasions.first?.transactionId, novTx4.id)
+        XCTAssertEqual(novAnalysis.alertableOccasions.first?.deficitAmount ?? 0, 40.0, accuracy: 0.01)
+        XCTAssertEqual(novAnalysis.alertSummaryText, "Faltarão \(BRLFormatters.currency(40.0)) no dia 25/11")
+
+        // 2. Validação Dezembro (criticidade menor .possibleRisk: transações > 0, previsões levam a < 0)
+        let decAnalysis = store.buildIntraMonthCashFlowAnalysis(for: date(year: 2026, month: 12, day: 1), referenceNow: refNow)
+        XCTAssertEqual(decAnalysis.openingBalance, -40.0, accuracy: 0.01)
+        XCTAssertEqual(decAnalysis.recoveryTransactionIds, Set([decRec1.id]))
+        XCTAssertEqual(decAnalysis.closingBalance, 460.0, accuracy: 0.01)
+        XCTAssertEqual(decAnalysis.currentMonthProvisionsTotal, 900.0, accuracy: 0.01)
+        XCTAssertEqual(decAnalysis.closingBalanceWithProvisions, -440.0, accuracy: 0.01)
+        XCTAssertEqual(decAnalysis.alertLevel, .possibleRisk)
+        XCTAssertTrue(decAnalysis.hasIntraMonthDeficit)
+        XCTAssertTrue(decAnalysis.cutoffTransactionIds.isEmpty)
+        XCTAssertTrue(decAnalysis.deficitZoneTransactionIds.isEmpty)
+
+        // 3. Validação Janeiro (abertura -440 considerando previsão de Dezembro; duas datas futuras de déficit)
+        let janAnalysis = store.buildIntraMonthCashFlowAnalysis(for: date(year: 2027, month: 1, day: 1), referenceNow: refNow)
+        XCTAssertEqual(janAnalysis.openingBalance, -440.0, accuracy: 0.01)
+        XCTAssertEqual(janAnalysis.recoveryTransactionIds, Set([janRec1.id]))
+        XCTAssertEqual(janAnalysis.cutoffTransactionIds, Set([janTx3.id]))
+        XCTAssertEqual(janAnalysis.deepeningDeficitTransactionIds, Set([janTx4.id]))
+        XCTAssertEqual(janAnalysis.closingBalance, -250.0, accuracy: 0.01)
+        XCTAssertEqual(janAnalysis.alertLevel, .confirmedDeficit)
+        XCTAssertEqual(janAnalysis.alertableOccasions.count, 2)
+        XCTAssertEqual(
+            janAnalysis.alertSummaryText,
+            "Faltarão \(BRLFormatters.currency(50.0)) no dia 06/01 e \(BRLFormatters.currency(200.0)) no dia 25/01"
+        )
+
+        // 4. Central de Insights deve emitir crítico (Nov/Jan) e atenção (Dez)
+        _ = store.runDailyBehavioralMLAnalysisIfNeeded(force: true, referenceDate: refNow)
+        let novInsight = store.insights.first(where: { $0.fingerprint == "cash_mismatch_critical_202611" })
+        let decInsight = store.insights.first(where: { $0.fingerprint == "cash_mismatch_possible_202612" })
+        let janInsight = store.insights.first(where: { $0.fingerprint == "cash_mismatch_critical_202701" })
+        XCTAssertEqual(novInsight?.severity, .critical)
+        XCTAssertEqual(decInsight?.severity, .warning)
+        XCTAssertEqual(janInsight?.severity, .critical)
+
+        // 5. Se remover a despesa futura de 25/11, Novembro só teve vale no passado (04/11) normalizado em 05/11 -> sem alerta no card
+        store.transactions.removeAll { $0.id == novTx4.id }
+        store.invalidateDerivedCaches()
+        let novNoCardAlert = store.buildIntraMonthCashFlowAnalysis(for: date(year: 2026, month: 11, day: 1), referenceNow: refNow)
+        XCTAssertEqual(novNoCardAlert.alertLevel, .none)
+        XCTAssertFalse(novNoCardAlert.hasIntraMonthDeficit)
+        XCTAssertEqual(novNoCardAlert.cutoffTransactionIds, Set([novTx2.id]))
+        XCTAssertEqual(novNoCardAlert.recoveryTransactionIds, Set([novRec1.id]))
+    }
 }

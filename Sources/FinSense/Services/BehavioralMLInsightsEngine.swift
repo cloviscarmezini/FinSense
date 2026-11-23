@@ -85,27 +85,53 @@ public enum BehavioralMLInsightsEngine {
             amountProvider: { store.effectiveTransactionAmount(for: $0) }
         ))
 
-        // 6. Detector Contextual 4: Descasamento de Caixa Intramês
-        let intra = store.buildIntraMonthCashFlowAnalysis(for: now)
-        if intra.hasIntraMonthDeficit {
-            let fingerprint = "cash_mismatch_\(currentYMKey)"
-            let title = intra.isTemporaryTrough
-                ? "Vale de caixa intramês detectado em \(BRLFormatters.monthYear(now))"
-                : "Risco de saldo negativo em \(BRLFormatters.monthYear(now))"
-            let alertBody = intra.alertSummaryText ?? "Saldo acumulado ficará temporariamente negativo."
-            insights.append(
-                FinancialInsight(
-                    fingerprint: fingerprint,
-                    kind: .cashMismatchRisk,
-                    severity: intra.isTemporaryTrough ? .warning : .critical,
-                    title: title,
-                    message: "\(alertBody). Menor saldo previsto: \(BRLFormatters.currency(intra.minimumBalance)) (fechamento previsto: \(BRLFormatters.currency(intra.closingBalance))).",
-                    recommendation: "Antecipe uma receita ou reprograme o vencimento da conta na linha de corte antes dos dias negativos.",
-                    impactAmount: intra.shortfallAmount,
-                    confidenceScore: 0.96,
-                    yearMonthKey: currentYMKey
+        // 6. Detector Contextual 4: Descasamento de Caixa Intramês (mês atual + próximos 2 meses futuros)
+        for monthOffset in 0...2 {
+            guard let targetMonth = calendar.date(byAdding: .month, value: monthOffset, to: now) else { continue }
+            let mComps = calendar.dateComponents([.year, .month], from: targetMonth)
+            let mYMKey = (mComps.year ?? curYear) * 100 + (mComps.month ?? curMonth)
+            let intra = store.buildIntraMonthCashFlowAnalysis(for: targetMonth, referenceNow: now)
+            let monthLabel = BRLFormatters.monthYear(targetMonth)
+
+            switch intra.alertLevel {
+            case .confirmedDeficit:
+                let fingerprint = "cash_mismatch_critical_\(mYMKey)"
+                let alertBody = intra.alertSummaryText ?? "Saldo acumulado ficará negativo."
+                let title = intra.isTemporaryTrough
+                    ? "Vale de caixa intramês em \(monthLabel)"
+                    : "Falta de caixa confirmada em \(monthLabel)"
+                insights.append(
+                    FinancialInsight(
+                        fingerprint: fingerprint,
+                        kind: .cashMismatchRisk,
+                        severity: .critical,
+                        title: title,
+                        message: "\(alertBody). Menor saldo acumulado por transações: \(BRLFormatters.currency(intra.minimumBalance)) (abertura: \(BRLFormatters.currency(intra.openingBalance)) • fechamento sem previsões: \(BRLFormatters.currency(intra.closingBalance))).",
+                        recommendation: "Antecipe uma receita ou reprograme o vencimento da despesa na linha de corte antes das datas em déficit.",
+                        impactAmount: intra.shortfallAmount,
+                        confidenceScore: 0.97,
+                        yearMonthKey: mYMKey
+                    )
                 )
-            )
+            case .possibleRisk:
+                let fingerprint = "cash_mismatch_possible_\(mYMKey)"
+                let shortfallWithProv = max(0.0, -intra.closingBalanceWithProvisions)
+                insights.append(
+                    FinancialInsight(
+                        fingerprint: fingerprint,
+                        kind: .cashMismatchRisk,
+                        severity: .warning,
+                        title: "Possibilidade de caixa negativo em \(monthLabel)",
+                        message: "As transações agendadas mantêm o saldo positivo (\(BRLFormatters.currency(intra.closingBalance))), porém as previsões de gastos (\(BRLFormatters.currency(intra.currentMonthProvisionsTotal))) podem levar o caixa final para \(BRLFormatters.currency(intra.closingBalanceWithProvisions)).",
+                        recommendation: "Monitore o consumo das categorias provisionadas neste mês para evitar déficit de até \(BRLFormatters.currency(shortfallWithProv)).",
+                        impactAmount: shortfallWithProv,
+                        confidenceScore: 0.78,
+                        yearMonthKey: mYMKey
+                    )
+                )
+            case .none:
+                break
+            }
         }
 
         // 7. Fechamento Mensal Guiado (mês anterior)

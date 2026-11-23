@@ -6,20 +6,40 @@ extension FinancialDataStore {
 
     // MARK: - 1. Análise Cronológica de Fluxo de Caixa Intramês (Vale de Caixa)
 
-    public func buildIntraMonthCashFlowAnalysis(for monthReference: Date) -> IntraMonthCashFlowAnalysis {
+    public func buildIntraMonthCashFlowAnalysis(
+        for monthReference: Date,
+        referenceNow: Date? = nil
+    ) -> IntraMonthCashFlowAnalysis {
+        let now = referenceNow ?? effectiveCurrentDate
         let comps = calendar.dateComponents([.year, .month], from: monthReference)
+        let nowComps = calendar.dateComponents([.year, .month, .day], from: now)
         let ymKey = (comps.year ?? 2026) * 100 + (comps.month ?? 1)
-        if let cached = cachedIntraMonthAnalysisByYM[ymKey] {
+        let cacheKey = ymKey * 100_000 + ((nowComps.year ?? 2026) * 10000 + (nowComps.month ?? 1) * 100 + (nowComps.day ?? 1))
+
+        if referenceNow == nil, let cached = cachedIntraMonthAnalysisByYM[cacheKey] {
             return cached
         }
 
-        let isClosed = isMonthPriorToCurrent(monthReference, referenceNow: effectiveCurrentDate)
+        let isClosed = isMonthPriorToCurrent(monthReference, referenceNow: now)
+        let monthStart = startOfMonth(for: monthReference)
+        let prevMonthEnd = calendar.date(byAdding: .second, value: -1, to: monthStart) ?? monthStart
+
+        // Saldo inicial do mês = Saldo acumulado consolidado do mês anterior (inclui previsões acumuladas até M - 1)
+        let openingBalance = accumulatedConsolidatedBalance(
+            throughMonth: prevMonthEnd,
+            includeProjectedUnpaid: !isClosed
+        )
+        // Previsões do próprio mês selecionado (não entram na evolução diária das transações, geram apenas nível .possibleRisk)
+        let currentMonthProvisions = isClosed ? 0.0 : totalRemainingProvision(for: monthReference, referenceNow: now)
+        let monthTxs = transactionsForMonth(monthReference)
+
         let result = IntraMonthCashFlowEngine.analyze(
             monthReference: monthReference,
-            accounts: accounts,
-            investments: investments,
-            transactions: transactions,
+            openingBalance: openingBalance,
+            currentMonthRemainingProvisions: currentMonthProvisions,
+            monthTransactions: monthTxs,
             isClosedMonth: isClosed,
+            referenceNow: now,
             calendar: calendar,
             isVisible: { [weak self] tx in
                 self?.isTransactionVisibleInCurrentScenario(tx) ?? true
@@ -28,7 +48,9 @@ extension FinancialDataStore {
                 self?.effectiveSignedTransactionAmount(for: tx) ?? tx.signedAmount
             }
         )
-        cachedIntraMonthAnalysisByYM[ymKey] = result
+        if referenceNow == nil {
+            cachedIntraMonthAnalysisByYM[cacheKey] = result
+        }
         return result
     }
 
@@ -128,6 +150,34 @@ extension FinancialDataStore {
         }
 
         mlBehavioralProfile = output.updatedProfile
+
+        let generatedFingerprints = Set(output.generatedInsights.map(\.fingerprint))
+        let nowRef = referenceDate ?? effectiveCurrentDate
+        let calendar = Calendar.current
+        let analyzedMonthKeys: Set<Int> = Set((0...2).compactMap { offset -> Int? in
+            guard let d = calendar.date(byAdding: .month, value: offset, to: nowRef) else { return nil }
+            let c = calendar.dateComponents([.year, .month], from: d)
+            guard let y = c.year, let m = c.month else { return nil }
+            return y * 100 + m
+        })
+        let staleCashInsights = insights.filter { ins in
+            ins.kind == .cashMismatchRisk
+            && ins.feedback == .pending
+            && !generatedFingerprints.contains(ins.fingerprint)
+            && analyzedMonthKeys.contains(ins.yearMonthKey)
+        }
+        for stale in staleCashInsights {
+            cloudSyncService?.recordLocalMutation(
+                entityName: "financial_insights",
+                entityId: stale.id,
+                operation: .delete,
+                entity: stale
+            )
+        }
+        if !staleCashInsights.isEmpty {
+            let staleIds = Set(staleCashInsights.map(\.id))
+            insights.removeAll { staleIds.contains($0.id) }
+        }
 
         var newlyAdded: [FinancialInsight] = []
         for candidate in output.generatedInsights {

@@ -482,32 +482,33 @@ public struct MetricCardView: View {
 
             // 3. Linha de Subtítulo / Metadados (Base) - sem abismo vazio, espaçamento imediato
             VStack(alignment: .leading, spacing: 2) {
+                let subtitleLines = intraMonthAnalysis == nil ? 2 : 3
                 if let customSubtitle {
                     if let subtitleHelp {
                         customSubtitle
                             .font(.system(size: 11, weight: .regular))
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.82)
+                            .lineLimit(subtitleLines)
+                            .minimumScaleFactor(0.78)
                             .help(subtitleHelp)
                     } else {
                         customSubtitle
                             .font(.system(size: 11, weight: .regular))
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.82)
+                            .lineLimit(subtitleLines)
+                            .minimumScaleFactor(0.78)
                     }
                 } else if let subtitleHelp {
                     Text(subtitle)
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
+                        .lineLimit(subtitleLines)
+                        .minimumScaleFactor(0.78)
                         .help(subtitleHelp)
                 } else {
                     Text(subtitle)
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
+                        .lineLimit(subtitleLines)
+                        .minimumScaleFactor(0.78)
                 }
 
                 if let footnote, !footnote.isEmpty {
@@ -527,7 +528,7 @@ public struct MetricCardView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .frame(height: cardHeight, alignment: .topLeading)
+        .frame(minHeight: cardHeight, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
@@ -561,7 +562,11 @@ public struct IntraMonthSparklineView: View {
                     x: .value("Dia", pt.day),
                     y: .value("Saldo", pt.closingBalance)
                 )
-                .foregroundStyle(analysis.hasIntraMonthDeficit ? Color(hex: "#F59E0B") : Color(hex: "#10B981"))
+                .foregroundStyle(
+                    analysis.alertLevel == .confirmedDeficit
+                        ? Color(hex: "#EF4444")
+                        : (analysis.alertLevel == .possibleRisk ? Color(hex: "#F59E0B") : Color(hex: "#10B981"))
+                )
                 .lineStyle(StrokeStyle(lineWidth: 1.5))
 
                 if pt.closingBalance < -0.005 {

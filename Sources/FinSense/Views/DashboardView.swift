@@ -165,21 +165,31 @@ public struct DashboardView: View {
 
                 // MARK: - Alertas Contextuais (Vale Intramês + Central de Insights ML)
                 let dashIntraAnalysis: IntraMonthCashFlowAnalysis? = isAnnual ? nil : store.buildIntraMonthCashFlowAnalysis(for: store.selectedMonth)
-                if let intra = dashIntraAnalysis, intra.hasIntraMonthDeficit {
+                if let intra = dashIntraAnalysis, intra.alertLevel != .none, !kpiSummary.isPast {
+                    let isConfirmed = intra.alertLevel == .confirmedDeficit
+                    let bannerColorHex = isConfirmed ? "#EF4444" : "#F59E0B"
                     HStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle.fill")
+                        Image(systemName: isConfirmed ? "exclamationmark.triangle.fill" : "exclamationmark.circle.fill")
                             .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(Color(hex: intra.isTemporaryTrough ? "#F59E0B" : "#EF4444"))
+                            .foregroundStyle(Color(hex: bannerColorHex))
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(intra.isTemporaryTrough ? "Alerta de Descasamento de Caixa (Vale Intramês)" : "Risco de Caixa Negativo no Mês")
-                                .font(.caption.bold())
-                                .foregroundStyle(Color(hex: intra.isTemporaryTrough ? "#F59E0B" : "#EF4444"))
-                            Text("\(intra.alertSummaryText ?? "Saldo temporariamente negativo") • Menor saldo: \(BRLFormatters.currency(intra.minimumBalance)) (fechamento previsto: \(BRLFormatters.currency(intra.closingBalance))).")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                            Text(
+                                isConfirmed
+                                    ? (intra.isTemporaryTrough ? "Alerta de Descasamento de Caixa (Vale Intramês)" : "Falta de Caixa Confirmada no Mês")
+                                    : "Possibilidade de Caixa Negativo no Mês"
+                            )
+                            .font(.caption.bold())
+                            .foregroundStyle(Color(hex: bannerColorHex))
+                            Text(
+                                isConfirmed
+                                    ? "\(intra.alertSummaryText ?? "Saldo acumulado negativo") • Menor saldo por transações: \(BRLFormatters.currency(intra.minimumBalance)) (fechamento sem previsões: \(BRLFormatters.currency(intra.closingBalance)))."
+                                    : "\(intra.alertSummaryText ?? "As transações mantêm saldo positivo, mas há risco pelas previsões.") • Saldo sem previsões: \(BRLFormatters.currency(intra.closingBalance)) • Com previsões: \(BRLFormatters.currency(intra.closingBalanceWithProvisions))."
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Ver Linha de Corte") {
+                        Button(isConfirmed ? "Ver Linha de Corte" : "Ver Lançamentos") {
                             store.selectedDestination = .transactions
                         }
                         .buttonStyle(.bordered)
@@ -189,11 +199,11 @@ public struct DashboardView: View {
                     .padding(.vertical, 10)
                     .background(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color(hex: intra.isTemporaryTrough ? "#F59E0B" : "#EF4444").opacity(0.09))
+                            .fill(Color(hex: bannerColorHex).opacity(0.09))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color(hex: intra.isTemporaryTrough ? "#F59E0B" : "#EF4444").opacity(0.32), lineWidth: 1)
+                            .stroke(Color(hex: bannerColorHex).opacity(0.32), lineWidth: 1)
                     )
                 }
 
@@ -3115,15 +3125,15 @@ public struct DashboardTopKPICardsView: View {
                 )
                 .frame(maxWidth: .infinity)
 
-                // Card 6 — Saldo Previsto na Conta (com alerta de vale intramês + sparkline)
+                // Card 6 — Saldo Previsto na Conta (com alerta em 2 níveis + sparkline)
                 let projectedBalanceValue = summary.isPast
                     ? summary.projectedAccountBalance
                     : summary.balanceIfAllBudgetsConsumed
 
-                let hasTroughWarning = !summary.isPast && (intraMonthAnalysis?.hasIntraMonthDeficit == true)
+                let cardAlertLevel: IntraMonthAlertLevel = summary.isPast ? .none : (intraMonthAnalysis?.alertLevel ?? .none)
                 let projectedBalanceTint: Color = {
-                    if projectedBalanceValue < 0 { return Color(hex: "#EF4444") }
-                    if hasTroughWarning { return Color(hex: "#F59E0B") }
+                    if cardAlertLevel == .confirmedDeficit || projectedBalanceValue < 0 { return Color(hex: "#EF4444") }
+                    if cardAlertLevel == .possibleRisk { return Color(hex: "#F59E0B") }
                     return Color(hex: "#10B981")
                 }()
 
@@ -3131,7 +3141,7 @@ public struct DashboardTopKPICardsView: View {
                     if summary.isPast {
                         return "Saldo final histórico conciliado"
                     }
-                    if hasTroughWarning, let alertText = intraMonthAnalysis?.alertSummaryText {
+                    if cardAlertLevel != .none, let alertText = intraMonthAnalysis?.alertSummaryText {
                         return alertText
                     }
                     return "Se não usar o orçamento: \(BRLFormatters.currency(summary.projectedAccountBalance))"
@@ -3141,8 +3151,11 @@ public struct DashboardTopKPICardsView: View {
                     if summary.isPast {
                         return Text("Saldo final histórico conciliado").foregroundColor(.secondary)
                     }
-                    if hasTroughWarning, let alertText = intraMonthAnalysis?.alertSummaryText {
+                    if cardAlertLevel == .confirmedDeficit, let alertText = intraMonthAnalysis?.alertSummaryText {
                         return Text("⚠️ \(alertText)").fontWeight(.semibold).foregroundColor(Color(hex: "#EF4444"))
+                    }
+                    if cardAlertLevel == .possibleRisk, let alertText = intraMonthAnalysis?.alertSummaryText {
+                        return Text("⚠️ \(alertText)").fontWeight(.semibold).foregroundColor(Color(hex: "#D97706"))
                     }
                     let prefix = "Se não usar o orçamento: "
                     let valueStr = BRLFormatters.currency(summary.projectedAccountBalance)
@@ -3154,21 +3167,36 @@ public struct DashboardTopKPICardsView: View {
                     if summary.isPast {
                         return "Resultado final registrado"
                     }
-                    if hasTroughWarning {
+                    switch cardAlertLevel {
+                    case .confirmedDeficit:
                         return intraMonthAnalysis?.isTemporaryTrough == true
                             ? "Vale intramês detectado"
-                            : "Alerta: Risco de caixa negativo"
+                            : "Falta de caixa confirmada"
+                    case .possibleRisk:
+                        return "Possível déficit por previsões"
+                    case .none:
+                        if projectedBalanceValue < 0 {
+                            return "Alerta: Risco de caixa negativo"
+                        }
+                        return "Saldo projetado em conta"
                     }
-                    if projectedBalanceValue < 0 {
-                        return "Alerta: Risco de caixa negativo"
-                    }
-                    return "Saldo projetado em conta"
                 }()
 
                 let accountFootnoteColor: Color = {
                     if summary.isPast { return .secondary }
-                    if hasTroughWarning { return Color(hex: "#EF4444") }
-                    return projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                    switch cardAlertLevel {
+                    case .confirmedDeficit: return Color(hex: "#EF4444")
+                    case .possibleRisk: return Color(hex: "#D97706")
+                    case .none: return projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                    }
+                }()
+
+                let accountIcon: String = {
+                    switch cardAlertLevel {
+                    case .confirmedDeficit: return "exclamationmark.triangle.fill"
+                    case .possibleRisk: return "exclamationmark.circle.fill"
+                    case .none: return summary.isPast ? "checkmark.seal.fill" : "building.columns.fill"
+                    }
                 }()
 
                 MetricCardView(
@@ -3177,7 +3205,7 @@ public struct DashboardTopKPICardsView: View {
                     valueColor: nil,
                     subtitle: accountSubtitleText,
                     customSubtitle: accountCustomSubtitle,
-                    icon: hasTroughWarning ? "exclamationmark.triangle.fill" : (summary.isPast ? "checkmark.seal.fill" : "building.columns.fill"),
+                    icon: accountIcon,
                     tint: projectedBalanceTint,
                     footnote: accountFootnote,
                     footnoteColor: accountFootnoteColor,

@@ -209,14 +209,14 @@ public struct TransactionsView: View {
                         )
                         .frame(maxWidth: .infinity)
 
-                        // Card 4 — Saldo previsto para [data fim do mês selecionado] (com alerta de vale intramês + sparkline)
+                        // Card 4 — Saldo previsto para [data fim do mês selecionado] (com alerta em 2 níveis + sparkline)
                         let projectedBalanceValue = kpiSummary.isPast
                             ? kpiSummary.projectedAccountBalance
                             : kpiSummary.balanceIfAllBudgetsConsumed
-                        let hasIntraDeficit = !kpiSummary.isPast && (intraAnalysis?.hasIntraMonthDeficit == true)
+                        let cardAlertLevel: IntraMonthAlertLevel = kpiSummary.isPast ? .none : (intraAnalysis?.alertLevel ?? .none)
                         let projectedBalanceTint: Color = {
-                            if projectedBalanceValue < 0 { return Color(hex: "#EF4444") }
-                            if hasIntraDeficit { return Color(hex: "#F59E0B") }
+                            if cardAlertLevel == .confirmedDeficit || projectedBalanceValue < 0 { return Color(hex: "#EF4444") }
+                            if cardAlertLevel == .possibleRisk { return Color(hex: "#F59E0B") }
                             return Color(hex: "#10B981")
                         }()
                         let monthEndDateStr = BRLFormatters.shortDate(store.endOfMonth(for: store.selectedMonth))
@@ -233,7 +233,7 @@ public struct TransactionsView: View {
                             if kpiSummary.isPast {
                                 return "Saldo final histórico conciliado"
                             }
-                            if hasIntraDeficit, let alertMsg = intraAnalysis?.alertSummaryText {
+                            if cardAlertLevel != .none, let alertMsg = intraAnalysis?.alertSummaryText {
                                 return alertMsg
                             }
                             return "Se não usar o orçamento: \(BRLFormatters.currency(kpiSummary.projectedAccountBalance))"
@@ -242,8 +242,11 @@ public struct TransactionsView: View {
                             if kpiSummary.isPast {
                                 return Text("Saldo final histórico conciliado").foregroundColor(.secondary)
                             }
-                            if hasIntraDeficit, let alertMsg = intraAnalysis?.alertSummaryText {
+                            if cardAlertLevel == .confirmedDeficit, let alertMsg = intraAnalysis?.alertSummaryText {
                                 return Text("⚠️ \(alertMsg)").fontWeight(.semibold).foregroundColor(Color(hex: "#EF4444"))
+                            }
+                            if cardAlertLevel == .possibleRisk, let alertMsg = intraAnalysis?.alertSummaryText {
+                                return Text("⚠️ \(alertMsg)").fontWeight(.semibold).foregroundColor(Color(hex: "#D97706"))
                             }
                             let prefix = "Se não usar o orçamento: "
                             let valueStr = BRLFormatters.currency(kpiSummary.projectedAccountBalance)
@@ -254,15 +257,34 @@ public struct TransactionsView: View {
                             if kpiSummary.isPast {
                                 return "Resultado final registrado"
                             }
-                            if hasIntraDeficit {
+                            switch cardAlertLevel {
+                            case .confirmedDeficit:
                                 return intraAnalysis?.isTemporaryTrough == true
                                     ? "Vale intramês detectado"
-                                    : "Alerta: Risco de caixa negativo"
+                                    : "Falta de caixa confirmada"
+                            case .possibleRisk:
+                                return "Possível déficit por previsões"
+                            case .none:
+                                if projectedBalanceValue < 0 {
+                                    return "Alerta: Risco de caixa negativo"
+                                }
+                                return "Saldo projetado no fechamento"
                             }
-                            if projectedBalanceValue < 0 {
-                                return "Alerta: Risco de caixa negativo"
+                        }()
+                        let projectedFootnoteColor: Color = {
+                            if kpiSummary.isPast { return .secondary }
+                            switch cardAlertLevel {
+                            case .confirmedDeficit: return Color(hex: "#EF4444")
+                            case .possibleRisk: return Color(hex: "#D97706")
+                            case .none: return projectedBalanceTint
                             }
-                            return "Saldo projetado no fechamento"
+                        }()
+                        let projectedIcon: String = {
+                            switch cardAlertLevel {
+                            case .confirmedDeficit: return "exclamationmark.triangle.fill"
+                            case .possibleRisk: return "exclamationmark.circle.fill"
+                            case .none: return kpiSummary.isPast ? "checkmark.seal.fill" : "building.columns.fill"
+                            }
                         }()
 
                         MetricCardView(
@@ -270,10 +292,10 @@ public struct TransactionsView: View {
                             value: BRLFormatters.currency(projectedBalanceValue),
                             subtitle: projectedSubtitleText,
                             customSubtitle: projectedCustomSubtitle,
-                            icon: hasIntraDeficit ? "exclamationmark.triangle.fill" : (kpiSummary.isPast ? "checkmark.seal.fill" : "building.columns.fill"),
+                            icon: projectedIcon,
                             tint: projectedBalanceTint,
                             footnote: projectedFootnote,
-                            footnoteColor: kpiSummary.isPast ? .secondary : (hasIntraDeficit ? Color(hex: "#EF4444") : projectedBalanceTint),
+                            footnoteColor: projectedFootnoteColor,
                             intraMonthAnalysis: kpiSummary.isPast ? nil : intraAnalysis,
                             cardHeight: txRowCardHeight
                         )
@@ -627,24 +649,30 @@ public struct TransactionsView: View {
                 bulkSelectionActionBar
             }
 
-            // MARK: - Alerta de Descasamento de Caixa (Vale Intramês)
-            if let intra = intraAnalysis, intra.hasIntraMonthDeficit, !kpiSummary.isPast {
+            // MARK: - Alerta de Descasamento de Caixa (Vale Intramês em 2 Níveis)
+            if let intra = intraAnalysis, intra.alertLevel != .none, !kpiSummary.isPast {
+                let isConfirmed = intra.alertLevel == .confirmedDeficit
+                let bannerColorHex = isConfirmed ? "#EF4444" : "#F59E0B"
                 HStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Color(hex: "#EF4444"))
-                    Text("\(intra.alertSummaryText ?? "Falta de caixa temporária detectada") • Menor saldo: \(BRLFormatters.currency(intra.minimumBalance)). Veja abaixo a linha de corte e o trecho em vermelho.")
-                        .font(.caption.weight(.semibold))
+                    Image(systemName: isConfirmed ? "exclamationmark.triangle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(Color(hex: bannerColorHex))
+                    Text(
+                        isConfirmed
+                            ? "\(intra.alertSummaryText ?? "Falta de caixa confirmada") • Menor saldo por transações: \(BRLFormatters.currency(intra.minimumBalance)). Veja abaixo a linha de corte e o trecho em vermelho."
+                            : "\(intra.alertSummaryText ?? "Possibilidade de caixa negativo no mês.") • Pelas transações o caixa fecha positivo (\(BRLFormatters.currency(intra.closingBalance))), porém há \(BRLFormatters.currency(intra.currentMonthProvisionsTotal)) em previsões de gastos."
+                    )
+                    .font(.caption.weight(.semibold))
                     Spacer()
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(hex: "#EF4444").opacity(0.09))
+                        .fill(Color(hex: bannerColorHex).opacity(0.09))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color(hex: "#EF4444").opacity(0.30), lineWidth: 1)
+                        .stroke(Color(hex: bannerColorHex).opacity(0.30), lineWidth: 1)
                 )
             }
 
@@ -1003,8 +1031,9 @@ public struct TransactionsView: View {
 
     @ViewBuilder
     private func transactionRow(_ tx: FinancialTransaction, intraAnalysis: IntraMonthCashFlowAnalysis? = nil) -> some View {
-        let isCutoffTx = intraAnalysis?.cutoffTransactionId == tx.id
-        let isRecoveryTx = intraAnalysis?.recoveryTransactionId == tx.id
+        let isCutoffTx = intraAnalysis?.cutoffTransactionIds.contains(tx.id) == true
+        let isDeepeningTx = intraAnalysis?.deepeningDeficitTransactionIds.contains(tx.id) == true
+        let isRecoveryTx = intraAnalysis?.recoveryTransactionIds.contains(tx.id) == true
         let isInDeficitZone = intraAnalysis?.deficitZoneTransactionIds.contains(tx.id) == true
         let runningBalance = intraAnalysis?.runningBalanceByTransactionId[tx.id]
 
@@ -1034,6 +1063,18 @@ public struct TransactionsView: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 4)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: "#EF4444").opacity(0.14)))
+            } else if isDeepeningTx {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption.bold())
+                    Text("CAIXA NEGATIVO — Nova despesa aprofunda o déficit acumulado")
+                        .font(.caption2.bold())
+                    Spacer()
+                }
+                .foregroundStyle(Color(hex: "#EF4444"))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: "#EF4444").opacity(0.12)))
             } else if isRecoveryTx {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.up.right.circle.fill")
