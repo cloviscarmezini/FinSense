@@ -311,6 +311,8 @@ public struct SyncTombstoneDTO: Codable {
 
 public struct SyncDeltasContainerDTO: Codable {
     public let bankAccounts: [BankAccount]?
+    public let creditCards: [CreditCard]?
+    public let creditCardInvoices: [CreditCardInvoice]?
     public let categories: [CategoryItem]?
     public let financialTransactions: [FinancialTransaction]?
     public let investmentItems: [InvestmentItem]?
@@ -322,6 +324,8 @@ public struct SyncDeltasContainerDTO: Codable {
 
     public init(
         bankAccounts: [BankAccount]? = nil,
+        creditCards: [CreditCard]? = nil,
+        creditCardInvoices: [CreditCardInvoice]? = nil,
         categories: [CategoryItem]? = nil,
         financialTransactions: [FinancialTransaction]? = nil,
         investmentItems: [InvestmentItem]? = nil,
@@ -332,6 +336,8 @@ public struct SyncDeltasContainerDTO: Codable {
         categoryQuotaRules: [CategoryQuotaRule]? = nil
     ) {
         self.bankAccounts = bankAccounts
+        self.creditCards = creditCards
+        self.creditCardInvoices = creditCardInvoices
         self.categories = categories
         self.financialTransactions = financialTransactions
         self.investmentItems = investmentItems
@@ -344,6 +350,8 @@ public struct SyncDeltasContainerDTO: Codable {
 
     enum CodingKeys: String, CodingKey {
         case bankAccounts = "bank_accounts"
+        case creditCards = "credit_cards"
+        case creditCardInvoices = "credit_card_invoices"
         case categories
         case financialTransactions = "financial_transactions"
         case investmentItems = "investment_items"
@@ -374,6 +382,8 @@ public struct SyncDeltasContainerDTO: Codable {
         }
 
         self.bankAccounts = decodeItems(.bankAccounts)
+        self.creditCards = decodeItems(.creditCards)
+        self.creditCardInvoices = decodeItems(.creditCardInvoices)
         self.categories = decodeItems(.categories)
         self.financialTransactions = decodeItems(.financialTransactions)
         self.investmentItems = decodeItems(.investmentItems)
@@ -386,6 +396,8 @@ public struct SyncDeltasContainerDTO: Codable {
 
     public var isEmpty: Bool {
         (bankAccounts?.isEmpty ?? true) &&
+        (creditCards?.isEmpty ?? true) &&
+        (creditCardInvoices?.isEmpty ?? true) &&
         (categories?.isEmpty ?? true) &&
         (financialTransactions?.isEmpty ?? true) &&
         (investmentItems?.isEmpty ?? true) &&

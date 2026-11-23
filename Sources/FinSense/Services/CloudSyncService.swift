@@ -348,6 +348,8 @@ public final class CloudSyncService: ObservableObject {
         guard let store else { return }
 
         let accounts = store.accounts
+        let creditCards = store.creditCards
+        let creditCardInvoices = store.creditCardInvoices
         let categories = store.categories
         let contracts = store.contracts
         let plans = store.amortizationPlans
@@ -383,6 +385,8 @@ public final class CloudSyncService: ObservableObject {
 
         // Enqueue in strict dependency order:
         addItems(items: accounts, entityName: "bank_accounts", idKeyPath: \.id)
+        addItems(items: creditCards, entityName: "credit_cards", idKeyPath: \.id)
+        addItems(items: creditCardInvoices, entityName: "credit_card_invoices", idKeyPath: \.id)
         addItems(items: categories, entityName: "categories", idKeyPath: \.id)
         addItems(items: contracts, entityName: "credit_contracts", idKeyPath: \.id)
         addItems(items: plans, entityName: "amortization_plans", idKeyPath: \.id)
@@ -431,6 +435,8 @@ public final class CloudSyncService: ObservableObject {
                     switch change.entityName {
                     case "financial_transactions": store.transactions.removeAll { $0.id == change.entityId }
                     case "bank_accounts": store.accounts.removeAll { $0.id == change.entityId }
+                    case "credit_cards": store.creditCards.removeAll { $0.id == change.entityId }
+                    case "credit_card_invoices": store.creditCardInvoices.removeAll { $0.id == change.entityId }
                     case "categories": store.categories.removeAll { $0.id == change.entityId }
                     case "investment_items": store.investments.removeAll { $0.id == change.entityId }
                     case "debt_items": store.debts.removeAll { $0.id == change.entityId }
@@ -454,6 +460,16 @@ public final class CloudSyncService: ObservableObject {
                             let item = try decoder.decode(BankAccount.self, from: rawData)
                             if let idx = store.accounts.firstIndex(where: { $0.id == item.id }) { store.accounts[idx] = item }
                             else { store.accounts.append(item) }
+                            appliedChangesCount += 1
+                        case "credit_cards":
+                            let item = try decoder.decode(CreditCard.self, from: rawData)
+                            if let idx = store.creditCards.firstIndex(where: { $0.id == item.id }) { store.creditCards[idx] = item }
+                            else { store.creditCards.append(item) }
+                            appliedChangesCount += 1
+                        case "credit_card_invoices":
+                            let item = try decoder.decode(CreditCardInvoice.self, from: rawData)
+                            if let idx = store.creditCardInvoices.firstIndex(where: { $0.id == item.id }) { store.creditCardInvoices[idx] = item }
+                            else { store.creditCardInvoices.append(item) }
                             appliedChangesCount += 1
                         case "categories":
                             let item = try decoder.decode(CategoryItem.self, from: rawData)
@@ -525,6 +541,8 @@ public final class CloudSyncService: ObservableObject {
             switch tomb.entityName {
             case "financial_transactions": store.transactions.removeAll { $0.id == tomb.entityId }
             case "bank_accounts": store.accounts.removeAll { $0.id == tomb.entityId }
+            case "credit_cards": store.creditCards.removeAll { $0.id == tomb.entityId }
+            case "credit_card_invoices": store.creditCardInvoices.removeAll { $0.id == tomb.entityId }
             case "categories": store.categories.removeAll { $0.id == tomb.entityId }
             case "investment_items": store.investments.removeAll { $0.id == tomb.entityId }
             case "debt_items": store.debts.removeAll { $0.id == tomb.entityId }
@@ -549,6 +567,20 @@ public final class CloudSyncService: ObservableObject {
                 if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
                 if let idx = store.accounts.firstIndex(where: { $0.id == item.id }) { store.accounts[idx] = item }
                 else { store.accounts.append(item) }
+            }
+        }
+        if let cards = deltas.creditCards {
+            for item in cards {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.creditCards.firstIndex(where: { $0.id == item.id }) { store.creditCards[idx] = item }
+                else { store.creditCards.append(item) }
+            }
+        }
+        if let invoices = deltas.creditCardInvoices {
+            for item in invoices {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.creditCardInvoices.firstIndex(where: { $0.id == item.id }) { store.creditCardInvoices[idx] = item }
+                else { store.creditCardInvoices.append(item) }
             }
         }
         if let categories = deltas.categories {
@@ -613,6 +645,8 @@ public final class CloudSyncService: ObservableObject {
         seedStatusText = "Iniciando preparação da base..."
 
         let accounts = store.accounts
+        let creditCards = store.creditCards
+        let creditCardInvoices = store.creditCardInvoices
         let categories = store.categories
         let transactions = store.transactions
         let investments = store.investments
@@ -620,7 +654,7 @@ public final class CloudSyncService: ObservableObject {
         let contracts = store.contracts
         let provisions = store.provisions
         let quotas = store.categoryQuotas
-        let totalCount = accounts.count + categories.count + transactions.count + investments.count + debts.count + contracts.count + provisions.count + quotas.count
+        let totalCount = accounts.count + creditCards.count + creditCardInvoices.count + categories.count + transactions.count + investments.count + debts.count + contracts.count + provisions.count + quotas.count
 
         Task { [weak self] in
             guard let self else { return }
@@ -664,6 +698,8 @@ public final class CloudSyncService: ObservableObject {
             }
 
             await processBatch(items: accounts, entityName: "bank_accounts", idKeyPath: \.id, progressLabel: "Contas")
+            await processBatch(items: creditCards, entityName: "credit_cards", idKeyPath: \.id, progressLabel: "Cartões de Crédito")
+            await processBatch(items: creditCardInvoices, entityName: "credit_card_invoices", idKeyPath: \.id, progressLabel: "Faturas")
             await processBatch(items: categories, entityName: "categories", idKeyPath: \.id, progressLabel: "Categorias")
             await processBatch(items: transactions, entityName: "financial_transactions", idKeyPath: \.id, progressLabel: "Transações")
             await processBatch(items: investments, entityName: "investment_items", idKeyPath: \.id, progressLabel: "Investimentos")

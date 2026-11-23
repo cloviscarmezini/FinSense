@@ -7,6 +7,8 @@ import Combine
 public struct FinancialDatabaseSnapshot: Codable {
     public var schemaVersion: Int?
     public var accounts: [BankAccount]
+    public var creditCards: [CreditCard]?
+    public var creditCardInvoices: [CreditCardInvoice]?
     public var categories: [CategoryItem]
     public var transactions: [FinancialTransaction]
     public var investments: [InvestmentItem]
@@ -24,6 +26,8 @@ public struct FinancialDatabaseSnapshot: Codable {
     public init(
         schemaVersion: Int? = 2,
         accounts: [BankAccount] = [],
+        creditCards: [CreditCard]? = [],
+        creditCardInvoices: [CreditCardInvoice]? = [],
         categories: [CategoryItem] = [],
         transactions: [FinancialTransaction] = [],
         investments: [InvestmentItem] = [],
@@ -40,6 +44,8 @@ public struct FinancialDatabaseSnapshot: Codable {
     ) {
         self.schemaVersion = schemaVersion
         self.accounts = accounts
+        self.creditCards = creditCards
+        self.creditCardInvoices = creditCardInvoices
         self.categories = categories
         self.transactions = transactions
         self.investments = investments
@@ -337,6 +343,13 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var accounts: [BankAccount] = [] {
         didSet { invalidateDerivedCaches() }
     }
+    @Published public var creditCards: [CreditCard] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var creditCardInvoices: [CreditCardInvoice] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var selectedCreditCardIdForDetail: UUID? = nil
     @Published public var categories: [CategoryItem] = [] {
         didSet { invalidateDerivedCaches() }
     }
@@ -383,6 +396,7 @@ public final class FinancialDataStore: ObservableObject {
     private var isBatchLoading: Bool = false
     private var cachedCategoriesById: [UUID: CategoryItem]? = nil
     private var cachedAccountsById: [UUID: BankAccount]? = nil
+    private var cachedCreditCardsById: [UUID: CreditCard]? = nil
     private var cachedTransactionsByYM: [Int: [FinancialTransaction]]? = nil
     private var cachedTransactionsByYear: [Int: [FinancialTransaction]]? = nil
     private var cachedLoanProjections: [UUID: LoanProjectionResult] = [:]
@@ -397,6 +411,7 @@ public final class FinancialDataStore: ObservableObject {
     public func invalidateDerivedCaches() {
         cachedCategoriesById = nil
         cachedAccountsById = nil
+        cachedCreditCardsById = nil
         cachedTransactionsByYM = nil
         cachedTransactionsByYear = nil
         cachedLoanProjections.removeAll(keepingCapacity: true)
@@ -530,6 +545,8 @@ public final class FinancialDataStore: ObservableObject {
            let decoded = try? JSONDecoder().decode(FinancialDatabaseSnapshot.self, from: data),
            decoded.schemaVersion == 2 {
             self.accounts = decoded.accounts
+            self.creditCards = decoded.creditCards ?? []
+            self.creditCardInvoices = decoded.creditCardInvoices ?? []
             self.categories = decoded.categories
             self.transactions = decoded.transactions
             self.investments = decoded.investments
@@ -569,6 +586,9 @@ public final class FinancialDataStore: ObservableObject {
             for plan in self.amortizationPlans {
                 syncPlannedAmortizationTransactions(for: plan.contractId, saveAfter: false)
             }
+            if !self.creditCards.isEmpty {
+                syncAllCreditCardInvoices(saveAfter: false)
+            }
             if mutatedData || !self.amortizationPlans.isEmpty {
                 save()
             }
@@ -577,6 +597,8 @@ public final class FinancialDataStore: ObservableObject {
             // Instalação limpa: sempre inicia zerado, apenas com as categorias padrões, sem despesas ou contas.
             self.categories = DefaultCategoriesCatalog.buildInitialCategories()
             self.accounts = []
+            self.creditCards = []
+            self.creditCardInvoices = []
             self.transactions = []
             self.investments = []
             self.debts = []
@@ -605,6 +627,8 @@ public final class FinancialDataStore: ObservableObject {
         let snapshot = FinancialDatabaseSnapshot(
             schemaVersion: 2,
             accounts: accounts,
+            creditCards: creditCards,
+            creditCardInvoices: creditCardInvoices,
             categories: categories,
             transactions: transactions,
             investments: investments,
@@ -665,6 +689,9 @@ public final class FinancialDataStore: ObservableObject {
         }
         if targets.contains(.accounts) {
             accounts.removeAll()
+            creditCards.removeAll()
+            creditCardInvoices.removeAll()
+            selectedCreditCardIdForDetail = nil
         }
         if targets.contains(.categories) {
             categories.removeAll()
@@ -770,6 +797,9 @@ public final class FinancialDataStore: ObservableObject {
         for acc in accounts {
             if let path = acc.customImagePath { tryAddAsset(atPath: path) }
         }
+        for card in creditCards {
+            if let path = card.customImagePath { tryAddAsset(atPath: path) }
+        }
         for debt in debts {
             if let path = debt.customImagePath { tryAddAsset(atPath: path) }
         }
@@ -786,6 +816,8 @@ public final class FinancialDataStore: ObservableObject {
         FinancialDatabaseSnapshot(
             schemaVersion: 2,
             accounts: accounts,
+            creditCards: creditCards,
+            creditCardInvoices: creditCardInvoices,
             categories: categories,
             transactions: transactions,
             investments: investments,
@@ -833,6 +865,8 @@ public final class FinancialDataStore: ObservableObject {
         return FinancialDatabaseSnapshot(
             schemaVersion: 2,
             accounts: targets.contains(.accounts) ? accounts : [],
+            creditCards: targets.contains(.accounts) ? creditCards : [],
+            creditCardInvoices: targets.contains(.accounts) ? creditCardInvoices : [],
             categories: targets.contains(.categories) ? categories : [],
             transactions: targets.contains(.transactions) ? transactions : [],
             investments: targets.contains(.investments) ? investments : [],
@@ -1077,15 +1111,23 @@ public final class FinancialDataStore: ObservableObject {
 
         var analyses: [ExportDataTarget: ImportTargetAnalysis] = [:]
 
-        // 1. Contas
+        // 1. Contas (e Cartões de Crédito integrados)
+        let snapCards = snapshot.creditCards ?? []
+        let existingCardIds = Set(creditCards.map(\.id))
+        let existingCardKeys = Set(creditCards.map { "\(Self.normalizeKey($0.name))|\($0.closingDay)|\($0.dueDay)" })
         let accDups = snapshot.accounts.filter {
             existingAccIds.contains($0.id) || existingAccKeys.contains("\(Self.normalizeKey($0.name))|\($0.bankPresetId ?? "")")
         }.count
+        let cardDups = snapCards.filter {
+            existingCardIds.contains($0.id) || existingCardKeys.contains("\(Self.normalizeKey($0.name))|\($0.closingDay)|\($0.dueDay)")
+        }.count
+        let totalAccAndCards = snapshot.accounts.count + snapCards.count
+        let totalAccCardDups = accDups + cardDups
         analyses[.accounts] = ImportTargetAnalysis(
             target: .accounts,
-            totalCount: snapshot.accounts.count,
-            newCount: max(0, snapshot.accounts.count - accDups),
-            duplicateCount: accDups
+            totalCount: totalAccAndCards,
+            newCount: max(0, totalAccAndCards - totalAccCardDups),
+            duplicateCount: totalAccCardDups
         )
 
         // 2. Categorias
@@ -1364,6 +1406,94 @@ public final class FinancialDataStore: ObservableObject {
             }
         }
 
+        // 2.1 Cartões de Crédito & Faturas (integrados às Contas ou referenciados por transações importadas)
+        let sourceCardsById = Dictionary(uniqueKeysWithValues: (snapshot.creditCards ?? []).map { ($0.id, $0) })
+        var creditCardIdMap: [UUID: UUID] = [:]
+        var existingCardById = Set(creditCards.map(\.id))
+        var existingCardByKey: [String: UUID] = [:]
+        for card in creditCards {
+            existingCardByKey["\(Self.normalizeKey(card.name))|\(card.closingDay)|\(card.dueDay)"] = card.id
+        }
+
+        func ensureValidCreditCardId(for sourceCardId: UUID) -> UUID {
+            if let mapped = creditCardIdMap[sourceCardId] { return mapped }
+            if existingCardById.contains(sourceCardId) {
+                creditCardIdMap[sourceCardId] = sourceCardId
+                return sourceCardId
+            }
+            if let srcCard = sourceCardsById[sourceCardId] {
+                let key = "\(Self.normalizeKey(srcCard.name))|\(srcCard.closingDay)|\(srcCard.dueDay)"
+                if let matchedId = existingCardByKey[key] {
+                    creditCardIdMap[sourceCardId] = matchedId
+                    return matchedId
+                }
+                var newCard = srcCard
+                newCard.customImagePath = restoreAssetIfAvailable(originalPath: srcCard.customImagePath)
+                if let defAcc = srcCard.defaultPaymentAccountId {
+                    newCard.defaultPaymentAccountId = ensureValidAccountId(for: defAcc)
+                }
+                creditCards.append(newCard)
+                existingCardById.insert(newCard.id)
+                existingCardByKey[key] = newCard.id
+                creditCardIdMap[sourceCardId] = newCard.id
+                res.autoCreatedDependenciesCount += 1
+                return newCard.id
+            }
+            return sourceCardId
+        }
+
+        if selectedTargets.contains(.accounts) {
+            for srcCard in (snapshot.creditCards ?? []) {
+                let key = "\(Self.normalizeKey(srcCard.name))|\(srcCard.closingDay)|\(srcCard.dueDay)"
+                if existingCardById.contains(srcCard.id) {
+                    creditCardIdMap[srcCard.id] = srcCard.id
+                    res.skippedDuplicatesTotal += 1
+                } else if let matchedId = existingCardByKey[key] {
+                    creditCardIdMap[srcCard.id] = matchedId
+                    res.skippedDuplicatesTotal += 1
+                } else {
+                    var importedCard = srcCard
+                    importedCard.customImagePath = restoreAssetIfAvailable(originalPath: srcCard.customImagePath)
+                    if let defAcc = srcCard.defaultPaymentAccountId {
+                        importedCard.defaultPaymentAccountId = ensureValidAccountId(for: defAcc)
+                    }
+                    creditCards.append(importedCard)
+                    existingCardById.insert(importedCard.id)
+                    existingCardByKey[key] = importedCard.id
+                    creditCardIdMap[srcCard.id] = importedCard.id
+                    res.importedAccounts += 1
+                }
+            }
+        }
+
+        var invoiceIdMap: [UUID: UUID] = [:]
+        if selectedTargets.contains(.accounts) || selectedTargets.contains(.transactions) {
+            var existingInvIds = Set(creditCardInvoices.map(\.id))
+            var existingInvKeys: [String: UUID] = [:]
+            for inv in creditCardInvoices {
+                existingInvKeys["\(inv.creditCardId.uuidString)|\(inv.yearMonthKey)"] = inv.id
+            }
+            for srcInv in (snapshot.creditCardInvoices ?? []) {
+                let mappedCardId = ensureValidCreditCardId(for: srcInv.creditCardId)
+                let key = "\(mappedCardId.uuidString)|\(srcInv.yearMonthKey)"
+                if existingInvIds.contains(srcInv.id) {
+                    invoiceIdMap[srcInv.id] = srcInv.id
+                } else if let matchedInvId = existingInvKeys[key] {
+                    invoiceIdMap[srcInv.id] = matchedInvId
+                } else {
+                    var newInv = srcInv
+                    newInv.creditCardId = mappedCardId
+                    if let paidAcc = srcInv.paidFromAccountId {
+                        newInv.paidFromAccountId = ensureValidAccountId(for: paidAcc)
+                    }
+                    creditCardInvoices.append(newInv)
+                    existingInvIds.insert(newInv.id)
+                    existingInvKeys[key] = newInv.id
+                    invoiceIdMap[srcInv.id] = newInv.id
+                }
+            }
+        }
+
         // 3. Índices de Categorias e Importação de Categorias
         onProgress?(0.38, "Validando e importando categorias...")
         let sourceCategoriesById = Dictionary(uniqueKeysWithValues: snapshot.categories.map { ($0.id, $0) })
@@ -1585,7 +1715,24 @@ public final class FinancialDataStore: ObservableObject {
                 if currentTxIds.contains(newTx.id) {
                     newTx.id = UUID()
                 }
-                newTx.accountId = ensureValidAccountId(for: srcTx.accountId)
+                if let oldCardId = srcTx.creditCardId {
+                    let mappedCardId = ensureValidCreditCardId(for: oldCardId)
+                    newTx.creditCardId = mappedCardId
+                    if srcTx.transactionOrigin == .creditCardInvoicePayment {
+                        newTx.accountId = ensureValidAccountId(for: srcTx.accountId)
+                    } else {
+                        newTx.accountId = mappedCardId
+                    }
+                } else {
+                    newTx.accountId = ensureValidAccountId(for: srcTx.accountId)
+                }
+                if let oldInvId = srcTx.creditCardInvoiceId {
+                    let mappedInvId = invoiceIdMap[oldInvId] ?? oldInvId
+                    newTx.creditCardInvoiceId = mappedInvId
+                    if srcTx.transactionOrigin == .creditCardInvoicePayment {
+                        newTx.linkedEntityID = mappedInvId
+                    }
+                }
                 newTx.categoryId = ensureValidCategoryId(for: srcTx.categoryId, fallbackType: srcTx.type, titleHint: srcTx.name)
                 newTx.attachmentPath = restoreAssetIfAvailable(originalPath: srcTx.attachmentPath)
 
@@ -1659,6 +1806,9 @@ public final class FinancialDataStore: ObservableObject {
         }
         if res.importedTransactions > 0 {
             sortTransactions()
+            if !creditCards.isEmpty {
+                syncAllCreditCardInvoices(saveAfter: false)
+            }
         }
         if importedPlansCount > 0 {
             if let importedScenario = snapshot.budgetProjectionScenario {
@@ -2110,6 +2260,9 @@ public final class FinancialDataStore: ObservableObject {
             accountNumber: accountNumber
         )
         accounts.append(account)
+        if !creditCards.isEmpty {
+            syncAllCreditCardInvoices(saveAfter: false)
+        }
         save()
         cloudSyncService?.recordLocalMutation(entityName: "bank_accounts", entityId: account.id, operation: .upsert, entity: account)
     }
@@ -2153,6 +2306,511 @@ public final class FinancialDataStore: ObservableObject {
         let item = accounts.remove(at: fromIndex)
         accounts.insert(item, at: toIndex)
         save()
+    }
+
+    // MARK: - Credit Card & Invoice Management (Cartões de Crédito & Faturas)
+
+    @discardableResult
+    public func addCreditCard(
+        name: String,
+        totalLimit: Double,
+        closingDay: Int,
+        bestPurchaseDay: Int? = nil,
+        dueDay: Int,
+        defaultPaymentAccountId: UUID? = nil,
+        brand: CreditCardBrand = .mastercard,
+        bankPresetId: String? = nil,
+        customImagePath: String? = nil,
+        iconSymbol: String = "creditcard.fill",
+        colorHex: String = "#820AD1",
+        lastFourDigits: String = ""
+    ) -> CreditCard {
+        let card = CreditCard(
+            name: name,
+            totalLimit: totalLimit,
+            closingDay: closingDay,
+            bestPurchaseDay: bestPurchaseDay,
+            dueDay: dueDay,
+            defaultPaymentAccountId: defaultPaymentAccountId,
+            brand: brand,
+            bankPresetId: bankPresetId,
+            customImagePath: customImagePath,
+            iconSymbol: iconSymbol,
+            colorHex: colorHex,
+            lastFourDigits: lastFourDigits
+        )
+        creditCards.append(card)
+        save()
+        cloudSyncService?.recordLocalMutation(entityName: "credit_cards", entityId: card.id, operation: .upsert, entity: card)
+        return card
+    }
+
+    public func updateCreditCard(_ card: CreditCard) {
+        guard let idx = creditCards.firstIndex(where: { $0.id == card.id }) else { return }
+        creditCards[idx] = card
+
+        // Re-sincroniza datas e contas padrão das faturas em aberto/fechadas ainda não pagas
+        let invoiceKeys = Set(creditCardInvoices.filter { $0.creditCardId == card.id }.map(\.yearMonthKey))
+            .union(Set(transactions.filter { $0.creditCardId == card.id && !$0.isCreditCardInvoicePayment }.compactMap(\.creditCardInvoiceYearMonthKey)))
+        for ymKey in invoiceKeys {
+            syncCreditCardInvoice(cardId: card.id, yearMonthKey: ymKey, saveAfter: false)
+        }
+        sortTransactions()
+        save()
+        cloudSyncService?.recordLocalMutation(entityName: "credit_cards", entityId: card.id, operation: .upsert, entity: card)
+    }
+
+    public func deleteCreditCard(_ cardId: UUID) {
+        let deletedTxIds = transactions
+            .filter { $0.creditCardId == cardId || ($0.isCreditCardInvoicePayment && $0.creditCardId == cardId) }
+            .map(\.id)
+        let deletedInvIds = creditCardInvoices
+            .filter { $0.creditCardId == cardId }
+            .map(\.id)
+        transactions.removeAll { $0.creditCardId == cardId }
+        creditCardInvoices.removeAll { $0.creditCardId == cardId }
+        creditCards.removeAll { $0.id == cardId }
+        if selectedCreditCardIdForDetail == cardId {
+            selectedCreditCardIdForDetail = creditCards.first?.id
+        }
+        save()
+        cloudSyncService?.recordLocalMutation(entityName: "credit_cards", entityId: cardId, operation: .delete)
+        for invId in deletedInvIds {
+            cloudSyncService?.recordLocalMutation(entityName: "credit_card_invoices", entityId: invId, operation: .delete)
+        }
+        for txId in deletedTxIds {
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: txId, operation: .delete)
+        }
+    }
+
+    public func creditCard(for id: UUID?) -> CreditCard? {
+        guard let id else { return nil }
+        if let map = cachedCreditCardsById {
+            return map[id]
+        }
+        var map: [UUID: CreditCard] = [:]
+        map.reserveCapacity(creditCards.count)
+        for card in creditCards {
+            map[card.id] = card
+        }
+        cachedCreditCardsById = map
+        return map[id]
+    }
+
+    public func moveCreditCard(draggedId: UUID, targetId: UUID) {
+        guard draggedId != targetId,
+              let fromIndex = creditCards.firstIndex(where: { $0.id == draggedId }),
+              let toIndex = creditCards.firstIndex(where: { $0.id == targetId }) else { return }
+        let item = creditCards.remove(at: fromIndex)
+        creditCards.insert(item, at: toIndex)
+        save()
+    }
+
+    public func creditCardPaymentCategoryId() -> UUID {
+        if let exact = categories.first(where: {
+            $0.type == .expense &&
+            ($0.name.localizedCaseInsensitiveContains("Cartão") || $0.name.localizedCaseInsensitiveContains("Cartao"))
+        }) {
+            return exact.id
+        }
+        let newCat = CategoryItem(
+            name: "Cartão de Crédito & Boletos",
+            type: .expense,
+            iconSymbol: "creditcard.fill",
+            colorHex: "#F43F5E",
+            keywords: ["CARTAO", "FATURA"],
+            isSystemDefault: true
+        )
+        categories.append(newCat)
+        return newCat.id
+    }
+
+    /// Retorna o limite utilizado atual do cartão (soma exata em centavos de todas as despesas em faturas ainda não pagas).
+    public func usedLimit(for cardId: UUID) -> Double {
+        let paidKeys = Set(creditCardInvoices.filter { $0.creditCardId == cardId && $0.isPaid }.map(\.yearMonthKey))
+        let unpaidCardExpenses = transactions.filter { tx in
+            guard tx.creditCardId == cardId,
+                  !tx.isCreditCardInvoicePayment,
+                  !tx.ignoreInConsolidated else {
+                return false
+            }
+            if let ym = tx.creditCardInvoiceYearMonthKey, paidKeys.contains(ym) {
+                return false
+            }
+            return true
+        }
+        return CreditCardEngine.exactSum(unpaidCardExpenses.map(\.amount))
+    }
+
+    /// Retorna o limite disponível do cartão (`totalLimit - usedLimit`).
+    public func availableLimit(for cardId: UUID) -> Double {
+        guard let card = creditCard(for: cardId) else { return 0.0 }
+        let totalCents = Int((card.totalLimit * 100.0).rounded())
+        let usedCents = Int((usedLimit(for: cardId) * 100.0).rounded())
+        return Double(totalCents - usedCents) / 100.0
+    }
+
+    /// Retorna o resumo completo de uma fatura específica (Aberta, Fechada ou Paga).
+    public func invoiceSummary(for cardId: UUID, year: Int, month: Int) -> CreditCardInvoiceSummary? {
+        guard let card = creditCard(for: cardId) else { return nil }
+        let ymKey = year * 100 + month
+        let existingInvoice = creditCardInvoices.first { $0.creditCardId == cardId && $0.yearMonthKey == ymKey }
+        let dates = CreditCardEngine.closingAndDueDates(forInvoiceYear: year, month: month, card: card, calendar: calendar)
+        let cycleTransactions = transactions
+            .filter {
+                $0.creditCardId == cardId &&
+                !$0.isCreditCardInvoicePayment &&
+                !$0.ignoreInConsolidated &&
+                $0.creditCardInvoiceYearMonthKey == ymKey
+            }
+            .sorted {
+                if $0.date == $1.date { return $0.createdAt < $1.createdAt }
+                return $0.date < $1.date
+            }
+
+        let computedTotal = CreditCardEngine.exactSum(cycleTransactions.map(\.amount))
+        let isPaid = existingInvoice?.isPaid ?? false
+        let status = CreditCardEngine.invoiceStatus(
+            isPaid: isPaid,
+            invoiceYear: year,
+            invoiceMonth: month,
+            card: card,
+            referenceNow: effectiveCurrentDate,
+            calendar: calendar
+        )
+
+        return CreditCardInvoiceSummary(
+            cardId: cardId,
+            invoiceId: existingInvoice?.id,
+            year: year,
+            month: month,
+            yearMonthKey: ymKey,
+            monthYearLabel: CreditCardEngine.fullInvoiceLabel(year: year, month: month, calendar: calendar),
+            closingDate: existingInvoice?.closingDate ?? dates.closingDate,
+            dueDate: existingInvoice?.dueDate ?? dates.dueDate,
+            status: status,
+            transactions: cycleTransactions,
+            totalAmount: computedTotal,
+            paidAmount: existingInvoice?.paidAmount,
+            paidDate: existingInvoice?.paidDate,
+            paymentAccountId: existingInvoice?.paidFromAccountId ?? card.defaultPaymentAccountId ?? accounts.first?.id,
+            paymentTransactionId: existingInvoice?.paymentTransactionId
+        )
+    }
+
+    /// Lista ordenada de todos os ciclos de fatura relevantes para o seletor na tela do cartão
+    /// (faturas com histórico/lançamentos/parcelas futuras + ciclo atual e próximos 2 ciclos).
+    public func allRelevantInvoiceMonths(for cardId: UUID, around referenceDate: Date? = nil) -> [(year: Int, month: Int, key: Int)] {
+        guard let card = creditCard(for: cardId) else { return [] }
+        let ref = referenceDate ?? effectiveCurrentDate
+        let currentAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: ref, card: card, calendar: calendar)
+
+        var keys = Set<Int>()
+        for offset in -2...2 {
+            keys.insert(CreditCardEngine.addMonths(offset, toYear: currentAlloc.year, month: currentAlloc.month).yearMonthKey)
+        }
+        for inv in creditCardInvoices where inv.creditCardId == cardId {
+            keys.insert(inv.yearMonthKey)
+        }
+        for tx in transactions where tx.creditCardId == cardId && !tx.isCreditCardInvoicePayment {
+            if let k = tx.creditCardInvoiceYearMonthKey {
+                keys.insert(k)
+            }
+        }
+        return keys.sorted().map { key in
+            let comps = CreditCardEngine.yearMonthComponents(fromKey: key)
+            return (comps.year, comps.month, key)
+        }
+    }
+
+    public func syncAllCreditCardInvoices(saveAfter: Bool = true) {
+        var pairs: Set<String> = []
+        var list: [(cardId: UUID, ymKey: Int)] = []
+
+        for inv in creditCardInvoices {
+            let k = "\(inv.creditCardId.uuidString)|\(inv.yearMonthKey)"
+            if pairs.insert(k).inserted {
+                list.append((inv.creditCardId, inv.yearMonthKey))
+            }
+        }
+        for tx in transactions where tx.creditCardId != nil && !tx.isCreditCardInvoicePayment {
+            if let cardId = tx.creditCardId, let ym = tx.creditCardInvoiceYearMonthKey {
+                let k = "\(cardId.uuidString)|\(ym)"
+                if pairs.insert(k).inserted {
+                    list.append((cardId, ym))
+                }
+            }
+        }
+
+        for pair in list {
+            syncCreditCardInvoice(cardId: pair.cardId, yearMonthKey: pair.ymKey, saveAfter: false)
+        }
+        if saveAfter {
+            sortTransactions()
+            save()
+        }
+    }
+
+    /// Mantém a fatura (`CreditCardInvoice`) e a transação projetada de pagamento de fatura no mês de vencimento
+    /// 100% sincronizadas com as compras do ciclo.
+    public func syncCreditCardInvoice(cardId: UUID, yearMonthKey: Int, saveAfter: Bool = true) {
+        guard let card = creditCard(for: cardId) else {
+            transactions.removeAll {
+                $0.creditCardId == cardId &&
+                $0.creditCardInvoiceYearMonthKey == yearMonthKey &&
+                $0.isCreditCardInvoicePayment &&
+                !$0.isPaid
+            }
+            if saveAfter {
+                sortTransactions()
+                save()
+            }
+            return
+        }
+
+        let ymComps = CreditCardEngine.yearMonthComponents(fromKey: yearMonthKey)
+        let dates = CreditCardEngine.closingAndDueDates(
+            forInvoiceYear: ymComps.year,
+            month: ymComps.month,
+            card: card,
+            calendar: calendar
+        )
+
+        let cycleExpenseIndices = transactions.indices.filter { idx in
+            let tx = transactions[idx]
+            return tx.creditCardId == cardId &&
+                   !tx.isCreditCardInvoicePayment &&
+                   !tx.ignoreInConsolidated &&
+                   tx.creditCardInvoiceYearMonthKey == yearMonthKey
+        }
+
+        let cycleTotal = CreditCardEngine.exactSum(cycleExpenseIndices.map { transactions[$0].amount })
+        let existingInvIdx = creditCardInvoices.firstIndex { $0.creditCardId == cardId && $0.yearMonthKey == yearMonthKey }
+
+        if let invIdx = existingInvIdx, creditCardInvoices[invIdx].isPaid {
+            // Fatura já foi paga: atualiza metadados de vínculo, preservando o pagamento efetivado.
+            creditCardInvoices[invIdx].closingDate = dates.closingDate
+            creditCardInvoices[invIdx].dueDate = dates.dueDate
+            let invId = creditCardInvoices[invIdx].id
+            for tIdx in cycleExpenseIndices {
+                transactions[tIdx].creditCardInvoiceId = invId
+            }
+            if saveAfter {
+                sortTransactions()
+                save()
+            }
+            return
+        }
+
+        if cycleTotal > 0.001 {
+            let invIdx: Int
+            if let existing = existingInvIdx {
+                creditCardInvoices[existing].closingDate = dates.closingDate
+                creditCardInvoices[existing].dueDate = dates.dueDate
+                invIdx = existing
+            } else {
+                let newInv = CreditCardInvoice(
+                    creditCardId: cardId,
+                    year: ymComps.year,
+                    month: ymComps.month,
+                    closingDate: dates.closingDate,
+                    dueDate: dates.dueDate,
+                    isPaid: false
+                )
+                creditCardInvoices.append(newInv)
+                invIdx = creditCardInvoices.count - 1
+            }
+
+            let invoice = creditCardInvoices[invIdx]
+            for tIdx in cycleExpenseIndices {
+                transactions[tIdx].creditCardInvoiceId = invoice.id
+            }
+
+            let targetAccountId = invoice.paidFromAccountId ?? card.defaultPaymentAccountId ?? accounts.first?.id
+            let shortLabel = CreditCardEngine.shortInvoiceLabel(year: ymComps.year, month: ymComps.month, calendar: calendar)
+            let fullLabel = CreditCardEngine.fullInvoiceLabel(year: ymComps.year, month: ymComps.month, calendar: calendar)
+            let txTitle = "Pagamento Fatura: \(card.name) (\(shortLabel))"
+            let count = cycleExpenseIndices.count
+            let txDetails = "Pagamento de fatura \(fullLabel) • Venc. \(BRLFormatters.shortDate(dates.dueDate)) (\(count) lançamento\(count == 1 ? "" : "s"))"
+
+            if let existingPayTxIdx = transactions.firstIndex(where: {
+                ($0.id == invoice.paymentTransactionId) ||
+                ($0.isCreditCardInvoicePayment && $0.creditCardId == cardId && $0.creditCardInvoiceYearMonthKey == yearMonthKey)
+            }) {
+                if !transactions[existingPayTxIdx].isPaid {
+                    transactions[existingPayTxIdx].name = txTitle
+                    transactions[existingPayTxIdx].details = txDetails
+                    transactions[existingPayTxIdx].amount = cycleTotal
+                    transactions[existingPayTxIdx].date = dates.dueDate
+                    if let accId = targetAccountId {
+                        transactions[existingPayTxIdx].accountId = accId
+                    }
+                    transactions[existingPayTxIdx].ignoreInConsolidated = false
+                    transactions[existingPayTxIdx].creditCardId = cardId
+                    transactions[existingPayTxIdx].creditCardInvoiceId = invoice.id
+                    transactions[existingPayTxIdx].creditCardInvoiceYearMonthKey = yearMonthKey
+                    transactions[existingPayTxIdx].linkedEntityID = invoice.id
+                    creditCardInvoices[invIdx].paymentTransactionId = transactions[existingPayTxIdx].id
+                    cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: transactions[existingPayTxIdx].id, operation: .upsert, entity: transactions[existingPayTxIdx])
+                }
+            } else if let accId = targetAccountId {
+                let payTxId = invoice.paymentTransactionId ?? UUID()
+                let payTx = FinancialTransaction(
+                    id: payTxId,
+                    name: txTitle,
+                    details: txDetails,
+                    amount: cycleTotal,
+                    date: dates.dueDate,
+                    type: .expense,
+                    isPaid: false,
+                    categoryId: creditCardPaymentCategoryId(),
+                    accountId: accId,
+                    ignoreInConsolidated: false,
+                    recurrenceMode: .single,
+                    creditCardId: cardId,
+                    creditCardInvoiceYearMonthKey: yearMonthKey,
+                    creditCardInvoiceId: invoice.id,
+                    transactionOrigin: .creditCardInvoicePayment,
+                    linkedEntityID: invoice.id
+                )
+                transactions.append(payTx)
+                creditCardInvoices[invIdx].paymentTransactionId = payTx.id
+                cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: payTx.id, operation: .upsert, entity: payTx)
+            }
+            cloudSyncService?.recordLocalMutation(entityName: "credit_card_invoices", entityId: creditCardInvoices[invIdx].id, operation: .upsert, entity: creditCardInvoices[invIdx])
+        } else {
+            // Fatura zerada e não paga: remove transação projetada e o registro de fatura vazio.
+            var removedTxIds: [UUID] = []
+            transactions.removeAll { tx in
+                let matches = (tx.isCreditCardInvoicePayment && tx.creditCardId == cardId && tx.creditCardInvoiceYearMonthKey == yearMonthKey && !tx.isPaid)
+                if matches { removedTxIds.append(tx.id) }
+                return matches
+            }
+            if let existing = existingInvIdx {
+                let removedInvId = creditCardInvoices[existing].id
+                creditCardInvoices.remove(at: existing)
+                cloudSyncService?.recordLocalMutation(entityName: "credit_card_invoices", entityId: removedInvId, operation: .delete)
+            }
+            for txId in removedTxIds {
+                cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: txId, operation: .delete)
+            }
+        }
+
+        if saveAfter {
+            sortTransactions()
+            invalidateDerivedCaches()
+            save()
+        }
+    }
+
+    /// Efetiva o pagamento de uma fatura de cartão de crédito:
+    /// - Marca a fatura como `Paga`.
+    /// - Efetiva a transação de pagamento de fatura na conta bancária escolhida, na data efetiva e valor confirmado.
+    /// - Restaura o limite utilizado correspondente àquela fatura.
+    @discardableResult
+    public func payCreditCardInvoice(
+        cardId: UUID,
+        year: Int,
+        month: Int,
+        fromAccountId accountId: UUID,
+        amount: Double? = nil,
+        paymentDate: Date? = nil
+    ) -> Bool {
+        guard let card = creditCard(for: cardId),
+              account(for: accountId) != nil else {
+            return false
+        }
+
+        let ymKey = year * 100 + month
+        let dates = CreditCardEngine.closingAndDueDates(forInvoiceYear: year, month: month, card: card, calendar: calendar)
+        let summary = invoiceSummary(for: cardId, year: year, month: month)
+        let resolvedAmount = abs(amount ?? summary?.totalAmount ?? 0.0)
+        guard resolvedAmount > 0.001 else { return false }
+        let effectivePayDate = paymentDate ?? effectiveCurrentDate
+
+        let invIdx: Int
+        if let existing = creditCardInvoices.firstIndex(where: { $0.creditCardId == cardId && $0.yearMonthKey == ymKey }) {
+            invIdx = existing
+        } else {
+            let newInv = CreditCardInvoice(
+                creditCardId: cardId,
+                year: year,
+                month: month,
+                closingDate: dates.closingDate,
+                dueDate: dates.dueDate,
+                isPaid: false
+            )
+            creditCardInvoices.append(newInv)
+            invIdx = creditCardInvoices.count - 1
+        }
+
+        creditCardInvoices[invIdx].closingDate = dates.closingDate
+        creditCardInvoices[invIdx].dueDate = dates.dueDate
+        creditCardInvoices[invIdx].isPaid = true
+        creditCardInvoices[invIdx].paidAmount = resolvedAmount
+        creditCardInvoices[invIdx].paidDate = effectivePayDate
+        creditCardInvoices[invIdx].paidFromAccountId = accountId
+
+        let invoice = creditCardInvoices[invIdx]
+        for idx in transactions.indices where transactions[idx].creditCardId == cardId && !transactions[idx].isCreditCardInvoicePayment && transactions[idx].creditCardInvoiceYearMonthKey == ymKey {
+            transactions[idx].creditCardInvoiceId = invoice.id
+        }
+
+        let shortLabel = CreditCardEngine.shortInvoiceLabel(year: year, month: month, calendar: calendar)
+        let fullLabel = CreditCardEngine.fullInvoiceLabel(year: year, month: month, calendar: calendar)
+        let txTitle = "Pagamento Fatura: \(card.name) (\(shortLabel))"
+        let txDetails = "Fatura \(fullLabel) paga via \(account(for: accountId)?.name ?? "Conta") em \(BRLFormatters.shortDate(effectivePayDate))"
+
+        let finalTxId: UUID
+        if let existingPayTxIdx = transactions.firstIndex(where: {
+            ($0.id == invoice.paymentTransactionId) ||
+            ($0.isCreditCardInvoicePayment && $0.creditCardId == cardId && $0.creditCardInvoiceYearMonthKey == ymKey)
+        }) {
+            transactions[existingPayTxIdx].name = txTitle
+            transactions[existingPayTxIdx].details = txDetails
+            transactions[existingPayTxIdx].amount = resolvedAmount
+            transactions[existingPayTxIdx].date = effectivePayDate
+            transactions[existingPayTxIdx].isPaid = true
+            transactions[existingPayTxIdx].accountId = accountId
+            transactions[existingPayTxIdx].ignoreInConsolidated = false
+            transactions[existingPayTxIdx].creditCardId = cardId
+            transactions[existingPayTxIdx].creditCardInvoiceId = invoice.id
+            transactions[existingPayTxIdx].creditCardInvoiceYearMonthKey = ymKey
+            transactions[existingPayTxIdx].linkedEntityID = invoice.id
+            finalTxId = transactions[existingPayTxIdx].id
+        } else {
+            let newPayTx = FinancialTransaction(
+                id: invoice.paymentTransactionId ?? UUID(),
+                name: txTitle,
+                details: txDetails,
+                amount: resolvedAmount,
+                date: effectivePayDate,
+                type: .expense,
+                isPaid: true,
+                categoryId: creditCardPaymentCategoryId(),
+                accountId: accountId,
+                ignoreInConsolidated: false,
+                recurrenceMode: .single,
+                creditCardId: cardId,
+                creditCardInvoiceYearMonthKey: ymKey,
+                creditCardInvoiceId: invoice.id,
+                transactionOrigin: .creditCardInvoicePayment,
+                linkedEntityID: invoice.id
+            )
+            transactions.append(newPayTx)
+            finalTxId = newPayTx.id
+        }
+
+        creditCardInvoices[invIdx].paymentTransactionId = finalTxId
+        sortTransactions()
+        invalidateDerivedCaches()
+        save()
+
+        cloudSyncService?.recordLocalMutation(entityName: "credit_card_invoices", entityId: creditCardInvoices[invIdx].id, operation: .upsert, entity: creditCardInvoices[invIdx])
+        if let payTx = transactions.first(where: { $0.id == finalTxId }) {
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: payTx.id, operation: .upsert, entity: payTx)
+        }
+        return true
     }
 
     // MARK: - Category Management
@@ -2315,10 +2973,147 @@ public final class FinancialDataStore: ObservableObject {
         recurrenceMode: TransactionRecurrenceMode = .single,
         installmentsOrMonthsCount: Int = 1,
         recurrenceFrequency: RecurrenceFrequency = .monthly,
-        referenceNow: Date = Date()
+        referenceNow: Date = Date(),
+        creditCardId: UUID? = nil
     ) -> [FinancialTransaction] {
         var created: [FinancialTransaction] = []
         let cleanAmount = abs(amount)
+
+        // Fluxo dedicado para despesas no Cartão de Crédito (Competência + Alocação Automática de Fatura)
+        if let cardId = creditCardId, type == .expense, let card = creditCard(for: cardId) {
+            var affectedInvoiceKeys: Set<Int> = []
+
+            if recurrenceMode == .single || (recurrenceMode != .recurring && installmentsOrMonthsCount <= 1) {
+                let alloc = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card, calendar: calendar)
+                let tx = FinancialTransaction(
+                    name: name,
+                    details: details,
+                    amount: cleanAmount,
+                    date: date,
+                    type: .expense,
+                    isPaid: true,
+                    categoryId: categoryId,
+                    accountId: card.id,
+                    attachmentPath: attachmentPath,
+                    attachmentName: attachmentName,
+                    ignoreInConsolidated: ignoreInConsolidated,
+                    recurrenceMode: .single,
+                    creditCardId: card.id,
+                    creditCardInvoiceYearMonthKey: alloc.yearMonthKey
+                )
+                transactions.append(tx)
+                created.append(tx)
+                affectedInvoiceKeys.insert(alloc.yearMonthKey)
+            } else if recurrenceMode == .installment {
+                let count = max(installmentsOrMonthsCount, 2)
+                let groupId = UUID()
+                let splitAmounts = CreditCardEngine.splitInstallmentsExactCents(totalAmount: cleanAmount, count: count)
+                let firstAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card, calendar: calendar)
+
+                for index in 0..<count {
+                    let installmentDate = calendar.date(byAdding: .month, value: index, to: date) ?? date
+                    let targetYM = CreditCardEngine.addMonths(index, toYear: firstAlloc.year, month: firstAlloc.month)
+                    let value = splitAmounts[index]
+                    let tx = FinancialTransaction(
+                        name: "\(name) (\(index + 1)/\(count))",
+                        details: details.isEmpty ? "Compra no cartão em \(count)x (Total: \(BRLFormatters.currency(cleanAmount)))" : details,
+                        amount: value,
+                        date: installmentDate,
+                        type: .expense,
+                        isPaid: true,
+                        categoryId: categoryId,
+                        accountId: card.id,
+                        attachmentPath: attachmentPath,
+                        attachmentName: attachmentName,
+                        ignoreInConsolidated: ignoreInConsolidated,
+                        recurrenceMode: .installment,
+                        seriesGroupId: groupId,
+                        installmentIndex: index + 1,
+                        installmentTotal: count,
+                        creditCardId: card.id,
+                        creditCardInvoiceYearMonthKey: targetYM.yearMonthKey
+                    )
+                    transactions.append(tx)
+                    created.append(tx)
+                    affectedInvoiceKeys.insert(targetYM.yearMonthKey)
+                }
+            } else if recurrenceMode == .repeated {
+                let count = max(installmentsOrMonthsCount, 2)
+                let groupId = UUID()
+                let firstAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card, calendar: calendar)
+                for index in 0..<count {
+                    let occurrenceDate = calendar.date(byAdding: .month, value: index, to: date) ?? date
+                    let targetYM = CreditCardEngine.addMonths(index, toYear: firstAlloc.year, month: firstAlloc.month)
+                    let tx = FinancialTransaction(
+                        name: name,
+                        details: details.isEmpty ? "Despesa repetida no cartão (\(index + 1)/\(count))" : details,
+                        amount: cleanAmount,
+                        date: occurrenceDate,
+                        type: .expense,
+                        isPaid: true,
+                        categoryId: categoryId,
+                        accountId: card.id,
+                        attachmentPath: attachmentPath,
+                        attachmentName: attachmentName,
+                        ignoreInConsolidated: ignoreInConsolidated,
+                        recurrenceMode: .repeated,
+                        recurrenceFrequency: .monthly,
+                        seriesGroupId: groupId,
+                        installmentIndex: index + 1,
+                        installmentTotal: count,
+                        creditCardId: card.id,
+                        creditCardInvoiceYearMonthKey: targetYM.yearMonthKey
+                    )
+                    transactions.append(tx)
+                    created.append(tx)
+                    affectedInvoiceKeys.insert(targetYM.yearMonthKey)
+                }
+            } else if recurrenceMode == .recurring {
+                let groupId = UUID()
+                let initialCount = recurrenceFrequency.defaultInitialHorizonCount
+                for index in 0..<initialCount {
+                    let occurrenceDate = recurrenceFrequency.nextDate(from: date, occurrenceIndex: index, calendar: calendar)
+                    let alloc = CreditCardEngine.allocateInvoice(forPurchaseDate: occurrenceDate, card: card, calendar: calendar)
+                    let tx = FinancialTransaction(
+                        name: name,
+                        details: details.isEmpty ? "Assinatura recorrente no cartão (\(recurrenceFrequency.shortTitle))" : details,
+                        amount: cleanAmount,
+                        date: occurrenceDate,
+                        type: .expense,
+                        isPaid: true,
+                        categoryId: categoryId,
+                        accountId: card.id,
+                        attachmentPath: attachmentPath,
+                        attachmentName: attachmentName,
+                        ignoreInConsolidated: ignoreInConsolidated,
+                        recurrenceMode: .recurring,
+                        recurrenceFrequency: recurrenceFrequency,
+                        isCanceledRecurringSeries: false,
+                        seriesGroupId: groupId,
+                        installmentIndex: index + 1,
+                        installmentTotal: nil,
+                        creditCardId: card.id,
+                        creditCardInvoiceYearMonthKey: alloc.yearMonthKey
+                    )
+                    transactions.append(tx)
+                    created.append(tx)
+                    affectedInvoiceKeys.insert(alloc.yearMonthKey)
+                }
+            }
+
+            for ymKey in affectedInvoiceKeys.sorted() {
+                syncCreditCardInvoice(cardId: card.id, yearMonthKey: ymKey, saveAfter: false)
+            }
+            sortTransactions()
+            save()
+            for tx in created {
+                if let latest = transactions.first(where: { $0.id == tx.id }) {
+                    cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: latest.id, operation: .upsert, entity: latest)
+                }
+            }
+            return created
+        }
+
         var finalDate = date
         var firstOccurrencePaid = isPaid
         if isPaid && isDateInFuture(date, referenceNow: referenceNow) {
@@ -2347,12 +3142,11 @@ public final class FinancialDataStore: ObservableObject {
             // Parcelada: receives total full value (`cleanAmount`) and number of installments (`count`)
             let count = max(installmentsOrMonthsCount, 2)
             let groupId = UUID()
-            let baseInstallment = ((cleanAmount / Double(count)) * 100.0).rounded(.down) / 100.0
-            let remainder = ((cleanAmount - (baseInstallment * Double(count))) * 100.0).rounded() / 100.0
+            let splitAmounts = CreditCardEngine.splitInstallmentsExactCents(totalAmount: cleanAmount, count: count)
 
             for index in 0..<count {
                 let installmentDate = calendar.date(byAdding: .month, value: index, to: date) ?? date
-                let value = index == 0 ? (baseInstallment + remainder) : baseInstallment
+                let value = splitAmounts[index]
                 let paidStatus = (index == 0 && !isDateInFuture(installmentDate, referenceNow: referenceNow)) ? firstOccurrencePaid : false
                 let tx = FinancialTransaction(
                     name: "\(name) (\(index + 1)/\(count))",
@@ -2543,15 +3337,46 @@ public final class FinancialDataStore: ObservableObject {
         var cleanUpdated = updated
         cleanUpdated.amount = abs(updated.amount)
 
+        var affectedCardInvoices: Set<String> = []
+        func markAffectedInvoice(cardId: UUID?, ymKey: Int?) {
+            if let cId = cardId, let ym = ymKey {
+                affectedCardInvoices.insert("\(cId.uuidString)|\(ym)")
+            }
+        }
+
+        if !originalBeforeEdit.isCreditCardInvoicePayment {
+            markAffectedInvoice(cardId: originalBeforeEdit.creditCardId, ymKey: originalBeforeEdit.creditCardInvoiceYearMonthKey)
+        }
+
         // Se o usuário alterou explicitamente a data da transação para uma data futura,
         // preservamos a nova data escolhida (e marcamos como não paga caso não tenha sido explicitamente confirmada como paga agora).
-        if didUserChangeDate {
-            if isDateInFuture(cleanUpdated.date, referenceNow: now) && originalBeforeEdit.isPaid == updated.isPaid {
-                cleanUpdated.isPaid = false
+        if cleanUpdated.creditCardId != nil && !cleanUpdated.isCreditCardInvoicePayment {
+            if let card = creditCard(for: cleanUpdated.creditCardId) {
+                cleanUpdated.accountId = card.id
+                cleanUpdated.isPaid = true
+                if didUserChangeDate || cleanUpdated.creditCardId != originalBeforeEdit.creditCardId || cleanUpdated.creditCardInvoiceYearMonthKey == nil {
+                    let alloc = CreditCardEngine.allocateInvoice(forPurchaseDate: cleanUpdated.date, card: card, calendar: calendar)
+                    cleanUpdated.creditCardInvoiceYearMonthKey = alloc.yearMonthKey
+                    cleanUpdated.creditCardInvoiceId = nil
+                }
             }
-        } else if cleanUpdated.isPaid && !originalBeforeEdit.isPaid && isDateInFuture(cleanUpdated.date, referenceNow: now) {
-            // Caso o usuário não tenha editado a data, mas tenha marcado uma transação futura como paga: move para hoje
-            cleanUpdated.date = now
+        } else {
+            if originalBeforeEdit.creditCardId != nil && !originalBeforeEdit.isCreditCardInvoicePayment {
+                cleanUpdated.creditCardInvoiceYearMonthKey = nil
+                cleanUpdated.creditCardInvoiceId = nil
+            }
+            if didUserChangeDate {
+                if isDateInFuture(cleanUpdated.date, referenceNow: now) && originalBeforeEdit.isPaid == updated.isPaid {
+                    cleanUpdated.isPaid = false
+                }
+            } else if cleanUpdated.isPaid && !originalBeforeEdit.isPaid && isDateInFuture(cleanUpdated.date, referenceNow: now) {
+                // Caso o usuário não tenha editado a data, mas tenha marcado uma transação futura como paga: move para hoje
+                cleanUpdated.date = now
+            }
+        }
+
+        if !cleanUpdated.isCreditCardInvoicePayment {
+            markAffectedInvoice(cardId: cleanUpdated.creditCardId, ymKey: cleanUpdated.creditCardInvoiceYearMonthKey)
         }
 
         let baseCleanName = Self.stripInstallmentSuffix(from: cleanUpdated.name)
@@ -2582,6 +3407,9 @@ public final class FinancialDataStore: ObservableObject {
                 }
 
                 if shouldApply {
+                    if !transactions[idx].isCreditCardInvoicePayment {
+                        markAffectedInvoice(cardId: transactions[idx].creditCardId, ymKey: transactions[idx].creditCardInvoiceYearMonthKey)
+                    }
                     // Se a transação pertence a um contrato com projeção crescente ou VLR. PARC individual por parcela,
                     // preserva o valor projetado individual de cada parcela futura quando o usuário não alterou o valor!
                     if transactions[idx].linkedContractId != nil && !didUserChangeAmount {
@@ -2596,6 +3424,7 @@ public final class FinancialDataStore: ObservableObject {
                     }
                     transactions[idx].categoryId = cleanUpdated.categoryId
                     transactions[idx].accountId = cleanUpdated.accountId
+                    transactions[idx].creditCardId = cleanUpdated.creditCardId
                     transactions[idx].ignoreInConsolidated = cleanUpdated.ignoreInConsolidated
                     if transactions[idx].linkedContractId == nil {
                         transactions[idx].details = cleanUpdated.details
@@ -2610,6 +3439,24 @@ public final class FinancialDataStore: ObservableObject {
                             }
                         }
                     }
+                    if let siblingCardId = transactions[idx].creditCardId,
+                       !transactions[idx].isCreditCardInvoicePayment,
+                       let siblingCard = creditCard(for: siblingCardId) {
+                        transactions[idx].accountId = siblingCard.id
+                        transactions[idx].isPaid = true
+                        if didUserChangeDate || cleanUpdated.creditCardId != originalBeforeEdit.creditCardId {
+                            let alloc = CreditCardEngine.allocateInvoice(forPurchaseDate: transactions[idx].date, card: siblingCard, calendar: calendar)
+                            transactions[idx].creditCardInvoiceYearMonthKey = alloc.yearMonthKey
+                            transactions[idx].creditCardInvoiceId = nil
+                        }
+                        markAffectedInvoice(cardId: siblingCard.id, ymKey: transactions[idx].creditCardInvoiceYearMonthKey)
+                    } else if transactions[idx].creditCardId == nil {
+                        transactions[idx].creditCardInvoiceYearMonthKey = nil
+                        transactions[idx].creditCardInvoiceId = nil
+                        if isDateInFuture(transactions[idx].date, referenceNow: now) {
+                            transactions[idx].isPaid = false
+                        }
+                    }
                     if transactions[idx].recurrenceMode == .installment,
                        let instIdx = transactions[idx].installmentIndex,
                        let instTotal = transactions[idx].installmentTotal {
@@ -2617,10 +3464,16 @@ public final class FinancialDataStore: ObservableObject {
                     } else {
                         transactions[idx].name = baseCleanName
                     }
-                    if isDateInFuture(transactions[idx].date, referenceNow: now) {
-                        transactions[idx].isPaid = false
-                    }
                 }
+            }
+        }
+
+        for pairKey in affectedCardInvoices.sorted() {
+            let parts = pairKey.split(separator: "|")
+            if parts.count == 2,
+               let cardId = UUID(uuidString: String(parts[0])),
+               let ymKey = Int(parts[1]) {
+                syncCreditCardInvoice(cardId: cardId, yearMonthKey: ymKey, saveAfter: false)
             }
         }
 
@@ -2649,6 +3502,38 @@ public final class FinancialDataStore: ObservableObject {
     public func toggleTransactionPaid(_ id: UUID, referenceNow: Date? = nil) -> Bool {
         let now = referenceNow ?? effectiveCurrentDate
         guard let idx = transactions.firstIndex(where: { $0.id == id }) else { return false }
+        if transactions[idx].isCreditCardExpense {
+            return false
+        }
+        if transactions[idx].isCreditCardInvoicePayment {
+            let tx = transactions[idx]
+            guard let cardId = tx.creditCardId, let ymKey = tx.creditCardInvoiceYearMonthKey else { return false }
+            let ym = CreditCardEngine.yearMonthComponents(fromKey: ymKey)
+            if !tx.isPaid {
+                let payDate = isDateInFuture(tx.date, referenceNow: now) ? now : tx.date
+                return payCreditCardInvoice(
+                    cardId: cardId,
+                    year: ym.year,
+                    month: ym.month,
+                    fromAccountId: tx.accountId,
+                    amount: tx.amount,
+                    paymentDate: payDate
+                )
+            } else {
+                if let invIdx = creditCardInvoices.firstIndex(where: { $0.creditCardId == cardId && $0.yearMonthKey == ymKey }) {
+                    creditCardInvoices[invIdx].isPaid = false
+                    creditCardInvoices[invIdx].paidAmount = nil
+                    creditCardInvoices[invIdx].paidDate = nil
+                    creditCardInvoices[invIdx].paidFromAccountId = nil
+                }
+                transactions[idx].isPaid = false
+                syncCreditCardInvoice(cardId: cardId, yearMonthKey: ymKey, saveAfter: false)
+                sortTransactions()
+                invalidateDerivedCaches()
+                save()
+                return true
+            }
+        }
         if transactions[idx].transactionOrigin == .plannedAmortization && !transactions[idx].isPaid {
             let payDate = isDateInFuture(transactions[idx].date, referenceNow: now)
                 ? now
@@ -2699,6 +3584,27 @@ public final class FinancialDataStore: ObservableObject {
                 continue
             }
             if transactionProjectionStatus(for: transactions[idx]) == .shadowed {
+                continue
+            }
+            if transactions[idx].isCreditCardExpense {
+                continue
+            }
+            if transactions[idx].isCreditCardInvoicePayment {
+                let tx = transactions[idx]
+                if let cardId = tx.creditCardId, let ymKey = tx.creditCardInvoiceYearMonthKey {
+                    let ym = CreditCardEngine.yearMonthComponents(fromKey: ymKey)
+                    let payDate = isDateInFuture(tx.date, referenceNow: now) ? now : tx.date
+                    if payCreditCardInvoice(
+                        cardId: cardId,
+                        year: ym.year,
+                        month: ym.month,
+                        fromAccountId: tx.accountId,
+                        amount: tx.amount,
+                        paymentDate: payDate
+                    ) {
+                        processedIds.append(id)
+                    }
+                }
                 continue
             }
             if transactions[idx].transactionOrigin == .plannedAmortization {
@@ -2846,14 +3752,34 @@ public final class FinancialDataStore: ObservableObject {
 
         var deletedIds: [UUID] = []
         var txsToRevert: [FinancialTransaction] = []
+        var affectedCardInvoices: Set<String> = []
+        func collectCardInvoices(from list: [FinancialTransaction]) {
+            for tx in list where !tx.isCreditCardInvoicePayment {
+                if let cId = tx.creditCardId, let ym = tx.creditCardInvoiceYearMonthKey {
+                    affectedCardInvoices.insert("\(cId.uuidString)|\(ym)")
+                }
+            }
+        }
+        func syncCollectedCardInvoices() {
+            for pairKey in affectedCardInvoices.sorted() {
+                let parts = pairKey.split(separator: "|")
+                if parts.count == 2,
+                   let cardId = UUID(uuidString: String(parts[0])),
+                   let ymKey = Int(parts[1]) {
+                    syncCreditCardInvoice(cardId: cardId, yearMonthKey: ymKey, saveAfter: false)
+                }
+            }
+        }
 
         if scope == .onlyThis || !targetTx.isPartOfSeries || targetTx.seriesGroupId == nil {
             txsToRevert = [targetTx]
             deletedIds = [id]
+            collectCardInvoices(from: txsToRevert)
             for tx in txsToRevert {
                 revertLinkedEntities(for: tx)
             }
             transactions.removeAll(where: { $0.id == id })
+            syncCollectedCardInvoices()
             sortTransactions()
             save()
             cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .delete)
@@ -2863,10 +3789,12 @@ public final class FinancialDataStore: ObservableObject {
         guard let groupId = targetTx.seriesGroupId else {
             txsToRevert = [targetTx]
             deletedIds = [id]
+            collectCardInvoices(from: txsToRevert)
             for tx in txsToRevert {
                 revertLinkedEntities(for: tx)
             }
             transactions.removeAll(where: { $0.id == id })
+            syncCollectedCardInvoices()
             sortTransactions()
             save()
             cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: id, operation: .delete)
@@ -2911,9 +3839,11 @@ public final class FinancialDataStore: ObservableObject {
             }
         }
 
+        collectCardInvoices(from: txsToRevert)
         for tx in txsToRevert {
             revertLinkedEntities(for: tx)
         }
+        syncCollectedCardInvoices()
 
         sortTransactions()
         save()
@@ -2979,6 +3909,20 @@ public final class FinancialDataStore: ObservableObject {
                     item.linkedTransactionId == tx.id || item.id == tx.linkedEntityID
                 }
                 amortizationPlans[pIdx].updatedAt = effectiveCurrentDate
+            }
+
+        case .creditCardInvoicePayment:
+            if let idx = creditCardInvoices.firstIndex(where: {
+                $0.id == tx.creditCardInvoiceId ||
+                $0.paymentTransactionId == tx.id ||
+                ($0.creditCardId == tx.creditCardId && $0.yearMonthKey == tx.creditCardInvoiceYearMonthKey)
+            }) {
+                creditCardInvoices[idx].isPaid = false
+                creditCardInvoices[idx].paidAmount = nil
+                creditCardInvoices[idx].paidDate = nil
+                creditCardInvoices[idx].paidFromAccountId = nil
+                creditCardInvoices[idx].paymentTransactionId = nil
+                cloudSyncService?.recordLocalMutation(entityName: "credit_card_invoices", entityId: creditCardInvoices[idx].id, operation: .upsert, entity: creditCardInvoices[idx])
             }
 
         case .standard, .quotaAllocation, .internalTransfer:
@@ -3263,6 +4207,7 @@ public final class FinancialDataStore: ObservableObject {
         intoAccountId accountId: UUID,
         filterMode: StatementImportFilterMode
     ) -> ImportSummary {
+        let isCreditCardTarget = creditCard(for: accountId) != nil
         let filtered = parsedList.filter { item in
             switch filterMode {
             case .hybrid: return true
@@ -3293,6 +4238,7 @@ public final class FinancialDataStore: ObservableObject {
             }()
 
             let effectiveFirstPaid = !isDateInFuture(item.date)
+            let targetCardId = (isCreditCardTarget && item.type == .expense) ? accountId : nil
 
             if item.recurrenceMode == .installment && item.type == .expense && item.installmentsCount >= 2 {
                 let totalFullAmount = item.amount * Double(item.installmentsCount)
@@ -3307,7 +4253,8 @@ public final class FinancialDataStore: ObservableObject {
                     accountId: accountId,
                     ignoreInConsolidated: false,
                     recurrenceMode: .installment,
-                    installmentsOrMonthsCount: item.installmentsCount
+                    installmentsOrMonthsCount: item.installmentsCount,
+                    creditCardId: targetCardId
                 )
                 if let firstId = createdSeries.first?.id,
                    let idx = transactions.firstIndex(where: { $0.id == firstId }) {
@@ -3328,7 +4275,8 @@ public final class FinancialDataStore: ObservableObject {
                     accountId: accountId,
                     ignoreInConsolidated: false,
                     recurrenceMode: .repeated,
-                    installmentsOrMonthsCount: item.installmentsCount
+                    installmentsOrMonthsCount: item.installmentsCount,
+                    creditCardId: targetCardId
                 )
                 if let firstId = createdSeries.first?.id,
                    let idx = transactions.firstIndex(where: { $0.id == firstId }) {
@@ -3349,7 +4297,8 @@ public final class FinancialDataStore: ObservableObject {
                     accountId: accountId,
                     ignoreInConsolidated: false,
                     recurrenceMode: .recurring,
-                    recurrenceFrequency: item.recurrenceFrequency
+                    recurrenceFrequency: item.recurrenceFrequency,
+                    creditCardId: targetCardId
                 )
                 if let firstId = createdSeries.first?.id,
                    let idx = transactions.firstIndex(where: { $0.id == firstId }) {
@@ -3358,6 +4307,27 @@ public final class FinancialDataStore: ObservableObject {
                 }
                 added += 1
                 if item.type == .expense { addedExp += 1 } else { addedInc += 1 }
+            } else if targetCardId != nil {
+                let createdSingle = createTransaction(
+                    name: item.cleanTitle,
+                    details: item.extractedDetails,
+                    amount: item.amount,
+                    date: item.date,
+                    type: item.type,
+                    isPaid: true,
+                    categoryId: resolvedCategoryId,
+                    accountId: accountId,
+                    ignoreInConsolidated: false,
+                    recurrenceMode: .single,
+                    creditCardId: targetCardId
+                )
+                if let firstId = createdSingle.first?.id,
+                   let idx = transactions.firstIndex(where: { $0.id == firstId }) {
+                    transactions[idx].rawStatementLine = item.rawLine
+                    transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
+                }
+                added += 1
+                addedExp += 1
             } else {
                 let tx = FinancialTransaction(
                     name: item.cleanTitle,
@@ -5252,10 +6222,11 @@ public final class FinancialDataStore: ObservableObject {
         let shadowedByDraft = draftProjection?.shadowedInstallmentTransactionIds ?? []
         let projectedAmountsByDraft = draftProjection?.activeInstallmentProjectedAmounts ?? [:]
 
-        // 1. Soma todas as transações até `cutoff`, exceto as amortizações planejadas salvas deste contrato (que serão substituídas pelo draftPlan)
+        // 1. Soma todas as transações até `cutoff`, exceto as amortizações planejadas salvas deste contrato e despesas de cartão (que impactam o caixa apenas via Pagamento de Fatura)
         var transactionsDelta = 0.0
         for tx in transactions {
             guard !tx.ignoreInConsolidated else { continue }
+            guard !tx.isCreditCardExpense else { continue }
             guard tx.date <= cutoff else { continue }
             if isClosed && !tx.isPaid { continue }
 
@@ -6010,7 +6981,12 @@ public final class FinancialDataStore: ObservableObject {
 
     public func monthlyExpense(for monthReference: Date, onlyPaid: Bool = false) -> Double {
         transactionsForMonth(monthReference)
-            .filter { $0.type == .expense && !$0.ignoreInConsolidated && (!onlyPaid || $0.isPaid) }
+            .filter {
+                $0.type == .expense &&
+                !$0.ignoreInConsolidated &&
+                !$0.isCreditCardInvoicePayment &&
+                (!onlyPaid || $0.isPaid || $0.isCreditCardExpense)
+            }
             .reduce(0) { $0 + effectiveTransactionAmount(for: $1) }
     }
 
@@ -6663,7 +7639,7 @@ public final class FinancialDataStore: ObservableObject {
             guard effectiveQty > 0 && effectiveUnitPrice > 0 else { continue }
 
             let redemptionTxs = transactions.filter { tx in
-                guard !tx.ignoreInConsolidated, tx.type == .expense else { return false }
+                guard !tx.ignoreInConsolidated, !tx.isCreditCardInvoicePayment, tx.type == .expense else { return false }
                 if tx.linkedQuotaId == seriesId {
                     if let quotaMonthKey = tx.linkedQuotaYearMonthKey {
                         return quotaMonthKey == targetKey
@@ -6812,22 +7788,23 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Despesas Avulsas Realizadas: Soma das despesas reais confirmadas ou pendentes na categoria no mês
-    /// que NÃO são baixas de cotas específicas (`linkedQuotaId == nil`). Consomem apenas a Verba Livre.
+    /// que NÃO são baixas de cotas específicas (`linkedQuotaId == nil`) nem pagamentos de fatura de cartão. Consomem apenas a Verba Livre.
     public func realizedFreeBudgetExpense(forCategory categoryId: UUID, in monthReference: Date) -> Double {
         transactionsForMonth(monthReference)
             .filter {
                 $0.type == .expense &&
                 !$0.ignoreInConsolidated &&
+                !$0.isCreditCardInvoicePayment &&
                 $0.categoryId == categoryId &&
                 $0.linkedQuotaId == nil
             }
             .reduce(0.0) { $0 + $1.amount }
     }
 
-    /// Gasto Realizado Total ($G_{real}$) na categoria no mês (Despesas Avulsas + Baixas de Cotas).
+    /// Gasto Realizado Total ($G_{real}$) na categoria no mês (Despesas Avulsas + Baixas de Cotas, excluindo pagamentos de fatura de cartão).
     public func realizedMonthlyExpense(forCategory categoryId: UUID, in monthReference: Date) -> Double {
         transactionsForMonth(monthReference)
-            .filter { $0.type == .expense && !$0.ignoreInConsolidated && $0.categoryId == categoryId }
+            .filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment && $0.categoryId == categoryId }
             .reduce(0.0) { $0 + $1.amount }
     }
 
@@ -7121,7 +8098,12 @@ public final class FinancialDataStore: ObservableObject {
 
     public func annualExpense(for yearReference: Date, onlyPaid: Bool = false) -> Double {
         transactionsForYear(yearReference)
-            .filter { $0.type == .expense && !$0.ignoreInConsolidated && (!onlyPaid || $0.isPaid) }
+            .filter {
+                $0.type == .expense &&
+                !$0.ignoreInConsolidated &&
+                !$0.isCreditCardInvoicePayment &&
+                (!onlyPaid || $0.isPaid || $0.isCreditCardExpense)
+            }
             .reduce(0) { $0 + effectiveTransactionAmount(for: $1) }
     }
 
@@ -7168,7 +8150,7 @@ public final class FinancialDataStore: ObservableObject {
 
     public func annualCategoryBreakdown(for yearReference: Date, type: TransactionType) -> [CategorySpendSummary] {
         let yearTxs = transactionsForYear(yearReference)
-            .filter { $0.type == type && !$0.ignoreInConsolidated }
+            .filter { $0.type == type && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment }
         let grandTotal = yearTxs.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
         guard grandTotal > 0 else { return [] }
 
@@ -7234,7 +8216,7 @@ public final class FinancialDataStore: ObservableObject {
         return points
     }
 
-    /// Saldo atual de uma conta específica considerando saldo inicial e transações pagas (não ignoradas no consolidado)
+    /// Saldo atual de uma conta bancária específica considerando saldo inicial e movimentações de caixa (despesas no cartão não subtraem a conta; apenas o Pagamento de Fatura subtrai).
     public func currentBalance(forAccount accountId: UUID, upTo dateLimit: Date? = nil) -> Double {
         guard let acc = account(for: accountId) else { return 0.0 }
         let limit = dateLimit.map { endOfMonth(for: $0) }
@@ -7242,6 +8224,7 @@ public final class FinancialDataStore: ObservableObject {
             .filter { tx in
                 guard tx.accountId == accountId else { return false }
                 guard !tx.ignoreInConsolidated else { return false }
+                guard !tx.isCreditCardExpense else { return false }
                 if let limit {
                     return tx.date <= limit && (tx.isPaid || tx.date <= limit)
                 } else {
@@ -7253,7 +8236,7 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     /// Saldo acumulado consolidado até o fim do mês informado (`monthReference`),
-    /// incluindo saldo inicial das contas + movimentações até aquele mês + investimentos marcados com "Exibir no consolidado"
+    /// incluindo saldo inicial das contas + movimentações de caixa até aquele mês (cartão de crédito impacta apenas no pagamento da fatura) + investimentos marcados com "Exibir no consolidado"
     /// menos as provisões de gastos variáveis e cotas restantes acumuladas a partir do mês atual quando `includeProjectedUnpaid == true`.
     /// Para meses anteriores ao atual (mês já fechado), as cotas/previsões são desconsideradas.
     public func accumulatedConsolidatedBalance(throughMonth monthReference: Date, includeProjectedUnpaid: Bool = true) -> Double {
@@ -7273,6 +8256,7 @@ public final class FinancialDataStore: ObservableObject {
         let transactionsDelta = transactions
             .filter { tx in
                 guard !tx.ignoreInConsolidated else { return false }
+                guard !tx.isCreditCardExpense else { return false }
                 guard tx.date <= cutoff else { return false }
                 return includeProjectedUnpaid ? true : tx.isPaid
             }
@@ -7311,7 +8295,7 @@ public final class FinancialDataStore: ObservableObject {
 
     public func categoryBreakdown(for monthReference: Date, type: TransactionType) -> [CategorySpendSummary] {
         let monthTxs = transactionsForMonth(monthReference)
-            .filter { $0.type == type && !$0.ignoreInConsolidated }
+            .filter { $0.type == type && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment }
         let grandTotal = monthTxs.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
         guard grandTotal > 0 else { return [] }
 
@@ -7378,6 +8362,7 @@ public final class FinancialDataStore: ObservableObject {
             tx.type == .expense &&
             !tx.isPaid &&
             !tx.ignoreInConsolidated &&
+            !tx.isCreditCardExpense &&
             (isAnnual ? isInYear(tx.date, yearReference: referenceDate) : isInMonth(tx.date, monthReference: referenceDate))
         }
 
@@ -7386,6 +8371,7 @@ public final class FinancialDataStore: ObservableObject {
             tx.type == .expense &&
             !tx.isPaid &&
             !tx.ignoreInConsolidated &&
+            !tx.isCreditCardExpense &&
             tx.date > endOfCurrentPeriod &&
             tx.linkedContractId == nil
         }
@@ -7540,7 +8526,7 @@ public final class FinancialDataStore: ObservableObject {
         let income = isAnnual ? annualIncome(for: referenceDate) : monthlyIncome(for: referenceDate)
         let totalExpense = isAnnual ? annualExpense(for: referenceDate) : monthlyExpense(for: referenceDate)
         let periodTxs = isAnnual ? transactionsForYear(referenceDate) : transactionsForMonth(referenceDate)
-        let expenseTxs = periodTxs.filter { $0.type == .expense && !$0.ignoreInConsolidated }
+        let expenseTxs = periodTxs.filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment }
 
         let openLoans = activeContracts(for: .loan)
         let openFinancings = activeContracts(for: .financing)
@@ -7690,7 +8676,7 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         let incomeTxs = periodTxs.filter { $0.type == .income }
-        let expenseTxs = periodTxs.filter { $0.type == .expense }
+        let expenseTxs = periodTxs.filter { $0.type == .expense && !$0.isCreditCardInvoicePayment }
 
         // 3. Receitas: Recebidas, Pendentes (no prazo vs em atraso), Extraordinárias vs Habituais
         let receivedIncome = incomeTxs.filter(\.isPaid).reduce(0.0) { $0 + $1.amount }
@@ -7740,9 +8726,9 @@ public final class FinancialDataStore: ObservableObject {
         let effectiveIncomeForRatio = isClosed ? receivedIncome : (receivedIncome + pendingIncome)
         let topIncomeSourcePercentage = effectiveIncomeForRatio > 0 ? (topIncomeSourceAmount / effectiveIncomeForRatio) * 100.0 : 0.0
 
-        // 4. Despesas: Pagas, Pendentes (no prazo vs vencidas em atraso), Fixas vs Variáveis
-        let paidExpense = expenseTxs.filter(\.isPaid).reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
-        let pendingExpenseTxs = expenseTxs.filter { !$0.isPaid }
+        // 4. Despesas (Competência): Pagas (inclui cartão realizado), Pendentes (no prazo vs vencidas em atraso), Fixas vs Variáveis
+        let paidExpense = expenseTxs.filter { $0.isPaid || $0.isCreditCardExpense }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
+        let pendingExpenseTxs = expenseTxs.filter { !$0.isPaid && !$0.isCreditCardExpense }
         let pendingExpense = pendingExpenseTxs.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
 
         let overdueExpenses = pendingExpenseTxs.filter { calendar.startOfDay(for: $0.date) < todayStart }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
@@ -7768,8 +8754,8 @@ public final class FinancialDataStore: ObservableObject {
             }
         }()
 
-        let fixedExpenses = expenseTxs.filter { $0.isFixedExpense && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
-        let variableExpenses = expenseTxs.filter { $0.isVariableExpense && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
+        let fixedExpenses = expenseTxs.filter { $0.isFixedExpense && (isClosed ? ($0.isPaid || $0.isCreditCardExpense) : true) }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
+        let variableExpenses = expenseTxs.filter { $0.isVariableExpense && (isClosed ? ($0.isPaid || $0.isCreditCardExpense) : true) }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
         let totalClassifiedExp = fixedExpenses + variableExpenses
         let fixedExpensesPercentage = totalClassifiedExp > 0 ? (fixedExpenses / totalClassifiedExp) * 100.0 : 0.0
         let variableExpensesPercentage = totalClassifiedExp > 0 ? (variableExpenses / totalClassifiedExp) * 100.0 : 0.0
@@ -7840,6 +8826,7 @@ public final class FinancialDataStore: ObservableObject {
         let transactionsDelta = transactions
             .filter { tx in
                 guard !tx.ignoreInConsolidated else { return false }
+                guard !tx.isCreditCardExpense else { return false }
                 guard tx.date <= cutoffDate else { return false }
                 return isClosed ? tx.isPaid : true
             }
