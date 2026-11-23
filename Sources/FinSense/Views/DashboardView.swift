@@ -163,10 +163,67 @@ public struct DashboardView: View {
                     }
                 }
 
+                // MARK: - Alertas Contextuais (Vale Intramês + Central de Insights ML)
+                let dashIntraAnalysis: IntraMonthCashFlowAnalysis? = isAnnual ? nil : store.buildIntraMonthCashFlowAnalysis(for: store.selectedMonth)
+                if let intra = dashIntraAnalysis, intra.hasIntraMonthDeficit {
+                    HStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(Color(hex: intra.isTemporaryTrough ? "#F59E0B" : "#EF4444"))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(intra.isTemporaryTrough ? "Alerta de Descasamento de Caixa (Vale Intramês)" : "Risco de Caixa Negativo no Mês")
+                                .font(.caption.bold())
+                                .foregroundStyle(Color(hex: intra.isTemporaryTrough ? "#F59E0B" : "#EF4444"))
+                            Text("\(intra.alertSummaryText ?? "Saldo temporariamente negativo") • Menor saldo: \(BRLFormatters.currency(intra.minimumBalance)) (fechamento previsto: \(BRLFormatters.currency(intra.closingBalance))).")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Ver Linha de Corte") {
+                            store.selectedDestination = .transactions
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(hex: intra.isTemporaryTrough ? "#F59E0B" : "#EF4444").opacity(0.09))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color(hex: intra.isTemporaryTrough ? "#F59E0B" : "#EF4444").opacity(0.32), lineWidth: 1)
+                    )
+                }
+
+                if store.activeUnreviewedInsightsCount > 0 {
+                    HStack(spacing: 10) {
+                        Image(systemName: "brain.filled.head.profile")
+                            .foregroundStyle(Color(hex: "#6366F1"))
+                        Text("Central de Insights ML: \(store.activeUnreviewedInsightsCount) alerta(s) ou fechamento mensal aguardando revisão.")
+                            .font(.caption.weight(.medium))
+                        Spacer()
+                        Button("Abrir Central de Insights") {
+                            store.selectedDestination = .insights
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(hex: "#6366F1").opacity(0.08))
+                    )
+                }
+
                 // MARK: - Top KPI Cards (6 Sequential Lifecycle Cards - Equal Height Grid)
                 DashboardTopKPICardsView(
                     summary: kpiSummary,
                     isAnnual: isAnnual,
+                    intraMonthAnalysis: dashIntraAnalysis,
+                    sinkingFundsReserve: isAnnual ? 0.0 : store.totalMonthlySinkingFundContribution(for: store.selectedMonth),
                     onEditProvisions: { showProvisionsSheet = true }
                 )
 
@@ -2928,19 +2985,26 @@ public struct DebtCommitmentsDonutChartView: View {
 public struct DashboardTopKPICardsView: View {
     public let summary: UnifiedFinancialKPISummary
     public let isAnnual: Bool
+    public var intraMonthAnalysis: IntraMonthCashFlowAnalysis?
+    public var sinkingFundsReserve: Double
     public var onEditProvisions: () -> Void
 
     public init(
         summary: UnifiedFinancialKPISummary,
         isAnnual: Bool,
+        intraMonthAnalysis: IntraMonthCashFlowAnalysis? = nil,
+        sinkingFundsReserve: Double = 0.0,
         onEditProvisions: @escaping () -> Void
     ) {
         self.summary = summary
         self.isAnnual = isAnnual
+        self.intraMonthAnalysis = intraMonthAnalysis
+        self.sinkingFundsReserve = sinkingFundsReserve
         self.onEditProvisions = onEditProvisions
     }
 
     public var body: some View {
+        let rowCardHeight: CGFloat = (intraMonthAnalysis != nil && !summary.isPast) ? 142 : MetricCardView.standardCardHeight
         Grid(horizontalSpacing: 12, verticalSpacing: 12) {
             GridRow {
                 // Card 1 — Receitas Previstas
@@ -2955,7 +3019,8 @@ public struct DashboardTopKPICardsView: View {
                     footnote: summary.extraordinaryIncome > 0
                         ? "Habitual: \(BRLFormatters.currency(summary.habitualIncome)) • Extra: \(BRLFormatters.currency(summary.extraordinaryIncome))"
                         : nil,
-                    footnoteColor: Color(hex: "#8B5CF6")
+                    footnoteColor: Color(hex: "#8B5CF6"),
+                    cardHeight: rowCardHeight
                 )
                 .frame(maxWidth: .infinity)
 
@@ -2972,7 +3037,8 @@ public struct DashboardTopKPICardsView: View {
                     subtitle: despesasSub.text,
                     customSubtitle: despesasSub.styled,
                     icon: "arrow.up.right.circle.fill",
-                    tint: Color(hex: "#EF4444")
+                    tint: Color(hex: "#EF4444"),
+                    cardHeight: rowCardHeight
                 )
                 .frame(maxWidth: .infinity)
 
@@ -2983,6 +3049,9 @@ public struct DashboardTopKPICardsView: View {
                     }
                     if summary.hasBudgetOverrun {
                         return "Estouro de teto: \(BRLFormatters.currency(summary.totalBudgetsOverrun)) excedente"
+                    }
+                    if sinkingFundsReserve > 0.01 {
+                        return "Tetos: \(BRLFormatters.currency(summary.categoryCeilingsRemaining)) • Cotas: \(BRLFormatters.currency(summary.specificQuotasRemaining)) • Caixinhas: \(BRLFormatters.currency(sinkingFundsReserve))"
                     }
                     return "Tetos: \(BRLFormatters.currency(summary.categoryCeilingsRemaining)) • Cotas: \(BRLFormatters.currency(summary.specificQuotasRemaining))"
                 }()
@@ -2997,7 +3066,8 @@ public struct DashboardTopKPICardsView: View {
                     footnoteColor: summary.hasBudgetOverrun ? Color(hex: "#EF4444") : .secondary,
                     action: onEditProvisions,
                     actionLabel: "Ver",
-                    actionIcon: "pencil"
+                    actionIcon: "pencil",
+                    cardHeight: rowCardHeight
                 )
                 .frame(maxWidth: .infinity)
 
@@ -3011,7 +3081,8 @@ public struct DashboardTopKPICardsView: View {
                     icon: "chart.bar.doc.horizontal.fill",
                     tint: Color(hex: "#3B82F6"),
                     footnote: summary.isPast ? nil : "Teto máximo planejado",
-                    footnoteColor: .secondary
+                    footnoteColor: .secondary,
+                    cardHeight: rowCardHeight
                 )
                 .frame(maxWidth: .infinity)
 
@@ -3039,20 +3110,29 @@ public struct DashboardTopKPICardsView: View {
                     icon: summary.surplusAfterPlanning >= 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
                     tint: surplusTint,
                     footnote: summary.surplusAfterPlanning >= 0 ? "Planejamento sustentável" : "Déficit no planejamento",
-                    footnoteColor: surplusTint
+                    footnoteColor: surplusTint,
+                    cardHeight: rowCardHeight
                 )
                 .frame(maxWidth: .infinity)
 
-                // Card 6 — Saldo Previsto na Conta
+                // Card 6 — Saldo Previsto na Conta (com alerta de vale intramês + sparkline)
                 let projectedBalanceValue = summary.isPast
                     ? summary.projectedAccountBalance
                     : summary.balanceIfAllBudgetsConsumed
 
-                let projectedBalanceTint = projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                let hasTroughWarning = !summary.isPast && (intraMonthAnalysis?.hasIntraMonthDeficit == true)
+                let projectedBalanceTint: Color = {
+                    if projectedBalanceValue < 0 { return Color(hex: "#EF4444") }
+                    if hasTroughWarning { return Color(hex: "#F59E0B") }
+                    return Color(hex: "#10B981")
+                }()
 
                 let accountSubtitleText: String = {
                     if summary.isPast {
                         return "Saldo final histórico conciliado"
+                    }
+                    if hasTroughWarning, let alertText = intraMonthAnalysis?.alertSummaryText {
+                        return alertText
                     }
                     return "Se não usar o orçamento: \(BRLFormatters.currency(summary.projectedAccountBalance))"
                 }()
@@ -3060,6 +3140,9 @@ public struct DashboardTopKPICardsView: View {
                 let accountCustomSubtitle: Text? = {
                     if summary.isPast {
                         return Text("Saldo final histórico conciliado").foregroundColor(.secondary)
+                    }
+                    if hasTroughWarning, let alertText = intraMonthAnalysis?.alertSummaryText {
+                        return Text("⚠️ \(alertText)").fontWeight(.semibold).foregroundColor(Color(hex: "#EF4444"))
                     }
                     let prefix = "Se não usar o orçamento: "
                     let valueStr = BRLFormatters.currency(summary.projectedAccountBalance)
@@ -3071,6 +3154,11 @@ public struct DashboardTopKPICardsView: View {
                     if summary.isPast {
                         return "Resultado final registrado"
                     }
+                    if hasTroughWarning {
+                        return intraMonthAnalysis?.isTemporaryTrough == true
+                            ? "Vale intramês detectado"
+                            : "Alerta: Risco de caixa negativo"
+                    }
                     if projectedBalanceValue < 0 {
                         return "Alerta: Risco de caixa negativo"
                     }
@@ -3079,6 +3167,7 @@ public struct DashboardTopKPICardsView: View {
 
                 let accountFootnoteColor: Color = {
                     if summary.isPast { return .secondary }
+                    if hasTroughWarning { return Color(hex: "#EF4444") }
                     return projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
                 }()
 
@@ -3088,10 +3177,12 @@ public struct DashboardTopKPICardsView: View {
                     valueColor: nil,
                     subtitle: accountSubtitleText,
                     customSubtitle: accountCustomSubtitle,
-                    icon: summary.isPast ? "checkmark.seal.fill" : "building.columns.fill",
+                    icon: hasTroughWarning ? "exclamationmark.triangle.fill" : (summary.isPast ? "checkmark.seal.fill" : "building.columns.fill"),
                     tint: projectedBalanceTint,
                     footnote: accountFootnote,
-                    footnoteColor: accountFootnoteColor
+                    footnoteColor: accountFootnoteColor,
+                    intraMonthAnalysis: summary.isPast ? nil : intraMonthAnalysis,
+                    cardHeight: rowCardHeight
                 )
                 .frame(maxWidth: .infinity)
             }

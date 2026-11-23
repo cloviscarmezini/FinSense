@@ -125,6 +125,7 @@ public struct TransactionsView: View {
             referenceDate: store.selectedMonth,
             isAnnual: isAnnual
         )
+        let intraAnalysis: IntraMonthCashFlowAnalysis? = isAnnual ? nil : store.buildIntraMonthCashFlowAnalysis(for: store.selectedMonth)
 
         VStack(alignment: .leading, spacing: 18) {
             // MARK: - Header & Month Navigation
@@ -145,6 +146,7 @@ public struct TransactionsView: View {
             // MARK: - Summary Cards (Equal-Height Grid Adaptado por Submenu: 5 Cards)
             switch store.selectedTransactionsSubmenu {
             case .all:
+                let txRowCardHeight: CGFloat = (intraAnalysis != nil && !kpiSummary.isPast) ? 142 : MetricCardView.standardCardHeight
                 Grid(horizontalSpacing: 12, verticalSpacing: 12) {
                     GridRow {
                         // Card 1 — Total de Entradas
@@ -155,7 +157,8 @@ public struct TransactionsView: View {
                                 ? "\(BRLFormatters.currency(kpiSummary.receivedIncome)) efetivadas"
                                 : "\(BRLFormatters.currency(kpiSummary.receivedIncome)) efetivadas • \(BRLFormatters.currency(kpiSummary.pendingIncome)) pendentes",
                             icon: "arrow.down.left.circle.fill",
-                            tint: Color(hex: "#10B981")
+                            tint: Color(hex: "#10B981"),
+                            cardHeight: txRowCardHeight
                         )
                         .frame(maxWidth: .infinity)
 
@@ -172,7 +175,8 @@ public struct TransactionsView: View {
                             subtitle: saídasSub.text,
                             customSubtitle: saídasSub.styled,
                             icon: "arrow.up.right.circle.fill",
-                            tint: Color(hex: "#EF4444")
+                            tint: Color(hex: "#EF4444"),
+                            cardHeight: txRowCardHeight
                         )
                         .frame(maxWidth: .infinity)
 
@@ -200,15 +204,21 @@ public struct TransactionsView: View {
                             icon: "equal.circle.fill",
                             tint: movNetTint,
                             footnote: "Exclusivo de transações registradas",
-                            footnoteColor: movNetTint
+                            footnoteColor: movNetTint,
+                            cardHeight: txRowCardHeight
                         )
                         .frame(maxWidth: .infinity)
 
-                        // Card 4 — Saldo previsto para [data fim do mês selecionado]
+                        // Card 4 — Saldo previsto para [data fim do mês selecionado] (com alerta de vale intramês + sparkline)
                         let projectedBalanceValue = kpiSummary.isPast
                             ? kpiSummary.projectedAccountBalance
                             : kpiSummary.balanceIfAllBudgetsConsumed
-                        let projectedBalanceTint = projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
+                        let hasIntraDeficit = !kpiSummary.isPast && (intraAnalysis?.hasIntraMonthDeficit == true)
+                        let projectedBalanceTint: Color = {
+                            if projectedBalanceValue < 0 { return Color(hex: "#EF4444") }
+                            if hasIntraDeficit { return Color(hex: "#F59E0B") }
+                            return Color(hex: "#10B981")
+                        }()
                         let monthEndDateStr = BRLFormatters.shortDate(store.endOfMonth(for: store.selectedMonth))
                         let yearEndDateStr = "31/12/\(BRLFormatters.yearString(store.selectedMonth))"
                         let projectedCardTitle: String = {
@@ -219,12 +229,21 @@ public struct TransactionsView: View {
                                 ? "Saldo previsto para \(yearEndDateStr)"
                                 : "Saldo previsto para \(monthEndDateStr)"
                         }()
-                        let projectedSubtitleText: String = kpiSummary.isPast
-                            ? "Saldo final histórico conciliado"
-                            : "Se não usar o orçamento: \(BRLFormatters.currency(kpiSummary.projectedAccountBalance))"
+                        let projectedSubtitleText: String = {
+                            if kpiSummary.isPast {
+                                return "Saldo final histórico conciliado"
+                            }
+                            if hasIntraDeficit, let alertMsg = intraAnalysis?.alertSummaryText {
+                                return alertMsg
+                            }
+                            return "Se não usar o orçamento: \(BRLFormatters.currency(kpiSummary.projectedAccountBalance))"
+                        }()
                         let projectedCustomSubtitle: Text? = {
                             if kpiSummary.isPast {
                                 return Text("Saldo final histórico conciliado").foregroundColor(.secondary)
+                            }
+                            if hasIntraDeficit, let alertMsg = intraAnalysis?.alertSummaryText {
+                                return Text("⚠️ \(alertMsg)").fontWeight(.semibold).foregroundColor(Color(hex: "#EF4444"))
                             }
                             let prefix = "Se não usar o orçamento: "
                             let valueStr = BRLFormatters.currency(kpiSummary.projectedAccountBalance)
@@ -234,6 +253,11 @@ public struct TransactionsView: View {
                         let projectedFootnote: String = {
                             if kpiSummary.isPast {
                                 return "Resultado final registrado"
+                            }
+                            if hasIntraDeficit {
+                                return intraAnalysis?.isTemporaryTrough == true
+                                    ? "Vale intramês detectado"
+                                    : "Alerta: Risco de caixa negativo"
                             }
                             if projectedBalanceValue < 0 {
                                 return "Alerta: Risco de caixa negativo"
@@ -246,10 +270,12 @@ public struct TransactionsView: View {
                             value: BRLFormatters.currency(projectedBalanceValue),
                             subtitle: projectedSubtitleText,
                             customSubtitle: projectedCustomSubtitle,
-                            icon: kpiSummary.isPast ? "checkmark.seal.fill" : "building.columns.fill",
+                            icon: hasIntraDeficit ? "exclamationmark.triangle.fill" : (kpiSummary.isPast ? "checkmark.seal.fill" : "building.columns.fill"),
                             tint: projectedBalanceTint,
                             footnote: projectedFootnote,
-                            footnoteColor: kpiSummary.isPast ? .secondary : projectedBalanceTint
+                            footnoteColor: kpiSummary.isPast ? .secondary : (hasIntraDeficit ? Color(hex: "#EF4444") : projectedBalanceTint),
+                            intraMonthAnalysis: kpiSummary.isPast ? nil : intraAnalysis,
+                            cardHeight: txRowCardHeight
                         )
                         .frame(maxWidth: .infinity)
 
@@ -261,7 +287,8 @@ public struct TransactionsView: View {
                             icon: "list.bullet.rectangle",
                             tint: Color(hex: "#64748B"),
                             footnote: "Sem canceladas ou transferências",
-                            footnoteColor: .secondary
+                            footnoteColor: .secondary,
+                            cardHeight: txRowCardHeight
                         )
                         .frame(maxWidth: .infinity)
                     }
@@ -600,6 +627,27 @@ public struct TransactionsView: View {
                 bulkSelectionActionBar
             }
 
+            // MARK: - Alerta de Descasamento de Caixa (Vale Intramês)
+            if let intra = intraAnalysis, intra.hasIntraMonthDeficit, !kpiSummary.isPast {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Color(hex: "#EF4444"))
+                    Text("\(intra.alertSummaryText ?? "Falta de caixa temporária detectada") • Menor saldo: \(BRLFormatters.currency(intra.minimumBalance)). Veja abaixo a linha de corte e o trecho em vermelho.")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color(hex: "#EF4444").opacity(0.09))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(Color(hex: "#EF4444").opacity(0.30), lineWidth: 1)
+                )
+            }
+
             // MARK: - Transactions List
             if filteredMonthTransactions.isEmpty {
                 VStack(spacing: 12) {
@@ -626,13 +674,13 @@ public struct TransactionsView: View {
                             ForEach(transactionsGroupedByDay, id: \.day) { group in
                                 dayGroupHeader(day: group.day, items: group.items)
                                 ForEach(group.items) { tx in
-                                    transactionRow(tx)
+                                    transactionRow(tx, intraAnalysis: intraAnalysis)
                                         .id(transactionRenderKey(for: tx))
                                 }
                             }
                         } else {
                             ForEach(filteredMonthTransactions) { tx in
-                                transactionRow(tx)
+                                transactionRow(tx, intraAnalysis: intraAnalysis)
                                     .id(transactionRenderKey(for: tx))
                             }
                         }
@@ -954,7 +1002,12 @@ public struct TransactionsView: View {
     }
 
     @ViewBuilder
-    private func transactionRow(_ tx: FinancialTransaction) -> some View {
+    private func transactionRow(_ tx: FinancialTransaction, intraAnalysis: IntraMonthCashFlowAnalysis? = nil) -> some View {
+        let isCutoffTx = intraAnalysis?.cutoffTransactionId == tx.id
+        let isRecoveryTx = intraAnalysis?.recoveryTransactionId == tx.id
+        let isInDeficitZone = intraAnalysis?.deficitZoneTransactionIds.contains(tx.id) == true
+        let runningBalance = intraAnalysis?.runningBalanceByTransactionId[tx.id]
+
         let cat = store.category(for: tx.categoryId)
         let acc = store.account(for: tx.accountId)
         let card = store.creditCard(for: tx.creditCardId)
@@ -968,7 +1021,34 @@ public struct TransactionsView: View {
         let isEligibleForBulk = !tx.isPaid && !isShadowed && !tx.isCreditCardExpense
         let isBulkSelected = isEligibleForBulk && selectedTransactionIds.contains(tx.id)
 
-        HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 4) {
+            if isCutoffTx {
+                HStack(spacing: 6) {
+                    Image(systemName: "scissors")
+                        .font(.caption.bold())
+                    Text("LINHA DE CORTE — A partir deste lançamento o saldo acumulado fica negativo")
+                        .font(.caption2.bold())
+                    Spacer()
+                }
+                .foregroundStyle(Color(hex: "#EF4444"))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: "#EF4444").opacity(0.14)))
+            } else if isRecoveryTx {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.right.circle.fill")
+                        .font(.caption.bold())
+                    Text("CAIXA NORMALIZADO — Receita recompõe o saldo positivo")
+                        .font(.caption2.bold())
+                    Spacer()
+                }
+                .foregroundStyle(Color(hex: "#10B981"))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: "#10B981").opacity(0.14)))
+            }
+
+            HStack(spacing: 14) {
             Button {
                 toggleBulkSelection(for: tx)
             } label: {
@@ -1282,6 +1362,11 @@ public struct TransactionsView: View {
                             .foregroundStyle(Color(hex: "#8B5CF6"))
                     }
                 }
+                if let rb = runningBalance {
+                    Text("Saldo: \(BRLFormatters.currency(rb))")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(rb < -0.005 ? Color(hex: "#EF4444") : .secondary)
+                }
             }
             .frame(minWidth: 145, alignment: .trailing)
 
@@ -1318,17 +1403,18 @@ public struct TransactionsView: View {
                 .buttonStyle(.borderless)
                 .help("Excluir transação")
             }
+            }
         }
         .opacity(isShadowed ? 0.50 : 1.0)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.10) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.06) : Color(nsColor: .controlBackgroundColor)))
+                .fill(isInDeficitZone ? Color(hex: "#EF4444").opacity(0.06) : (isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.10) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.06) : Color(nsColor: .controlBackgroundColor))))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.50) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.28) : Color.primary.opacity(0.06)), lineWidth: isPayoffPlannedAmort ? 1.5 : 1)
+                .stroke(isInDeficitZone ? Color(hex: "#EF4444").opacity(0.42) : (isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.50) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.28) : Color.primary.opacity(0.06))), lineWidth: (isInDeficitZone || isPayoffPlannedAmort) ? 1.5 : 1)
         )
     }
 }

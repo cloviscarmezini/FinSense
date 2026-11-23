@@ -685,6 +685,9 @@ public struct GeneralSettingsSectionView: View {
             return planCount > 0 ? "\(finContracts.count) (\(planCount) plano\(planCount == 1 ? "" : "s"))" : "\(finContracts.count)"
         case .debts: return "\(store.debts.count)"
         case .provisions: return "\(store.provisions.count + store.categoryQuotas.count)"
+        case .sinkingFunds: return "\(store.sinkingFunds.count)"
+        case .decisionsAndScenarios: return "\(store.whatIfScenarios.count)"
+        case .insightsAndML: return "\(store.insights.count + store.monthlyReviews.count)"
         case .assets:
             return "\(store.collectExportableAssets().count)"
         }
@@ -1461,6 +1464,9 @@ public struct ResetFromScratchConfirmationSheet: View {
             let planCount = store.amortizationPlans.filter { finIds.contains($0.contractId) }.count
             return planCount > 0 ? "\(finContracts.count) (\(planCount) plano\(planCount == 1 ? "" : "s"))" : "\(finContracts.count)"
         case .debts: return "\(store.debts.count)"
+        case .sinkingFunds: return "\(store.sinkingFunds.count)"
+        case .whatIfScenarios: return "\(store.whatIfScenarios.count)"
+        case .insights: return "\(store.insights.count)"
         case .aiModelsAndChat: return "\(store.llmConfig.downloadedModels.count) mod."
         }
     }

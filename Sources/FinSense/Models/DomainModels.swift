@@ -11,6 +11,8 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
     case loans
     case financings
     case debts
+    case decisions
+    case insights
     case settings
 
     public var id: String { rawValue }
@@ -24,6 +26,8 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
         case .loans: return "Empréstimos"
         case .financings: return "Financiamentos"
         case .debts: return "Dívidas"
+        case .decisions: return "Decisões & Cenários"
+        case .insights: return "Central de Insights"
         case .settings: return "Configurações"
         }
     }
@@ -37,6 +41,8 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
         case .loans: return "Consignados, pessoais e amortização"
         case .financings: return "Financiamentos de imóvel e carro"
         case .debts: return "Controle e negociação de dívidas em aberto"
+        case .decisions: return "Amortizar vs. Investir, Stress Test e Sinking Funds"
+        case .insights: return "Machine Learning comportamental, alertas e fechamento"
         case .settings: return "LLM local, contas e categorias"
         }
     }
@@ -50,6 +56,8 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
         case .loans: return "banknote.fill"
         case .financings: return "house.and.flag.fill"
         case .debts: return "exclamationmark.shield.fill"
+        case .decisions: return "wand.and.stars"
+        case .insights: return "brain.filled.head.profile"
         case .settings: return "gearshape.fill"
         }
     }
@@ -129,6 +137,9 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
     case loans
     case financings
     case debts
+    case sinkingFunds
+    case whatIfScenarios
+    case insights
     case aiModelsAndChat
 
     public var id: String { rawValue }
@@ -143,6 +154,9 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
         case .loans: return "Empréstimos"
         case .financings: return "Financiamentos"
         case .debts: return "Dívidas"
+        case .sinkingFunds: return "Sinking Funds (Caixinhas Anuais)"
+        case .whatIfScenarios: return "Cenários E se? (What-If)"
+        case .insights: return "Central de Insights e Perfil ML"
         case .aiModelsAndChat: return "Modelos Locais e Histórico da IA"
         }
     }
@@ -157,6 +171,9 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
         case .loans: return "Remove todos os contratos de empréstimos"
         case .financings: return "Remove todos os financiamentos de imóvel e carro"
         case .debts: return "Remove todos os cards de dívidas abertas e quitadas"
+        case .sinkingFunds: return "Remove todas as provisões de gastos anuais/sazonais"
+        case .whatIfScenarios: return "Remove todos os cenários salvos de Stress Test"
+        case .insights: return "Remove insights gerados, feedbacks, revisões e perfil ML"
         case .aiModelsAndChat: return "Remove modelos baixados e histórico de conversas do chat"
         }
     }
@@ -171,6 +188,9 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
         case .loans: return "banknote.fill"
         case .financings: return "house.and.flag.fill"
         case .debts: return "exclamationmark.shield.fill"
+        case .sinkingFunds: return "tray.and.arrow.down.fill"
+        case .whatIfScenarios: return "wand.and.stars"
+        case .insights: return "brain.filled.head.profile"
         case .aiModelsAndChat: return "cpu.fill"
         }
     }
@@ -2935,6 +2955,9 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
     case financings = "financings"
     case debts = "debts"
     case provisions = "provisions"
+    case sinkingFunds = "sinkingFunds"
+    case decisionsAndScenarios = "decisionsAndScenarios"
+    case insightsAndML = "insightsAndML"
     case assets = "assets"
 
     public var id: String { rawValue }
@@ -2959,6 +2982,12 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
             return "Dívidas"
         case .provisions:
             return "Previsões e Cotas"
+        case .sinkingFunds:
+            return "Sinking Funds (Caixinhas Anuais)"
+        case .decisionsAndScenarios:
+            return "Cenários E se? (What-If)"
+        case .insightsAndML:
+            return "Insights, Revisões Mensais e ML"
         case .assets:
             return "Assets, Ícones e Comprovantes"
         }
@@ -2984,6 +3013,12 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
             return "Dívidas em aberto e histórico de acordos"
         case .provisions:
             return "Tetos mensais por categoria e cotas de itens específicos"
+        case .sinkingFunds:
+            return "Provisões anuais proporcionais (IPVA, IPTU, seguros)"
+        case .decisionsAndScenarios:
+            return "Cenários salvos de Stress Test e premissas CDI/Selic"
+        case .insightsAndML:
+            return "Alertas ativos, feedbacks do usuário, fechamentos e perfil ML"
         case .assets:
             return "Imagens personalizadas de contas/cartões/dívidas e anexos"
         }
@@ -3000,6 +3035,9 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
         case .financings: return "house.and.flag.fill"
         case .debts: return "exclamationmark.shield.fill"
         case .provisions: return "tray.full.fill"
+        case .sinkingFunds: return "tray.and.arrow.down.fill"
+        case .decisionsAndScenarios: return "wand.and.stars"
+        case .insightsAndML: return "brain.filled.head.profile"
         case .assets: return "photo.on.rectangle.angled"
         }
     }

@@ -388,7 +388,7 @@ public final class CloudSyncService: ObservableObject {
         while remainingBatches > 0 {
             remainingBatches -= 1
 
-            let localStoreIsEmpty = store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty && store.contracts.isEmpty && store.investments.isEmpty && store.debts.isEmpty
+            let localStoreIsEmpty = store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty && store.contracts.isEmpty && store.investments.isEmpty && store.debts.isEmpty && store.sinkingFunds.isEmpty && store.whatIfScenarios.isEmpty && store.insights.isEmpty && store.monthlyReviews.isEmpty
             let effectiveSinceRevision: Int64
             if localStoreIsEmpty && lastServerRevision == 0 {
                 effectiveSinceRevision = 0
@@ -465,7 +465,7 @@ public final class CloudSyncService: ObservableObject {
                 applyServerChanges(response, into: store)
 
                 let serverIsEmpty = response.latestRevision == 0 && (response.serverChanges?.isEmpty ?? true) && (response.deltas?.isEmpty ?? true)
-                let hasLocalData = !store.transactions.isEmpty || !store.accounts.isEmpty || !store.categories.isEmpty || !store.contracts.isEmpty || !store.investments.isEmpty || !store.debts.isEmpty || !store.provisions.isEmpty || !store.categoryQuotas.isEmpty
+                let hasLocalData = !store.transactions.isEmpty || !store.accounts.isEmpty || !store.categories.isEmpty || !store.contracts.isEmpty || !store.investments.isEmpty || !store.debts.isEmpty || !store.provisions.isEmpty || !store.categoryQuotas.isEmpty || !store.sinkingFunds.isEmpty || !store.whatIfScenarios.isEmpty || !store.insights.isEmpty || !store.monthlyReviews.isEmpty
 
                 if !hasEnqueuedAutoSeed && serverIsEmpty && hasLocalData && outboxQueue.isEmpty {
                     hasEnqueuedAutoSeed = true
@@ -533,6 +533,11 @@ public final class CloudSyncService: ObservableObject {
         let debts = store.debts
         let provisions = store.provisions
         let quotas = store.categoryQuotas
+        let sinkingFunds = store.sinkingFunds
+        let scenarios = store.whatIfScenarios
+        let insights = store.insights
+        let reviews = store.monthlyReviews
+        let mlProfiles = store.mlBehavioralProfile.lastTrainedAt != nil ? [store.mlBehavioralProfile] : []
         let transactions = store.transactions
 
         let encoder = JSONEncoder()
@@ -570,6 +575,11 @@ public final class CloudSyncService: ObservableObject {
         addItems(items: debts, entityName: "debt_items", idKeyPath: \.id)
         addItems(items: provisions, entityName: "category_provisions", idKeyPath: \.id)
         addItems(items: quotas, entityName: "category_quota_rules", idKeyPath: \.id)
+        addItems(items: sinkingFunds, entityName: "sinking_funds", idKeyPath: \.id)
+        addItems(items: scenarios, entityName: "what_if_scenarios", idKeyPath: \.id)
+        addItems(items: insights, entityName: "financial_insights", idKeyPath: \.id)
+        addItems(items: reviews, entityName: "monthly_reviews", idKeyPath: \.id)
+        addItems(items: mlProfiles, entityName: "ml_behavioral_profiles", idKeyPath: \.id)
         addItems(items: transactions, entityName: "financial_transactions", idKeyPath: \.id)
 
         for mutation in allMutations {
@@ -620,6 +630,10 @@ public final class CloudSyncService: ObservableObject {
                     case "amortization_plans": store.amortizationPlans.removeAll { $0.id == change.entityId }
                     case "category_provisions": store.provisions.removeAll { $0.id == change.entityId }
                     case "category_quota_rules": store.categoryQuotas.removeAll { $0.id == change.entityId }
+                    case "sinking_funds": store.sinkingFunds.removeAll { $0.id == change.entityId }
+                    case "what_if_scenarios": store.whatIfScenarios.removeAll { $0.id == change.entityId }
+                    case "financial_insights": store.insights.removeAll { $0.id == change.entityId }
+                    case "monthly_reviews": store.monthlyReviews.removeAll { $0.id == change.entityId }
                     default: break
                     }
                     appliedChangesCount += 1
@@ -683,6 +697,30 @@ public final class CloudSyncService: ObservableObject {
                             if let idx = store.categoryQuotas.firstIndex(where: { $0.id == item.id }) { store.categoryQuotas[idx] = item }
                             else { store.categoryQuotas.append(item) }
                             appliedChangesCount += 1
+                        case "sinking_funds":
+                            let item = try decoder.decode(SinkingFund.self, from: rawData)
+                            if let idx = store.sinkingFunds.firstIndex(where: { $0.id == item.id }) { store.sinkingFunds[idx] = item }
+                            else { store.sinkingFunds.append(item) }
+                            appliedChangesCount += 1
+                        case "what_if_scenarios":
+                            let item = try decoder.decode(WhatIfScenario.self, from: rawData)
+                            if let idx = store.whatIfScenarios.firstIndex(where: { $0.id == item.id }) { store.whatIfScenarios[idx] = item }
+                            else { store.whatIfScenarios.append(item) }
+                            appliedChangesCount += 1
+                        case "financial_insights":
+                            let item = try decoder.decode(FinancialInsight.self, from: rawData)
+                            if let idx = store.insights.firstIndex(where: { $0.id == item.id }) { store.insights[idx] = item }
+                            else { store.insights.append(item) }
+                            appliedChangesCount += 1
+                        case "monthly_reviews":
+                            let item = try decoder.decode(MonthlyReviewRecord.self, from: rawData)
+                            if let idx = store.monthlyReviews.firstIndex(where: { $0.id == item.id }) { store.monthlyReviews[idx] = item }
+                            else { store.monthlyReviews.append(item) }
+                            appliedChangesCount += 1
+                        case "ml_behavioral_profiles":
+                            let item = try decoder.decode(MLBehavioralProfile.self, from: rawData)
+                            store.mlBehavioralProfile = item
+                            appliedChangesCount += 1
                         default: break
                         }
                     } catch {
@@ -726,6 +764,10 @@ public final class CloudSyncService: ObservableObject {
             case "amortization_plans": store.amortizationPlans.removeAll { $0.id == tomb.entityId }
             case "category_provisions": store.provisions.removeAll { $0.id == tomb.entityId }
             case "category_quota_rules": store.categoryQuotas.removeAll { $0.id == tomb.entityId }
+            case "sinking_funds": store.sinkingFunds.removeAll { $0.id == tomb.entityId }
+            case "what_if_scenarios": store.whatIfScenarios.removeAll { $0.id == tomb.entityId }
+            case "financial_insights": store.insights.removeAll { $0.id == tomb.entityId }
+            case "monthly_reviews": store.monthlyReviews.removeAll { $0.id == tomb.entityId }
             default: break
             }
         }
@@ -809,6 +851,39 @@ public final class CloudSyncService: ObservableObject {
                 else { store.categoryQuotas.append(item) }
             }
         }
+        if let funds = deltas.sinkingFunds {
+            for item in funds {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.sinkingFunds.firstIndex(where: { $0.id == item.id }) { store.sinkingFunds[idx] = item }
+                else { store.sinkingFunds.append(item) }
+            }
+        }
+        if let scenarios = deltas.whatIfScenarios {
+            for item in scenarios {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.whatIfScenarios.firstIndex(where: { $0.id == item.id }) { store.whatIfScenarios[idx] = item }
+                else { store.whatIfScenarios.append(item) }
+            }
+        }
+        if let insights = deltas.financialInsights {
+            for item in insights {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.insights.firstIndex(where: { $0.id == item.id }) { store.insights[idx] = item }
+                else { store.insights.append(item) }
+            }
+        }
+        if let reviews = deltas.monthlyReviews {
+            for item in reviews {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.monthlyReviews.firstIndex(where: { $0.id == item.id }) { store.monthlyReviews[idx] = item }
+                else { store.monthlyReviews.append(item) }
+            }
+        }
+        if let profiles = deltas.mlBehavioralProfiles, let latestProfile = profiles.max(by: { $0.updatedAt < $1.updatedAt }) {
+            if !outboxQueue.contains(where: { $0.entityId == latestProfile.id }) {
+                store.mlBehavioralProfile = latestProfile
+            }
+        }
 
         store.save()
     }
@@ -830,7 +905,12 @@ public final class CloudSyncService: ObservableObject {
         let contracts = store.contracts
         let provisions = store.provisions
         let quotas = store.categoryQuotas
-        let totalCount = accounts.count + creditCards.count + creditCardInvoices.count + categories.count + transactions.count + investments.count + debts.count + contracts.count + provisions.count + quotas.count
+        let sinkingFunds = store.sinkingFunds
+        let scenarios = store.whatIfScenarios
+        let insights = store.insights
+        let reviews = store.monthlyReviews
+        let mlProfiles = store.mlBehavioralProfile.lastTrainedAt != nil ? [store.mlBehavioralProfile] : []
+        let totalCount = accounts.count + creditCards.count + creditCardInvoices.count + categories.count + transactions.count + investments.count + debts.count + contracts.count + provisions.count + quotas.count + sinkingFunds.count + scenarios.count + insights.count + reviews.count + mlProfiles.count
 
         Task { [weak self] in
             guard let self else { return }
@@ -883,6 +963,11 @@ public final class CloudSyncService: ObservableObject {
             await processBatch(items: contracts, entityName: "credit_contracts", idKeyPath: \.id, progressLabel: "Contratos")
             await processBatch(items: provisions, entityName: "category_provisions", idKeyPath: \.id, progressLabel: "Provisões")
             await processBatch(items: quotas, entityName: "category_quota_rules", idKeyPath: \.id, progressLabel: "Cotas")
+            await processBatch(items: sinkingFunds, entityName: "sinking_funds", idKeyPath: \.id, progressLabel: "Sinking Funds")
+            await processBatch(items: scenarios, entityName: "what_if_scenarios", idKeyPath: \.id, progressLabel: "Cenários What-If")
+            await processBatch(items: insights, entityName: "financial_insights", idKeyPath: \.id, progressLabel: "Insights")
+            await processBatch(items: reviews, entityName: "monthly_reviews", idKeyPath: \.id, progressLabel: "Revisões Mensais")
+            await processBatch(items: mlProfiles, entityName: "ml_behavioral_profiles", idKeyPath: \.id, progressLabel: "Perfil ML")
 
             for mutation in allMutations {
                 self.enqueueMutation(mutation)

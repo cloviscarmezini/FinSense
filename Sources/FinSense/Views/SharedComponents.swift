@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
+import Charts
 
 // MARK: - Native File Picker Helper (macOS NSOpenPanel)
 
@@ -368,6 +369,7 @@ public struct MetricCardView: View {
     public var actionLabel: String?
     public var actionIcon: String?
     public var subtitleHelp: String?
+    public var intraMonthAnalysis: IntraMonthCashFlowAnalysis?
     public var cardHeight: CGFloat = MetricCardView.standardCardHeight
 
     public init(
@@ -384,6 +386,7 @@ public struct MetricCardView: View {
         actionLabel: String? = nil,
         actionIcon: String? = nil,
         subtitleHelp: String? = nil,
+        intraMonthAnalysis: IntraMonthCashFlowAnalysis? = nil,
         cardHeight: CGFloat = MetricCardView.standardCardHeight
     ) {
         self.title = title
@@ -399,6 +402,7 @@ public struct MetricCardView: View {
         self.actionLabel = actionLabel
         self.actionIcon = actionIcon
         self.subtitleHelp = subtitleHelp
+        self.intraMonthAnalysis = intraMonthAnalysis
         self.cardHeight = cardHeight
     }
 
@@ -513,6 +517,10 @@ public struct MetricCardView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
+
+                if let intra = intraMonthAnalysis, !intra.dailyPoints.isEmpty {
+                    IntraMonthSparklineView(analysis: intra, height: 18)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -528,6 +536,56 @@ public struct MetricCardView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.primary.opacity(0.08), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - Mini Gráfico Sparkline de Fluxo Intramês (Zona Negativa em Vermelho)
+
+public struct IntraMonthSparklineView: View {
+    public let analysis: IntraMonthCashFlowAnalysis
+    public var height: CGFloat = 20
+
+    public init(analysis: IntraMonthCashFlowAnalysis, height: CGFloat = 20) {
+        self.analysis = analysis
+        self.height = height
+    }
+
+    public var body: some View {
+        Chart {
+            RuleMark(y: .value("Zero", 0))
+                .foregroundStyle(Color.secondary.opacity(0.35))
+                .lineStyle(StrokeStyle(lineWidth: 0.7, dash: [2, 2]))
+
+            ForEach(analysis.dailyPoints) { pt in
+                LineMark(
+                    x: .value("Dia", pt.day),
+                    y: .value("Saldo", pt.closingBalance)
+                )
+                .foregroundStyle(analysis.hasIntraMonthDeficit ? Color(hex: "#F59E0B") : Color(hex: "#10B981"))
+                .lineStyle(StrokeStyle(lineWidth: 1.5))
+
+                if pt.closingBalance < -0.005 {
+                    AreaMark(
+                        x: .value("Dia", pt.day),
+                        yStart: .value("Zero", 0.0),
+                        yEnd: .value("Saldo", pt.closingBalance)
+                    )
+                    .foregroundStyle(Color(hex: "#EF4444").opacity(0.38))
+
+                    PointMark(
+                        x: .value("Dia", pt.day),
+                        y: .value("Saldo", pt.closingBalance)
+                    )
+                    .symbolSize(10)
+                    .foregroundStyle(Color(hex: "#EF4444"))
+                }
+            }
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        .frame(height: height)
+        .help(analysis.alertSummaryText ?? "Evolução diária de saldo no mês")
     }
 }
 

@@ -136,6 +136,30 @@ public struct MainContentView: View {
                         sidebarRow(.debts)
                     }
 
+                    Section("Planejamento & Inteligência") {
+                        sidebarRow(.decisions)
+
+                        NavigationLink(value: SidebarDestination.insights) {
+                            HStack {
+                                Label {
+                                    Text(SidebarDestination.insights.title)
+                                        .font(.system(size: 13.5, weight: .medium))
+                                } icon: {
+                                    Image(systemName: SidebarDestination.insights.icon)
+                                }
+                                Spacer()
+                                if store.activeUnreviewedInsightsCount > 0 {
+                                    Text("\(store.activeUnreviewedInsightsCount)")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 1.5)
+                                        .background(Capsule().fill(Color(hex: "#6366F1")))
+                                        .foregroundStyle(.white)
+                                }
+                            }
+                        }
+                    }
+
                     Section("Configurações") {
                         sidebarRow(.settings)
 
@@ -261,6 +285,10 @@ public struct MainContentView: View {
                     LoansAndFinancingsView(store: store, llmService: llmService, kind: .financing)
                 case .debts:
                     DebtsView(store: store, llmService: llmService)
+                case .decisions:
+                    DecisionsAndScenariosView(store: store)
+                case .insights:
+                    InsightsCenterView(store: store)
                 case .settings:
                     SettingsView(store: store, llmService: llmService)
                 }
@@ -281,6 +309,10 @@ public struct MainContentView: View {
         .onAppear {
             llmService.activateBuiltInAppleIntelligenceIfNeeded(in: store)
             llmService.prewarmAppleIntelligence(store: store)
+            _ = store.runDailyBehavioralMLAnalysisIfNeeded(force: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            _ = store.runDailyBehavioralMLAnalysisIfNeeded(force: false)
         }
     }
 

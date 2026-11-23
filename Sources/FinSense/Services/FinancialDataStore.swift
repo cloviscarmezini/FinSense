@@ -18,6 +18,11 @@ public struct FinancialDatabaseSnapshot: Codable {
     public var budgetProjectionScenario: BudgetProjectionScenario?
     public var provisions: [CategoryProvision]?
     public var categoryQuotas: [CategoryQuotaRule]?
+    public var sinkingFunds: [SinkingFund]?
+    public var whatIfScenarios: [WhatIfScenario]?
+    public var insights: [FinancialInsight]?
+    public var monthlyReviews: [MonthlyReviewRecord]?
+    public var mlBehavioralProfile: MLBehavioralProfile?
     public var assets: [ExportedAssetFile]?
     public var llmConfig: LLMConfiguration
     public var chatHistory: [ChatMessage]
@@ -37,6 +42,11 @@ public struct FinancialDatabaseSnapshot: Codable {
         budgetProjectionScenario: BudgetProjectionScenario? = nil,
         provisions: [CategoryProvision]? = [],
         categoryQuotas: [CategoryQuotaRule]? = [],
+        sinkingFunds: [SinkingFund]? = [],
+        whatIfScenarios: [WhatIfScenario]? = [],
+        insights: [FinancialInsight]? = [],
+        monthlyReviews: [MonthlyReviewRecord]? = [],
+        mlBehavioralProfile: MLBehavioralProfile? = nil,
         assets: [ExportedAssetFile]? = nil,
         llmConfig: LLMConfiguration = LLMConfiguration(),
         chatHistory: [ChatMessage] = [],
@@ -55,6 +65,11 @@ public struct FinancialDatabaseSnapshot: Codable {
         self.budgetProjectionScenario = budgetProjectionScenario
         self.provisions = provisions
         self.categoryQuotas = categoryQuotas
+        self.sinkingFunds = sinkingFunds
+        self.whatIfScenarios = whatIfScenarios
+        self.insights = insights
+        self.monthlyReviews = monthlyReviews
+        self.mlBehavioralProfile = mlBehavioralProfile
         self.assets = assets
         self.llmConfig = llmConfig
         self.chatHistory = chatHistory
@@ -120,6 +135,9 @@ public struct SelectiveImportExecutionResult {
     public var importedFinancings: Int = 0
     public var importedDebts: Int = 0
     public var importedProvisionsAndQuotas: Int = 0
+    public var importedSinkingFunds: Int = 0
+    public var importedWhatIfScenarios: Int = 0
+    public var importedInsightsAndReviews: Int = 0
     public var importedAssets: Int = 0
     public var skippedDuplicatesTotal: Int = 0
     public var autoCreatedDependenciesCount: Int = 0
@@ -138,13 +156,17 @@ public struct SelectiveImportExecutionResult {
             .financings: importedFinancings,
             .debts: importedDebts,
             .provisions: importedProvisionsAndQuotas,
+            .sinkingFunds: importedSinkingFunds,
+            .decisionsAndScenarios: importedWhatIfScenarios,
+            .insightsAndML: importedInsightsAndReviews,
             .assets: importedAssets
         ]
     }
 
     public var totalImportedItems: Int {
         importedAccounts + importedCreditCards + importedCategories + importedTransactions + importedInvestments +
-        importedLoans + importedFinancings + importedDebts + importedProvisionsAndQuotas + importedAssets
+        importedLoans + importedFinancings + importedDebts + importedProvisionsAndQuotas +
+        importedSinkingFunds + importedWhatIfScenarios + importedInsightsAndReviews + importedAssets
     }
 }
 
@@ -380,6 +402,19 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var categoryQuotas: [CategoryQuotaRule] = [] {
         didSet { invalidateDerivedCaches() }
     }
+    @Published public var sinkingFunds: [SinkingFund] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var whatIfScenarios: [WhatIfScenario] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var insights: [FinancialInsight] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var monthlyReviews: [MonthlyReviewRecord] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var mlBehavioralProfile: MLBehavioralProfile = MLBehavioralProfile()
     @Published public var llmConfig: LLMConfiguration = LLMConfiguration()
     @Published public var chatHistory: [ChatMessage] = []
     @Published public var selectedMonth: Date = Date()
@@ -409,6 +444,7 @@ public final class FinancialDataStore: ObservableObject {
     private var cachedTotalRemainingProvisionByYM: [Int: Double] = [:]
     private var cachedAccumulatedBalanceByKey: [Int: Double] = [:]
     private var cachedKPISummaryByKey: [Int: UnifiedFinancialKPISummary] = [:]
+    internal var cachedIntraMonthAnalysisByYM: [Int: IntraMonthCashFlowAnalysis] = [:]
     private var maxMaterializedRecurringDate: Date? = nil
 
     public func invalidateDerivedCaches() {
@@ -424,6 +460,7 @@ public final class FinancialDataStore: ObservableObject {
         cachedTotalRemainingProvisionByYM.removeAll(keepingCapacity: true)
         cachedAccumulatedBalanceByKey.removeAll(keepingCapacity: true)
         cachedKPISummaryByKey.removeAll(keepingCapacity: true)
+        cachedIntraMonthAnalysisByYM.removeAll(keepingCapacity: true)
         maxMaterializedRecurringDate = nil
         if !isBatchLoading {
             dataRevision &+= 1
@@ -561,6 +598,11 @@ public final class FinancialDataStore: ObservableObject {
             }
             self.provisions = decoded.provisions ?? []
             self.categoryQuotas = decoded.categoryQuotas ?? []
+            self.sinkingFunds = decoded.sinkingFunds ?? []
+            self.whatIfScenarios = decoded.whatIfScenarios ?? []
+            self.insights = decoded.insights ?? []
+            self.monthlyReviews = decoded.monthlyReviews ?? []
+            self.mlBehavioralProfile = decoded.mlBehavioralProfile ?? MLBehavioralProfile()
             self.llmConfig = decoded.llmConfig
             self.chatHistory = decoded.chatHistory
             self.hasSeededInitialStatement = decoded.hasSeededInitialStatement
@@ -609,6 +651,11 @@ public final class FinancialDataStore: ObservableObject {
             self.amortizationPlans = []
             self.provisions = []
             self.categoryQuotas = []
+            self.sinkingFunds = []
+            self.whatIfScenarios = []
+            self.insights = []
+            self.monthlyReviews = []
+            self.mlBehavioralProfile = MLBehavioralProfile()
             self.llmConfig = LLMConfiguration()
             self.chatHistory = [
                 ChatMessage(
@@ -641,6 +688,11 @@ public final class FinancialDataStore: ObservableObject {
             budgetProjectionScenario: budgetProjectionScenario,
             provisions: provisions,
             categoryQuotas: categoryQuotas,
+            sinkingFunds: sinkingFunds,
+            whatIfScenarios: whatIfScenarios,
+            insights: insights,
+            monthlyReviews: monthlyReviews,
+            mlBehavioralProfile: mlBehavioralProfile,
             llmConfig: llmConfig,
             chatHistory: chatHistory,
             hasSeededInitialStatement: hasSeededInitialStatement
@@ -761,6 +813,17 @@ public final class FinancialDataStore: ObservableObject {
                 transactions.removeAll { $0.linkedDebtId != nil }
             }
         }
+        if targets.contains(.sinkingFunds) {
+            sinkingFunds.removeAll()
+        }
+        if targets.contains(.whatIfScenarios) {
+            whatIfScenarios.removeAll()
+        }
+        if targets.contains(.insights) {
+            insights.removeAll()
+            monthlyReviews.removeAll()
+            mlBehavioralProfile = MLBehavioralProfile()
+        }
         if targets.contains(.aiModelsAndChat) {
             for model in llmConfig.downloadedModels {
                 let fileURL = URL(fileURLWithPath: model.localPath)
@@ -856,6 +919,11 @@ public final class FinancialDataStore: ObservableObject {
             budgetProjectionScenario: budgetProjectionScenario,
             provisions: provisions,
             categoryQuotas: categoryQuotas,
+            sinkingFunds: sinkingFunds,
+            whatIfScenarios: whatIfScenarios,
+            insights: insights,
+            monthlyReviews: monthlyReviews,
+            mlBehavioralProfile: mlBehavioralProfile,
             assets: collectExportableAssets(),
             llmConfig: LLMConfiguration(),
             chatHistory: [],
@@ -905,6 +973,11 @@ public final class FinancialDataStore: ObservableObject {
             budgetProjectionScenario: (targets.contains(.loans) || targets.contains(.financings)) ? budgetProjectionScenario : nil,
             provisions: targets.contains(.provisions) ? provisions : [],
             categoryQuotas: targets.contains(.provisions) ? categoryQuotas : [],
+            sinkingFunds: targets.contains(.sinkingFunds) ? sinkingFunds : [],
+            whatIfScenarios: targets.contains(.decisionsAndScenarios) ? whatIfScenarios : [],
+            insights: targets.contains(.insightsAndML) ? insights : [],
+            monthlyReviews: targets.contains(.insightsAndML) ? monthlyReviews : [],
+            mlBehavioralProfile: targets.contains(.insightsAndML) ? mlBehavioralProfile : nil,
             assets: targets.contains(.assets) ? collectExportableAssets() : nil,
             llmConfig: LLMConfiguration(),
             chatHistory: [],
@@ -1268,6 +1341,57 @@ public final class FinancialDataStore: ObservableObject {
             totalCount: totalProvsAndQuotas,
             newCount: max(0, totalProvsAndQuotas - totalProvQuotaDups),
             duplicateCount: totalProvQuotaDups
+        )
+
+        // 8b. Sinking Funds (Caixinhas Anuais)
+        let snapFunds = snapshot.sinkingFunds ?? []
+        let existingFundIds = Set(sinkingFunds.map(\.id))
+        let existingFundKeys = Set(sinkingFunds.map { "\(Self.normalizeKey($0.name))|\($0.dueMonth)|\($0.dueYear)" })
+        let fundDups = snapFunds.filter {
+            existingFundIds.contains($0.id) || existingFundKeys.contains("\(Self.normalizeKey($0.name))|\($0.dueMonth)|\($0.dueYear)")
+        }.count
+        analyses[.sinkingFunds] = ImportTargetAnalysis(
+            target: .sinkingFunds,
+            totalCount: snapFunds.count,
+            newCount: max(0, snapFunds.count - fundDups),
+            duplicateCount: fundDups
+        )
+
+        // 8c. Cenários What-If
+        let snapScenarios = snapshot.whatIfScenarios ?? []
+        let existingScenarioIds = Set(whatIfScenarios.map(\.id))
+        let existingScenarioKeys = Set(whatIfScenarios.map { Self.normalizeKey($0.name) })
+        let scenarioDups = snapScenarios.filter {
+            existingScenarioIds.contains($0.id) || existingScenarioKeys.contains(Self.normalizeKey($0.name))
+        }.count
+        analyses[.decisionsAndScenarios] = ImportTargetAnalysis(
+            target: .decisionsAndScenarios,
+            totalCount: snapScenarios.count,
+            newCount: max(0, snapScenarios.count - scenarioDups),
+            duplicateCount: scenarioDups
+        )
+
+        // 8d. Insights, Revisões Mensais e ML
+        let snapInsights = snapshot.insights ?? []
+        let snapReviews = snapshot.monthlyReviews ?? []
+        let hasProfileInSnap = snapshot.mlBehavioralProfile != nil ? 1 : 0
+        let existingInsightIds = Set(insights.map(\.id))
+        let existingInsightFps = Set(insights.map(\.fingerprint))
+        let insightDups = snapInsights.filter {
+            existingInsightIds.contains($0.id) || existingInsightFps.contains($0.fingerprint)
+        }.count
+        let existingReviewIds = Set(monthlyReviews.map(\.id))
+        let existingReviewYMs = Set(monthlyReviews.map(\.yearMonthKey))
+        let reviewDups = snapReviews.filter {
+            existingReviewIds.contains($0.id) || existingReviewYMs.contains($0.yearMonthKey)
+        }.count
+        let totalInsightsItems = snapInsights.count + snapReviews.count + hasProfileInSnap
+        let totalInsightsDups = insightDups + reviewDups
+        analyses[.insightsAndML] = ImportTargetAnalysis(
+            target: .insightsAndML,
+            totalCount: totalInsightsItems,
+            newCount: max(0, totalInsightsItems - totalInsightsDups),
+            duplicateCount: totalInsightsDups
         )
 
         // 9. Assets
@@ -1864,6 +1988,84 @@ public final class FinancialDataStore: ObservableObject {
                 existingQuotaIds.insert(newQuota.id)
                 existingQuotaKeys.insert(key)
                 res.importedProvisionsAndQuotas += 1
+            }
+        }
+
+        // 8b. Sinking Funds
+        if selectedTargets.contains(.sinkingFunds) {
+            var existingFundIds = Set(sinkingFunds.map(\.id))
+            var existingFundKeys = Set(sinkingFunds.map { "\(Self.normalizeKey($0.name))|\($0.dueMonth)|\($0.dueYear)" })
+            for srcFund in (snapshot.sinkingFunds ?? []) {
+                let key = "\(Self.normalizeKey(srcFund.name))|\(srcFund.dueMonth)|\(srcFund.dueYear)"
+                if existingFundIds.contains(srcFund.id) || existingFundKeys.contains(key) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                var newFund = srcFund
+                if let oldCat = srcFund.categoryId {
+                    newFund.categoryId = ensureValidCategoryId(for: oldCat, fallbackType: .expense, titleHint: srcFund.name)
+                }
+                sinkingFunds.append(newFund)
+                existingFundIds.insert(newFund.id)
+                existingFundKeys.insert(key)
+                res.importedSinkingFunds += 1
+            }
+        }
+
+        // 8c. Cenários What-If
+        if selectedTargets.contains(.decisionsAndScenarios) {
+            var existingScenarioIds = Set(whatIfScenarios.map(\.id))
+            var existingScenarioKeys = Set(whatIfScenarios.map { Self.normalizeKey($0.name) })
+            for srcScenario in (snapshot.whatIfScenarios ?? []) {
+                let key = Self.normalizeKey(srcScenario.name)
+                if existingScenarioIds.contains(srcScenario.id) || existingScenarioKeys.contains(key) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                whatIfScenarios.append(srcScenario)
+                existingScenarioIds.insert(srcScenario.id)
+                existingScenarioKeys.insert(key)
+                res.importedWhatIfScenarios += 1
+            }
+        }
+
+        // 8d. Central de Insights, Revisões Mensais e Perfil ML
+        if selectedTargets.contains(.insightsAndML) {
+            var existingInsightIds = Set(insights.map(\.id))
+            var existingInsightFps = Set(insights.map(\.fingerprint))
+            for srcInsight in (snapshot.insights ?? []) {
+                if existingInsightIds.contains(srcInsight.id) || existingInsightFps.contains(srcInsight.fingerprint) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                var newInsight = srcInsight
+                if let oldCat = srcInsight.relatedCategoryId {
+                    newInsight.relatedCategoryId = ensureValidCategoryId(for: oldCat, fallbackType: .expense, titleHint: srcInsight.title)
+                }
+                insights.append(newInsight)
+                existingInsightIds.insert(newInsight.id)
+                existingInsightFps.insert(newInsight.fingerprint)
+                res.importedInsightsAndReviews += 1
+            }
+
+            var existingReviewIds = Set(monthlyReviews.map(\.id))
+            var existingReviewYMs = Set(monthlyReviews.map(\.yearMonthKey))
+            for srcReview in (snapshot.monthlyReviews ?? []) {
+                if existingReviewIds.contains(srcReview.id) || existingReviewYMs.contains(srcReview.yearMonthKey) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                monthlyReviews.append(srcReview)
+                existingReviewIds.insert(srcReview.id)
+                existingReviewYMs.insert(srcReview.yearMonthKey)
+                res.importedInsightsAndReviews += 1
+            }
+
+            if let importedProfile = snapshot.mlBehavioralProfile {
+                if mlBehavioralProfile.lastTrainedAt == nil || importedProfile.trainingEpochCount >= mlBehavioralProfile.trainingEpochCount {
+                    mlBehavioralProfile = importedProfile
+                }
+                res.importedInsightsAndReviews += 1
             }
         }
 
@@ -7993,23 +8195,25 @@ public final class FinancialDataStore: ObservableObject {
             .reduce(0.0) { $0 + $1.remainingProvision }
     }
 
-    /// Soma total dos valores estimados ($\sum T_{estimado}$) configurados para o mês (Cotas Específicas + Tetos de Categoria).
+    /// Soma total dos valores estimados ($\sum T_{estimado}$) configurados para o mês (Cotas Específicas + Tetos de Categoria + Sinking Funds).
     public func totalEstimatedProvision(for monthReference: Date) -> Double {
         let quotasEstimated = allQuotaEnvelopes(for: monthReference)
             .reduce(0.0) { $0 + $1.totalEstimatedAmount }
         let categoriesEstimated = provisionEnvelopes(for: monthReference)
             .reduce(0.0) { $0 + $1.estimatedAmount }
-        return quotasEstimated + categoriesEstimated
+        return quotasEstimated + categoriesEstimated + totalMonthlySinkingFundContribution(for: monthReference)
     }
 
     /// Provisão Total Futura Consolidada no Dashboard:
-    /// $\text{Provisão Total Futura} = \sum \text{Cotas Restantes} + \sum \text{Tetos de Categoria Restantes}$
+    /// $\text{Provisão Total Futura} = \sum \text{Cotas Restantes} + \sum \text{Tetos de Categoria Restantes} + \sum \text{Sinking Funds Mensais}$
     /// Para meses anteriores ao atual (mês já fechado), retorna 0.0 pois o mês já encerrou e prevalecem apenas despesas reais realizadas.
     public func totalRemainingProvision(for monthReference: Date, referenceNow: Date? = nil) -> Double {
         if isMonthPriorToCurrent(monthReference, referenceNow: referenceNow) {
             return 0.0
         }
-        return totalQuotasRemaining(for: monthReference) + totalCategoryProvisionsRemaining(for: monthReference)
+        return totalQuotasRemaining(for: monthReference)
+            + totalCategoryProvisionsRemaining(for: monthReference)
+            + totalMonthlySinkingFundContribution(for: monthReference)
     }
 
     /// Soma das provisões de gastos variáveis e cotas restantes acumuladas a partir do mês corrente até o mês de referência (`throughMonth`).
@@ -8884,33 +9088,37 @@ public final class FinancialDataStore: ObservableObject {
             if temporalContext == .currentYear {
                 var catRem = 0.0
                 var quotRem = 0.0
+                var totalRem = 0.0
                 var overrun = 0.0
                 for m in nowMonth...12 {
                     if let mDate = calendar.date(from: DateComponents(year: refYear, month: m, day: 1)) {
                         catRem += totalCategoryProvisionsRemaining(for: mDate, referenceNow: now)
                         quotRem += totalQuotasRemaining(for: mDate)
+                        totalRem += totalRemainingProvision(for: mDate, referenceNow: now)
                         overrun += provisionEnvelopes(for: mDate).reduce(0.0) { $0 + $1.exceededAmount }
                     }
                 }
                 categoryCeilingsRemaining = catRem
                 specificQuotasRemaining = quotRem
-                remainingBudgetsAndQuotas = catRem + quotRem
+                remainingBudgetsAndQuotas = totalRem
                 totalBudgetsOverrun = overrun
             } else {
                 // Ano futuro (12 meses projetados)
                 var catRem = 0.0
                 var quotRem = 0.0
+                var totalRem = 0.0
                 var overrun = 0.0
                 for m in 1...12 {
                     if let mDate = calendar.date(from: DateComponents(year: refYear, month: m, day: 1)) {
                         catRem += totalCategoryProvisionsRemaining(for: mDate, referenceNow: now)
                         quotRem += totalQuotasRemaining(for: mDate)
+                        totalRem += totalRemainingProvision(for: mDate, referenceNow: now)
                         overrun += provisionEnvelopes(for: mDate).reduce(0.0) { $0 + $1.exceededAmount }
                     }
                 }
                 categoryCeilingsRemaining = catRem
                 specificQuotasRemaining = quotRem
-                remainingBudgetsAndQuotas = catRem + quotRem
+                remainingBudgetsAndQuotas = totalRem
                 totalBudgetsOverrun = overrun
             }
         } else {
