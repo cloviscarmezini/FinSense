@@ -344,17 +344,40 @@ final class CreditCardTests: XCTestCase {
         let (destStore, _) = makeIsolatedStore()
         destStore.resetSelectedData(Set(ResetDataTarget.allCases))
         let package = try destStore.prepareDatabaseImportPackage(from: archive)
-        _ = destStore.executeSelectiveDatabaseImportSync(
+        XCTAssertEqual(package.totalCount(for: .creditCards), 1)
+        let importRes = destStore.executeSelectiveDatabaseImportSync(
             package: package,
             selectedTargets: Set(ExportDataTarget.allCases)
         )
+        XCTAssertEqual(importRes.importedCreditCards, 1)
         XCTAssertEqual(destStore.creditCards.count, 1)
         XCTAssertEqual(destStore.usedLimit(for: card.id), 1_200, accuracy: 0.01)
 
-        // Reset de contas limpa também os cartões e faturas
-        destStore.resetSelectedData([.accounts])
-        XCTAssertTrue(destStore.accounts.isEmpty)
+        // Granular JSON export contendo apenas Cartões & Faturas + Transações em uma store limpa
+        let granularData = try XCTUnwrap(reloaded.exportGranularDatabaseJSON(targets: [.creditCards, .transactions]))
+        let (granularStore, _) = makeIsolatedStore()
+        granularStore.resetSelectedData(Set(ResetDataTarget.allCases))
+        let granularPkg = try granularStore.prepareDatabaseImportPackage(from: granularData)
+        XCTAssertEqual(granularPkg.totalCount(for: .accounts), 0)
+        XCTAssertEqual(granularPkg.totalCount(for: .creditCards), 1)
+        _ = granularStore.executeSelectiveDatabaseImportSync(
+            package: granularPkg,
+            selectedTargets: [.creditCards, .transactions]
+        )
+        XCTAssertEqual(granularStore.creditCards.count, 1)
+        XCTAssertEqual(granularStore.usedLimit(for: card.id), 1_200, accuracy: 0.01)
+
+        // JSON review drafts preserva creditCardId
+        let drafts = try granularStore.parseImportableExpensesFromJSON(data: granularData)
+        XCTAssertTrue(drafts.contains { $0.creditCardId == card.id })
+
+        // Reset exclusivo de cartões limpa cartões e faturas mantendo contas bancárias intactas
+        destStore.resetSelectedData([.creditCards])
+        XCTAssertFalse(destStore.accounts.isEmpty)
         XCTAssertTrue(destStore.creditCards.isEmpty)
         XCTAssertTrue(destStore.creditCardInvoices.isEmpty)
+
+        destStore.resetSelectedData([.accounts])
+        XCTAssertTrue(destStore.accounts.isEmpty)
     }
 }
