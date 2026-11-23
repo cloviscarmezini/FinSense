@@ -448,4 +448,37 @@ final class CloudSyncAndAuthTests: XCTestCase {
 
         try? FileManager.default.removeItem(at: tempDir)
     }
+
+    func testRemoteStatusDetectionUpdatesSyncIconAndClearsOnSync() throws {
+        let json = """
+        {
+          "latest_revision": 42,
+          "has_changes": true,
+          "server_reset": false
+        }
+        """.data(using: .utf8)!
+
+        let dto = try JSONDecoder().decode(CloudSyncStatusResponseDTO.self, from: json)
+        XCTAssertEqual(dto.latestRevision, 42)
+        XCTAssertTrue(dto.hasChanges)
+        XCTAssertFalse(dto.serverReset)
+
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let store = FinancialDataStore(customDirectory: tempDir)
+        let syncService = CloudSyncService(store: store)
+        store.cloudSyncService = syncService
+        syncService.isEnabled = true
+
+        // Sem autenticação real em unit test, valida diretamente o modelo de estado e a transição visual
+        syncService.applyRemoteStatusCheckResult(dto)
+        XCTAssertTrue(syncService.hasRemoteUpdates)
+        XCTAssertEqual(syncService.remoteLatestRevision, 42)
+        XCTAssertEqual(SyncStatus.remoteUpdatesAvailable(latestRevision: 42).iconSymbol, "icloud.and.arrow.down.fill")
+
+        syncService.applyRemoteStatusCheckResult(CloudSyncStatusResponseDTO(latestRevision: 42, hasChanges: false, serverReset: false))
+        XCTAssertFalse(syncService.hasRemoteUpdates)
+    }
 }
