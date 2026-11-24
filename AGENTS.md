@@ -11,12 +11,14 @@
 
 1. **Revisão e Manutenção Contínua deste Manifesto:**  
    Sempre que implementar uma nova funcionalidade, refatorar um módulo, alterar a modelagem de dados ou modificar regras de negócio, você **DEVE** revisar e atualizar este manifesto (`AGENTS.md`), mantendo-o 100% fidedigno ao código-fonte.
-2. **Commits Semânticos Obrigatórios:**  
-   Toda e qualquer alteração no código deve ser finalizada com um commit semântico seguindo a convenção *Conventional Commits* (ex.: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `perf:`). **Nunca** faça commits genéricos e **nunca** suba para branches remotas (`git push`) a menos que explicitamente solicitado pelo usuário.
+2. **Commits Semânticos Obrigatórios & Proibição de `git push`:**  
+   Toda e qualquer alteração no código deve ser finalizada com um commit semântico seguindo a convenção *Conventional Commits* (ex.: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `perf:`). **NUNCA execute `git push`** sob hipótese alguma para branches remotas; os commits devem permanecer estritamente no repositório local.
 3. **Garantia de Qualidade e Validação de Testes:**  
    Antes de considerar uma tarefa concluída, compile o projeto (`swift build`) e execute a suíte de testes unitários relevante (`swift test`). Não introduza regressões em funcionalidades existentes.
 4. **Respeito aos Padrões de Design e UX do macOS:**  
    O FinSense Desktop adota design nativo macOS com `NavigationSplitView`, cartões com altura padronizada (`MetricCardView`), sparklines nativos (`Charts`), formatação monetária brasileira rigorosa (`BRLFormatters`), acessibilidade e suporte completo a dark/light mode.
+5. **Paridade Obrigatória de Exportação, Importação e Sincronização na API:**  
+   Toda e qualquer implementação de nova feature, alteração arquitetural, adição ou modificação de entidades, campos ou modelos de dados **DEVE** obrigatoriamente refletir de ponta a ponta na funcionalidade de exportação e importação de dados (assegurando persistência completa e compatibilidade retroativa com backups legados) e na camada de sincronização com a API (adaptando esquemas, mutações e endpoints no `FinSense-api`).
 
 ---
 
