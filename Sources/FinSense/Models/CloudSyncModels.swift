@@ -360,6 +360,11 @@ public struct SyncDeltasContainerDTO: Codable {
     public let financialInsights: [FinancialInsight]?
     public let monthlyReviews: [MonthlyReviewRecord]?
     public let mlBehavioralProfiles: [MLBehavioralProfile]?
+    public let reconciliationRules: [ReconciliationRule]?
+    public let assetItems: [AssetItem]?
+    public let incomeSources: [IncomeSource]?
+    public let netWorthSnapshots: [NetWorthSnapshot]?
+    public let fireScenarios: [FIREPlanScenario]?
 
     public init(
         bankAccounts: [BankAccount]? = nil,
@@ -377,7 +382,12 @@ public struct SyncDeltasContainerDTO: Codable {
         whatIfScenarios: [WhatIfScenario]? = nil,
         financialInsights: [FinancialInsight]? = nil,
         monthlyReviews: [MonthlyReviewRecord]? = nil,
-        mlBehavioralProfiles: [MLBehavioralProfile]? = nil
+        mlBehavioralProfiles: [MLBehavioralProfile]? = nil,
+        reconciliationRules: [ReconciliationRule]? = nil,
+        assetItems: [AssetItem]? = nil,
+        incomeSources: [IncomeSource]? = nil,
+        netWorthSnapshots: [NetWorthSnapshot]? = nil,
+        fireScenarios: [FIREPlanScenario]? = nil
     ) {
         self.bankAccounts = bankAccounts
         self.creditCards = creditCards
@@ -395,6 +405,11 @@ public struct SyncDeltasContainerDTO: Codable {
         self.financialInsights = financialInsights
         self.monthlyReviews = monthlyReviews
         self.mlBehavioralProfiles = mlBehavioralProfiles
+        self.reconciliationRules = reconciliationRules
+        self.assetItems = assetItems
+        self.incomeSources = incomeSources
+        self.netWorthSnapshots = netWorthSnapshots
+        self.fireScenarios = fireScenarios
     }
 
     enum CodingKeys: String, CodingKey {
@@ -414,6 +429,11 @@ public struct SyncDeltasContainerDTO: Codable {
         case financialInsights = "financial_insights"
         case monthlyReviews = "monthly_reviews"
         case mlBehavioralProfiles = "ml_behavioral_profiles"
+        case reconciliationRules = "reconciliation_rules"
+        case assetItems = "asset_items"
+        case incomeSources = "income_sources"
+        case netWorthSnapshots = "net_worth_snapshots"
+        case fireScenarios = "fire_scenarios"
     }
 
     public init(from decoder: Decoder) throws {
@@ -451,6 +471,11 @@ public struct SyncDeltasContainerDTO: Codable {
         self.financialInsights = decodeItems(.financialInsights)
         self.monthlyReviews = decodeItems(.monthlyReviews)
         self.mlBehavioralProfiles = decodeItems(.mlBehavioralProfiles)
+        self.reconciliationRules = decodeItems(.reconciliationRules)
+        self.assetItems = decodeItems(.assetItems)
+        self.incomeSources = decodeItems(.incomeSources)
+        self.netWorthSnapshots = decodeItems(.netWorthSnapshots)
+        self.fireScenarios = decodeItems(.fireScenarios)
     }
 
     public var isEmpty: Bool {
@@ -469,7 +494,12 @@ public struct SyncDeltasContainerDTO: Codable {
         (whatIfScenarios?.isEmpty ?? true) &&
         (financialInsights?.isEmpty ?? true) &&
         (monthlyReviews?.isEmpty ?? true) &&
-        (mlBehavioralProfiles?.isEmpty ?? true)
+        (mlBehavioralProfiles?.isEmpty ?? true) &&
+        (reconciliationRules?.isEmpty ?? true) &&
+        (assetItems?.isEmpty ?? true) &&
+        (incomeSources?.isEmpty ?? true) &&
+        (netWorthSnapshots?.isEmpty ?? true) &&
+        (fireScenarios?.isEmpty ?? true)
     }
 }
 

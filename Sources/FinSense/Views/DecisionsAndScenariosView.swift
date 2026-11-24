@@ -5,6 +5,7 @@ public enum DecisionsTab: String, CaseIterable, Identifiable {
     case amortizeVsInvest = "Amortizar vs. Investir"
     case stressTest = "Stress Test de Caixa"
     case sinkingFunds = "Sinking Funds (Anuais)"
+    case fireSimulator = "Simulador FIRE"
 
     public var id: String { rawValue }
 }
@@ -55,7 +56,7 @@ public struct DecisionsAndScenariosView: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    .frame(width: 480)
+                    .frame(width: 560)
                 }
 
                 // Read-only badge when on simulation tabs
@@ -79,6 +80,8 @@ public struct DecisionsAndScenariosView: View {
                     stressTestSection
                 case .sinkingFunds:
                     sinkingFundsSection
+                case .fireSimulator:
+                    FIRESimulatorView(store: store)
                 }
             }
             .padding(24)
@@ -662,6 +665,7 @@ public struct SinkingFundEditorSheet: View {
     @State private var dueYear: Int = Calendar.current.component(.year, from: Date()) + 1
     @State private var accumulatedText: String = "0"
     @State private var selectedCategoryId: UUID? = nil
+    @State private var currencyCode: String = "BRL"
     @State private var notes: String = ""
 
     public init(store: FinancialDataStore, existingFund: SinkingFund? = nil) {
@@ -676,7 +680,12 @@ public struct SinkingFundEditorSheet: View {
 
             Form {
                 TextField("Nome (ex: IPVA, IPTU, Seguro Auto)", text: $name)
-                TextField("Valor Anual Estimado (R$)", text: $targetAmountText)
+                Picker("Moeda", selection: $currencyCode) {
+                    ForEach(SupportedCurrency.allCases) { cur in
+                        Text(cur.displayName).tag(cur.rawValue)
+                    }
+                }
+                TextField("Valor Anual Estimado", text: $targetAmountText)
                 Stepper("Ciclo de rateio: \(recurrenceMonths) mês(es)", value: $recurrenceMonths, in: 2...36)
                 HStack {
                     Picker("Mês Vencimento", selection: $dueMonth) {
@@ -686,7 +695,7 @@ public struct SinkingFundEditorSheet: View {
                     }
                     Stepper("Ano: \(dueYear)", value: $dueYear, in: 2024...2040)
                 }
-                TextField("Já reservado (R$)", text: $accumulatedText)
+                TextField("Já reservado", text: $accumulatedText)
                 Picker("Categoria Vinculada (Opcional)", selection: $selectedCategoryId) {
                     Text("Nenhuma").tag(UUID?.none)
                     ForEach(store.categories(for: .expense)) { cat in
@@ -698,7 +707,7 @@ public struct SinkingFundEditorSheet: View {
             .formStyle(.grouped)
 
             let previewMonthly = max(0.0, BRLFormatters.parseCurrencyInput(targetAmountText)) / Double(max(1, recurrenceMonths))
-            Text("Parcela mensal diluída no orçamento: \(BRLFormatters.currency(previewMonthly))/mês")
+            Text("Parcela mensal diluída no orçamento: \(BRLFormatters.currency(previewMonthly, currencyCode: currencyCode))/mês" + (currencyCode != "BRL" ? " (≈ \(BRLFormatters.currency(store.convertToBRL(previewMonthly, currencyCode: currencyCode)))/mês)" : ""))
                 .font(.subheadline.bold())
                 .foregroundStyle(Color(hex: "#0EA5E9"))
 
@@ -717,6 +726,7 @@ public struct SinkingFundEditorSheet: View {
                         existing.dueYear = dueYear
                         existing.accumulatedReserve = acc
                         existing.categoryId = selectedCategoryId
+                        existing.currencyCode = currencyCode
                         existing.notes = notes
                         store.updateSinkingFund(existing)
                     } else {
@@ -728,7 +738,8 @@ public struct SinkingFundEditorSheet: View {
                             dueMonth: dueMonth,
                             dueYear: dueYear,
                             accumulatedReserve: acc,
-                            notes: notes
+                            notes: notes,
+                            currencyCode: currencyCode
                         )
                         store.addSinkingFund(newFund)
                     }
@@ -738,7 +749,7 @@ public struct SinkingFundEditorSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 480)
         .onAppear {
             if let f = existingFund {
                 name = f.name
@@ -748,6 +759,7 @@ public struct SinkingFundEditorSheet: View {
                 dueYear = f.dueYear
                 accumulatedText = String(format: "%.2f", f.accumulatedReserve)
                 selectedCategoryId = f.categoryId
+                currencyCode = f.currencyCode
                 notes = f.notes
             }
         }

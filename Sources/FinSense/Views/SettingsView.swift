@@ -30,7 +30,7 @@ public struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .frame(width: 580)
+                .frame(width: 650)
             }
 
             Divider()
@@ -44,6 +44,8 @@ public struct SettingsView: View {
                 AccountsManagementSectionView(store: store)
             case .categories:
                 CategoriesManagementSectionView(store: store)
+            case .reconciliationRules:
+                ReconciliationRulesView(store: store)
             }
         }
         .padding(24)
@@ -688,6 +690,10 @@ public struct GeneralSettingsSectionView: View {
         case .sinkingFunds: return "\(store.sinkingFunds.count)"
         case .decisionsAndScenarios: return "\(store.whatIfScenarios.count)"
         case .insightsAndML: return "\(store.insights.count + store.monthlyReviews.count)"
+        case .reconciliationRules: return "\(store.reconciliationRules.count)"
+        case .netWorthAndAssets: return "\(store.assets.count)"
+        case .incomeSources: return "\(store.incomeSources.count)"
+        case .fireScenarios: return "\(store.fireScenarios.count)"
         case .assets:
             return "\(store.collectExportableAssets().count)"
         }
@@ -1467,6 +1473,10 @@ public struct ResetFromScratchConfirmationSheet: View {
         case .sinkingFunds: return "\(store.sinkingFunds.count)"
         case .whatIfScenarios: return "\(store.whatIfScenarios.count)"
         case .insights: return "\(store.insights.count)"
+        case .reconciliationRules: return "\(store.reconciliationRules.count)"
+        case .netWorthAndAssets: return "\(store.assets.count)"
+        case .incomeSources: return "\(store.incomeSources.count)"
+        case .fireScenarios: return "\(store.fireScenarios.count)"
         case .aiModelsAndChat: return "\(store.llmConfig.downloadedModels.count) mod."
         }
     }
@@ -2136,6 +2146,7 @@ public struct AccountEditorSheet: View {
     @State private var initialBalanceText: String = ""
     @State private var agency: String = ""
     @State private var accountNumber: String = ""
+    @State private var currencyCode: String = "BRL"
     // Campos específicos quando isCreditCardMode == true
     @State private var closingDay: Int = 25
     @State private var bestPurchaseDay: Int = 26
@@ -2221,9 +2232,15 @@ public struct AccountEditorSheet: View {
                         )
                         HStack(alignment: .bottom, spacing: 12) {
                             BRLCurrencyTextField(
-                                label: "Saldo Inicial (R$)",
+                                label: "Saldo Inicial (\(currencyCode))",
                                 text: $initialBalanceText
                             )
+                            Picker("Moeda", selection: $currencyCode) {
+                                ForEach(SupportedCurrency.allCases) { cur in
+                                    Text(cur.rawValue).tag(cur.rawValue)
+                                }
+                            }
+                            .frame(width: 110)
                             BorderedTextField(
                                 label: "Agência (Opcional)",
                                 placeholder: "Ex: 0001",
@@ -2234,6 +2251,20 @@ public struct AccountEditorSheet: View {
                                 placeholder: "Ex: 12345-6",
                                 text: $accountNumber
                             )
+                        }
+                        if currencyCode != "BRL" {
+                            HStack(spacing: 8) {
+                                let fxRate = ExchangeRateService.shared.rateToBRL(for: currencyCode)
+                                Text("Cotação de referência atual: 1 \(currencyCode) = \(BRLFormatters.currency(fxRate))")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Atualizar Câmbio") {
+                                    Task { await ExchangeRateService.shared.refreshRates() }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.mini)
+                            }
                         }
                     }
                 }
@@ -2362,6 +2393,7 @@ public struct AccountEditorSheet: View {
                         existing.initialBalance = amountVal
                         existing.agency = agency
                         existing.accountNumber = accountNumber
+                        existing.currencyCode = currencyCode
                         store.updateAccount(existing)
                     } else {
                         store.addAccount(
@@ -2372,7 +2404,8 @@ public struct AccountEditorSheet: View {
                             colorHex: colorHex,
                             initialBalance: amountVal,
                             agency: agency,
-                            accountNumber: accountNumber
+                            accountNumber: accountNumber,
+                            currencyCode: currencyCode
                         )
                     }
                     dismiss()
@@ -2405,6 +2438,7 @@ public struct AccountEditorSheet: View {
                 initialBalanceText = BRLFormatters.currency(existing.initialBalance)
                 agency = existing.agency
                 accountNumber = existing.accountNumber
+                currencyCode = existing.currencyCode
             } else {
                 defaultPaymentAccountId = store.accounts.first?.id
                 bestPurchaseDay = CreditCardEngine.suggestedBestPurchaseDay(forClosingDay: closingDay)

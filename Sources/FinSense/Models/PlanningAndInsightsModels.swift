@@ -212,6 +212,7 @@ public struct SinkingFund: Identifiable, Codable, Hashable, Sendable {
     public var accumulatedReserve: Double
     public var isEnabled: Bool
     public var notes: String
+    public var currencyCode: String
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -242,6 +243,7 @@ public struct SinkingFund: Identifiable, Codable, Hashable, Sendable {
         accumulatedReserve: Double = 0.0,
         isEnabled: Bool = true,
         notes: String = "",
+        currencyCode: String = "BRL",
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -257,6 +259,7 @@ public struct SinkingFund: Identifiable, Codable, Hashable, Sendable {
         self.accumulatedReserve = max(0.0, accumulatedReserve)
         self.isEnabled = isEnabled
         self.notes = notes
+        self.currencyCode = currencyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : currencyCode.uppercased()
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -264,7 +267,7 @@ public struct SinkingFund: Identifiable, Codable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, categoryId, iconSymbol, colorHex, targetAmount
         case recurrenceMonths, dueMonth, dueYear, accumulatedReserve
-        case isEnabled, notes, createdAt, updatedAt
+        case isEnabled, notes, currencyCode, createdAt, updatedAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -290,6 +293,9 @@ public struct SinkingFund: Identifiable, Codable, Hashable, Sendable {
         self.isEnabled = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("isEnabled")))
             ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("is_enabled"))) ?? true
         self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
+        let rawCur = (try? c.decodeIfPresent(String.self, forKey: AnyKey("currencyCode")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("currency_code"))) ?? "BRL"
+        self.currencyCode = rawCur.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : rawCur.uppercased()
         self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
             ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
         self.updatedAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updatedAt")))
@@ -835,5 +841,639 @@ public struct MLBehavioralProfile: Codable, Hashable, Identifiable, Sendable {
             ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("dismissed_feedback_count"))) ?? 0
         self.updatedAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updatedAt")))
             ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updated_at"))) ?? Date()
+    }
+}
+
+// MARK: - 7. Moedas Suportadas (Multimoeda / Câmbio)
+
+public enum SupportedCurrency: String, CaseIterable, Codable, Identifiable, Hashable, Sendable {
+    case BRL
+    case USD
+    case EUR
+    case GBP
+    case CAD
+    case CHF
+    case AUD
+    case JPY
+
+    public var id: String { rawValue }
+
+    public var symbol: String {
+        switch self {
+        case .BRL: return "R$"
+        case .USD: return "US$"
+        case .EUR: return "€"
+        case .GBP: return "£"
+        case .CAD: return "C$"
+        case .CHF: return "CHF"
+        case .AUD: return "A$"
+        case .JPY: return "¥"
+        }
+    }
+
+    public var displayName: String {
+        switch self {
+        case .BRL: return "Real Brasileiro (BRL)"
+        case .USD: return "Dólar Americano (USD)"
+        case .EUR: return "Euro (EUR)"
+        case .GBP: return "Libra Esterlina (GBP)"
+        case .CAD: return "Dólar Canadense (CAD)"
+        case .CHF: return "Franco Suíço (CHF)"
+        case .AUD: return "Dólar Australiano (AUD)"
+        case .JPY: return "Iene Japonês (JPY)"
+        }
+    }
+
+    public var defaultFallbackRateToBRL: Double {
+        switch self {
+        case .BRL: return 1.0
+        case .USD: return 5.75
+        case .EUR: return 6.10
+        case .GBP: return 7.25
+        case .CAD: return 4.10
+        case .CHF: return 6.45
+        case .AUD: return 3.75
+        case .JPY: return 0.038
+        }
+    }
+}
+
+// MARK: - 8. Motor de Regras Determinístico de Conciliação
+
+public enum RuleMatchField: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+    case nameOrDetails
+    case nameOnly
+    case rawStatementLine
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .nameOrDetails: return "Descrição ou Detalhes"
+        case .nameOnly: return "Somente Título/Descrição"
+        case .rawStatementLine: return "Linha Original do Extrato"
+        }
+    }
+}
+
+public enum RuleMatchOperator: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+    case contains
+    case startsWith
+    case equals
+    case regex
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .contains: return "Contém"
+        case .startsWith: return "Começa com"
+        case .equals: return "É igual a"
+        case .regex: return "Expressão Regular (Regex)"
+        }
+    }
+}
+
+public struct ReconciliationRule: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var priority: Int
+    public var isEnabled: Bool
+    public var matchField: RuleMatchField
+    public var matchOperator: RuleMatchOperator
+    public var matchPattern: String
+    public var minAmount: Double?
+    public var maxAmount: Double?
+    public var sourceAccountId: UUID?
+    public var sourceCreditCardId: UUID?
+    public var targetCategoryId: UUID?
+    public var cleanName: String?
+    public var markRecurring: Bool?
+    public var markReimbursable: Bool?
+    public var reimbursableDebtor: String?
+    public var markIgnoreInConsolidated: Bool?
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        priority: Int = 10,
+        isEnabled: Bool = true,
+        matchField: RuleMatchField = .nameOrDetails,
+        matchOperator: RuleMatchOperator = .contains,
+        matchPattern: String,
+        minAmount: Double? = nil,
+        maxAmount: Double? = nil,
+        sourceAccountId: UUID? = nil,
+        sourceCreditCardId: UUID? = nil,
+        targetCategoryId: UUID? = nil,
+        cleanName: String? = nil,
+        markRecurring: Bool? = nil,
+        markReimbursable: Bool? = nil,
+        reimbursableDebtor: String? = nil,
+        markIgnoreInConsolidated: Bool? = nil,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.priority = priority
+        self.isEnabled = isEnabled
+        self.matchField = matchField
+        self.matchOperator = matchOperator
+        self.matchPattern = matchPattern
+        self.minAmount = minAmount
+        self.maxAmount = maxAmount
+        self.sourceAccountId = sourceAccountId
+        self.sourceCreditCardId = sourceCreditCardId
+        self.targetCategoryId = targetCategoryId
+        self.cleanName = cleanName
+        self.markRecurring = markRecurring
+        self.markReimbursable = markReimbursable
+        self.reimbursableDebtor = reimbursableDebtor
+        self.markIgnoreInConsolidated = markIgnoreInConsolidated
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, priority, isEnabled, matchField, matchOperator, matchPattern
+        case minAmount, maxAmount, sourceAccountId, sourceCreditCardId, targetCategoryId
+        case cleanName, markRecurring, markReimbursable, reimbursableDebtor, markIgnoreInConsolidated
+        case createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.name = (try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))) ?? "Regra"
+        self.priority = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("priority"))) ?? 10
+        self.isEnabled = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("isEnabled")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("is_enabled"))) ?? true
+        self.matchField = (try? c.decodeIfPresent(RuleMatchField.self, forKey: AnyKey("matchField")))
+            ?? (try? c.decodeIfPresent(RuleMatchField.self, forKey: AnyKey("match_field"))) ?? .nameOrDetails
+        self.matchOperator = (try? c.decodeIfPresent(RuleMatchOperator.self, forKey: AnyKey("matchOperator")))
+            ?? (try? c.decodeIfPresent(RuleMatchOperator.self, forKey: AnyKey("match_operator"))) ?? .contains
+        self.matchPattern = (try? c.decodeIfPresent(String.self, forKey: AnyKey("matchPattern")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("match_pattern"))) ?? ""
+        self.minAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("minAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("min_amount")))
+        self.maxAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("maxAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("max_amount")))
+        self.sourceAccountId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("sourceAccountId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("source_account_id")))
+        self.sourceCreditCardId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("sourceCreditCardId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("source_credit_card_id")))
+        self.targetCategoryId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("targetCategoryId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("target_category_id")))
+        self.cleanName = (try? c.decodeIfPresent(String.self, forKey: AnyKey("cleanName")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("clean_name")))
+        self.markRecurring = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("markRecurring")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("mark_recurring")))
+        self.markReimbursable = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("markReimbursable")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("mark_reimbursable")))
+        self.reimbursableDebtor = (try? c.decodeIfPresent(String.self, forKey: AnyKey("reimbursableDebtor")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("reimbursable_debtor")))
+        self.markIgnoreInConsolidated = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("markIgnoreInConsolidated")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("mark_ignore_in_consolidated")))
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+        self.updatedAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updatedAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updated_at"))) ?? self.createdAt
+    }
+}
+
+// MARK: - 9. Patrimônio (Ativos Não-Bancários), Renda & Net Worth Snapshots
+
+public enum AssetClass: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+    case realEstate
+    case vehicle
+    case fgts
+    case privatePension
+    case equity
+    case other
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .realEstate: return "Imóveis"
+        case .vehicle: return "Veículos"
+        case .fgts: return "FGTS"
+        case .privatePension: return "Previdência Privada"
+        case .equity: return "Participações Societárias"
+        case .other: return "Outros Ativos"
+        }
+    }
+
+    public var iconSymbol: String {
+        switch self {
+        case .realEstate: return "house.fill"
+        case .vehicle: return "car.fill"
+        case .fgts: return "building.2.crop.circle.fill"
+        case .privatePension: return "shield.lefthalf.filled"
+        case .equity: return "briefcase.fill"
+        case .other: return "shippingbox.fill"
+        }
+    }
+
+    public var colorHex: String {
+        switch self {
+        case .realEstate: return "#6366F1"
+        case .vehicle: return "#0EA5E9"
+        case .fgts: return "#10B981"
+        case .privatePension: return "#8B5CF6"
+        case .equity: return "#F59E0B"
+        case .other: return "#64748B"
+        }
+    }
+}
+
+public struct AssetValuationEntry: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var date: Date
+    public var marketValue: Double
+    public var notes: String
+
+    public init(id: UUID = UUID(), date: Date = Date(), marketValue: Double, notes: String = "") {
+        self.id = id
+        self.date = date
+        self.marketValue = max(0.0, marketValue)
+        self.notes = notes
+    }
+}
+
+public struct AssetItem: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var assetClass: AssetClass
+    public var purchaseValue: Double
+    public var currentMarketValue: Double
+    public var acquisitionDate: Date?
+    public var linkedFinancingContractId: UUID?
+    public var annualDepreciationRatePercent: Double?
+    public var monthlyContributionEstimate: Double?
+    public var currencyCode: String
+    public var valuationHistory: [AssetValuationEntry]
+    public var notes: String
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        assetClass: AssetClass,
+        purchaseValue: Double = 0.0,
+        currentMarketValue: Double,
+        acquisitionDate: Date? = nil,
+        linkedFinancingContractId: UUID? = nil,
+        annualDepreciationRatePercent: Double? = nil,
+        monthlyContributionEstimate: Double? = nil,
+        currencyCode: String = "BRL",
+        valuationHistory: [AssetValuationEntry] = [],
+        notes: String = "",
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.assetClass = assetClass
+        self.purchaseValue = max(0.0, purchaseValue)
+        self.currentMarketValue = max(0.0, currentMarketValue)
+        self.acquisitionDate = acquisitionDate
+        self.linkedFinancingContractId = linkedFinancingContractId
+        self.annualDepreciationRatePercent = annualDepreciationRatePercent
+        self.monthlyContributionEstimate = monthlyContributionEstimate
+        self.currencyCode = currencyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : currencyCode.uppercased()
+        self.valuationHistory = valuationHistory
+        self.notes = notes
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, assetClass, purchaseValue, currentMarketValue, acquisitionDate
+        case linkedFinancingContractId, annualDepreciationRatePercent, monthlyContributionEstimate
+        case currencyCode, valuationHistory, notes, createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.name = (try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))) ?? ""
+        self.assetClass = (try? c.decodeIfPresent(AssetClass.self, forKey: AnyKey("assetClass")))
+            ?? (try? c.decodeIfPresent(AssetClass.self, forKey: AnyKey("asset_class"))) ?? .realEstate
+        self.purchaseValue = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("purchaseValue")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("purchase_value"))) ?? 0.0)
+        self.currentMarketValue = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("currentMarketValue")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("current_market_value"))) ?? 0.0)
+        self.acquisitionDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("acquisitionDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("acquisition_date")))
+        self.linkedFinancingContractId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedFinancingContractId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_financing_contract_id")))
+        self.annualDepreciationRatePercent = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("annualDepreciationRatePercent")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("annual_depreciation_rate_percent")))
+        self.monthlyContributionEstimate = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthlyContributionEstimate")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthly_contribution_estimate")))
+        let rawCur = (try? c.decodeIfPresent(String.self, forKey: AnyKey("currencyCode")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("currency_code"))) ?? "BRL"
+        self.currencyCode = rawCur.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : rawCur.uppercased()
+        self.valuationHistory = (try? c.decodeIfPresent([AssetValuationEntry].self, forKey: AnyKey("valuationHistory")))
+            ?? (try? c.decodeIfPresent([AssetValuationEntry].self, forKey: AnyKey("valuation_history"))) ?? []
+        self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+        self.updatedAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updatedAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updated_at"))) ?? self.createdAt
+    }
+}
+
+public enum IncomeSourceKind: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+    case fixedSalary
+    case variableSeasonal
+    case passiveIncome
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .fixedSalary: return "Renda Fixa (Salário / Pró-labore)"
+        case .variableSeasonal: return "Renda Variável / Sazonal (Bônus, 13º, Férias)"
+        case .passiveIncome: return "Renda Passiva / Extra (Aluguel, Dividendos)"
+        }
+    }
+}
+
+public struct IncomeSource: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var kind: IncomeSourceKind
+    public var grossAmount: Double
+    public var netAmount: Double
+    public var paymentDay: Int?
+    public var expectedMonth: Int?
+    public var frequency: RecurrenceFrequency
+    public var payerName: String
+    public var linkedAccountId: UUID?
+    public var currencyCode: String
+    public var isActive: Bool
+    public var notes: String
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public var monthlyEquivalentNetAmount: Double {
+        guard isActive else { return 0.0 }
+        switch frequency {
+        case .weekly: return netAmount * 52.0 / 12.0
+        case .biweekly: return netAmount * 26.0 / 12.0
+        case .monthly: return netAmount
+        case .bimonthly: return netAmount / 2.0
+        case .quarterly: return netAmount / 3.0
+        case .semiannual: return netAmount / 6.0
+        case .annual: return netAmount / 12.0
+        }
+    }
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        kind: IncomeSourceKind = .fixedSalary,
+        grossAmount: Double,
+        netAmount: Double,
+        paymentDay: Int? = 5,
+        expectedMonth: Int? = nil,
+        frequency: RecurrenceFrequency = .monthly,
+        payerName: String = "",
+        linkedAccountId: UUID? = nil,
+        currencyCode: String = "BRL",
+        isActive: Bool = true,
+        notes: String = "",
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.grossAmount = max(0.0, grossAmount)
+        self.netAmount = max(0.0, netAmount)
+        self.paymentDay = paymentDay
+        self.expectedMonth = expectedMonth
+        self.frequency = frequency
+        self.payerName = payerName
+        self.linkedAccountId = linkedAccountId
+        self.currencyCode = currencyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : currencyCode.uppercased()
+        self.isActive = isActive
+        self.notes = notes
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, grossAmount, netAmount, paymentDay, expectedMonth
+        case frequency, payerName, linkedAccountId, currencyCode, isActive, notes, createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.name = (try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))) ?? ""
+        self.kind = (try? c.decodeIfPresent(IncomeSourceKind.self, forKey: AnyKey("kind"))) ?? .fixedSalary
+        self.grossAmount = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("grossAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("gross_amount"))) ?? 0.0)
+        self.netAmount = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("netAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("net_amount"))) ?? self.grossAmount)
+        self.paymentDay = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("paymentDay")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("payment_day")))
+        self.expectedMonth = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("expectedMonth")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("expected_month")))
+        self.frequency = (try? c.decodeIfPresent(RecurrenceFrequency.self, forKey: AnyKey("frequency"))) ?? .monthly
+        self.payerName = (try? c.decodeIfPresent(String.self, forKey: AnyKey("payerName")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("payer_name"))) ?? ""
+        self.linkedAccountId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedAccountId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_account_id")))
+        let rawCur = (try? c.decodeIfPresent(String.self, forKey: AnyKey("currencyCode")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("currency_code"))) ?? "BRL"
+        self.currencyCode = rawCur.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : rawCur.uppercased()
+        self.isActive = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("isActive")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("is_active"))) ?? true
+        self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+        self.updatedAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updatedAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updated_at"))) ?? self.createdAt
+    }
+}
+
+public struct NetWorthSnapshot: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var yearMonthKey: Int
+    public var snapshotDate: Date
+    public var liquidAssetsBRL: Double
+    public var investmentsAssetsBRL: Double
+    public var realEstateAssetsBRL: Double
+    public var vehicleAssetsBRL: Double
+    public var fgtsAndOtherAssetsBRL: Double
+    public var totalAssetsBRL: Double
+    public var loansAndFinancingsLiabilitiesBRL: Double
+    public var creditCardsLiabilitiesBRL: Double
+    public var debtsLiabilitiesBRL: Double
+    public var totalLiabilitiesBRL: Double
+    public var netWorthBRL: Double
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        yearMonthKey: Int,
+        snapshotDate: Date = Date(),
+        liquidAssetsBRL: Double,
+        investmentsAssetsBRL: Double,
+        realEstateAssetsBRL: Double,
+        vehicleAssetsBRL: Double,
+        fgtsAndOtherAssetsBRL: Double,
+        totalAssetsBRL: Double,
+        loansAndFinancingsLiabilitiesBRL: Double,
+        creditCardsLiabilitiesBRL: Double,
+        debtsLiabilitiesBRL: Double,
+        totalLiabilitiesBRL: Double,
+        netWorthBRL: Double,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.yearMonthKey = yearMonthKey
+        self.snapshotDate = snapshotDate
+        self.liquidAssetsBRL = liquidAssetsBRL
+        self.investmentsAssetsBRL = investmentsAssetsBRL
+        self.realEstateAssetsBRL = realEstateAssetsBRL
+        self.vehicleAssetsBRL = vehicleAssetsBRL
+        self.fgtsAndOtherAssetsBRL = fgtsAndOtherAssetsBRL
+        self.totalAssetsBRL = totalAssetsBRL
+        self.loansAndFinancingsLiabilitiesBRL = loansAndFinancingsLiabilitiesBRL
+        self.creditCardsLiabilitiesBRL = creditCardsLiabilitiesBRL
+        self.debtsLiabilitiesBRL = debtsLiabilitiesBRL
+        self.totalLiabilitiesBRL = totalLiabilitiesBRL
+        self.netWorthBRL = netWorthBRL
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, yearMonthKey, snapshotDate
+        case liquidAssetsBRL, investmentsAssetsBRL, realEstateAssetsBRL, vehicleAssetsBRL, fgtsAndOtherAssetsBRL, totalAssetsBRL
+        case loansAndFinancingsLiabilitiesBRL, creditCardsLiabilitiesBRL, debtsLiabilitiesBRL, totalLiabilitiesBRL, netWorthBRL
+        case createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.yearMonthKey = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("yearMonthKey")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("year_month_key"))) ?? 202601
+        self.snapshotDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("snapshotDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("snapshot_date"))) ?? Date()
+        self.liquidAssetsBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("liquidAssetsBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("liquid_assets_brl"))) ?? 0.0
+        self.investmentsAssetsBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("investmentsAssetsBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("investments_assets_brl"))) ?? 0.0
+        self.realEstateAssetsBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("realEstateAssetsBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("real_estate_assets_brl"))) ?? 0.0
+        self.vehicleAssetsBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("vehicleAssetsBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("vehicle_assets_brl"))) ?? 0.0
+        self.fgtsAndOtherAssetsBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("fgtsAndOtherAssetsBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("fgts_and_other_assets_brl"))) ?? 0.0
+        self.totalAssetsBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("totalAssetsBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("total_assets_brl"))) ?? 0.0
+        self.loansAndFinancingsLiabilitiesBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("loansAndFinancingsLiabilitiesBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("loans_and_financings_liabilities_brl"))) ?? 0.0
+        self.creditCardsLiabilitiesBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("creditCardsLiabilitiesBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("credit_cards_liabilities_brl"))) ?? 0.0
+        self.debtsLiabilitiesBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("debtsLiabilitiesBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("debts_liabilities_brl"))) ?? 0.0
+        self.totalLiabilitiesBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("totalLiabilitiesBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("total_liabilities_brl"))) ?? 0.0
+        self.netWorthBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("netWorthBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("net_worth_brl"))) ?? 0.0
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+        self.updatedAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updatedAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updated_at"))) ?? self.createdAt
+    }
+}
+
+// MARK: - 10. Simulador de Independência Financeira (FIRE)
+
+public struct FIREPlanScenario: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var monthlyCostOfLivingBRL: Double
+    public var currentInvestedPatrimonyBRL: Double
+    public var includeRealEstateAndFGTS: Bool
+    public var monthlyContributionBRL: Double
+    public var safeWithdrawalRatePercent: Double
+    public var expectedAnnualNominalReturnPercent: Double
+    public var expectedAnnualInflationPercent: Double
+    public var notes: String
+    public var createdAt: Date
+    public var updatedAt: Date
+
+    public init(
+        id: UUID = UUID(),
+        name: String = "Plano FIRE Principal",
+        monthlyCostOfLivingBRL: Double = 6000.0,
+        currentInvestedPatrimonyBRL: Double = 0.0,
+        includeRealEstateAndFGTS: Bool = false,
+        monthlyContributionBRL: Double = 2000.0,
+        safeWithdrawalRatePercent: Double = 4.0,
+        expectedAnnualNominalReturnPercent: Double = 11.25,
+        expectedAnnualInflationPercent: Double = 4.5,
+        notes: String = "",
+        createdAt: Date = Date(),
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.name = name
+        self.monthlyCostOfLivingBRL = max(0.0, monthlyCostOfLivingBRL)
+        self.currentInvestedPatrimonyBRL = max(0.0, currentInvestedPatrimonyBRL)
+        self.includeRealEstateAndFGTS = includeRealEstateAndFGTS
+        self.monthlyContributionBRL = max(0.0, monthlyContributionBRL)
+        self.safeWithdrawalRatePercent = max(1.0, min(10.0, safeWithdrawalRatePercent))
+        self.expectedAnnualNominalReturnPercent = max(0.0, expectedAnnualNominalReturnPercent)
+        self.expectedAnnualInflationPercent = max(0.0, expectedAnnualInflationPercent)
+        self.notes = notes
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, monthlyCostOfLivingBRL, currentInvestedPatrimonyBRL, includeRealEstateAndFGTS
+        case monthlyContributionBRL, safeWithdrawalRatePercent, expectedAnnualNominalReturnPercent
+        case expectedAnnualInflationPercent, notes, createdAt, updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.name = (try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))) ?? "Plano FIRE Principal"
+        self.monthlyCostOfLivingBRL = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthlyCostOfLivingBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthly_cost_of_living_brl"))) ?? 6000.0)
+        self.currentInvestedPatrimonyBRL = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("currentInvestedPatrimonyBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("current_invested_patrimony_brl"))) ?? 0.0)
+        self.includeRealEstateAndFGTS = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("includeRealEstateAndFGTS")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("include_real_estate_and_fgts"))) ?? false
+        self.monthlyContributionBRL = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthlyContributionBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("monthly_contribution_brl"))) ?? 2000.0)
+        self.safeWithdrawalRatePercent = max(1.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("safeWithdrawalRatePercent")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("safe_withdrawal_rate_percent"))) ?? 4.0)
+        self.expectedAnnualNominalReturnPercent = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("expectedAnnualNominalReturnPercent")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("expected_annual_nominal_return_percent"))) ?? 11.25)
+        self.expectedAnnualInflationPercent = max(0.0, (try? c.decodeIfPresent(Double.self, forKey: AnyKey("expectedAnnualInflationPercent")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("expected_annual_inflation_percent"))) ?? 4.5)
+        self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+        self.updatedAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updatedAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("updated_at"))) ?? self.createdAt
     }
 }

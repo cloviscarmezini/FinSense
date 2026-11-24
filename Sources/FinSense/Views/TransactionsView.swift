@@ -10,7 +10,9 @@ public struct TransactionsView: View {
     @State private var selectedAccountFilter: UUID? = nil
     @State private var selectedCategoryFilter: UUID? = nil
     @State private var onlyPendingFilter: Bool = false
+    @State private var onlyNeedsReviewFilter: Bool = false
     @State private var sortOrder: TransactionSortOrder = .dateDescending
+    @State private var createdRuleBanner: String? = nil
     @AppStorage("transactions_group_by_day") private var groupByDay: Bool = false
 
     @State private var showCreateExpenseSheet: Bool = false
@@ -43,6 +45,8 @@ public struct TransactionsView: View {
             return .expense
         case .incomes:
             return .income
+        case .receivables:
+            return nil
         }
     }
 
@@ -64,6 +68,9 @@ public struct TransactionsView: View {
                 return false
             }
             if onlyPendingFilter && tx.isPaid {
+                return false
+            }
+            if onlyNeedsReviewFilter && tx.needsReview != true {
                 return false
             }
             let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,6 +107,8 @@ public struct TransactionsView: View {
             return isAnnual ? "Despesas por Ano" : "Despesas por Mês"
         case .incomes:
             return isAnnual ? "Receitas por Ano" : "Receitas por Mês"
+        case .receivables:
+            return "A Receber & Reembolsos"
         }
     }
 
@@ -117,6 +126,8 @@ public struct TransactionsView: View {
             return isAnnual
                 ? "Visão anual consolidada de receitas habituais, extraordinárias e concentração por fonte"
                 : "Visão mensal de receitas únicas, repetidas e recebimentos recorrentes"
+        case .receivables:
+            return "Controle despesas reembolsáveis por devedor e registre recebimentos sem distorcer orçamentos"
         }
     }
 
@@ -127,7 +138,11 @@ public struct TransactionsView: View {
         )
         let intraAnalysis: IntraMonthCashFlowAnalysis? = isAnnual ? nil : store.buildIntraMonthCashFlowAnalysis(for: store.selectedMonth)
 
-        VStack(alignment: .leading, spacing: 18) {
+        Group {
+            if store.selectedTransactionsSubmenu == .receivables {
+                ReceivablesManagementView(store: store)
+            } else {
+                VStack(alignment: .leading, spacing: 18) {
             // MARK: - Header & Month Navigation
             HStack(alignment: .center, spacing: 14) {
                 VStack(alignment: .leading, spacing: 4) {
@@ -510,6 +525,8 @@ public struct TransactionsView: View {
                         .frame(maxWidth: .infinity)
                     }
                 }
+            case .receivables:
+                EmptyView()
             }
 
             // MARK: - Action & Filter Bar
@@ -580,6 +597,12 @@ public struct TransactionsView: View {
                 Toggle("Só Pendentes", isOn: $onlyPendingFilter)
                     .toggleStyle(.checkbox)
 
+                if store.pendingReviewCount > 0 || onlyNeedsReviewFilter {
+                    Toggle("A Revisar (\(store.pendingReviewCount))", isOn: $onlyNeedsReviewFilter)
+                        .toggleStyle(.checkbox)
+                        .foregroundStyle(Color(hex: "#F59E0B"))
+                }
+
                 Spacer()
 
                 HStack(spacing: 6) {
@@ -645,6 +668,31 @@ public struct TransactionsView: View {
             }
 
             // MARK: - Bulk Action Bar (Pagamento / Recebimento em Massa)
+            if let banner = createdRuleBanner {
+                HStack(spacing: 8) {
+                    Image(systemName: "wand.and.stars")
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                    Text(banner)
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Button("Configurar Regras") {
+                        store.selectedDestination = .settings
+                        store.selectedSettingsSection = .reconciliationRules
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    Button {
+                        createdRuleBanner = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#6366F1").opacity(0.10)))
+            }
+
             if !selectedPendingTransactions.isEmpty {
                 bulkSelectionActionBar
             }
@@ -716,8 +764,10 @@ public struct TransactionsView: View {
                     .padding(.vertical, 4)
                 }
             }
+                }
+                .padding(24)
+            }
         }
-        .padding(24)
         .onChange(of: store.selectedTransactionsSubmenu) { _, _ in
             selectedCategoryFilter = nil
             selectedTransactionIds.removeAll()
@@ -1231,6 +1281,44 @@ public struct TransactionsView: View {
                             .foregroundStyle(Color(hex: card.colorHex))
                     }
 
+                    if tx.needsReview == true {
+                        HStack(spacing: 4) {
+                            Label("Revisar", systemImage: "applepay")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color(hex: "#F59E0B").opacity(0.18)))
+                                .foregroundStyle(Color(hex: "#D97706"))
+                            Button {
+                                store.approveTransactionReview(tx.id)
+                            } label: {
+                                Label("Aprovar", systemImage: "checkmark")
+                                    .font(.caption2.bold())
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color(hex: "#10B981").opacity(0.18)))
+                                    .foregroundStyle(Color(hex: "#059669"))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    if tx.isReimbursable == true {
+                        let rem = tx.remainingReimbursableAmount
+                        let debtorName = (tx.reimbursableDebtor?.isEmpty == false ? tx.reimbursableDebtor! : "A Receber")
+                        Label(
+                            tx.isReimbursementSettled == true
+                                ? "Reembolsado (\(debtorName))"
+                                : "Reembolsável: \(BRLFormatters.currency(rem, currencyCode: tx.effectiveCurrencyCode)) (\(debtorName))",
+                            systemImage: "arrow.uturn.backward.circle.fill"
+                        )
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill((tx.isReimbursementSettled == true ? Color(hex: "#10B981") : Color(hex: "#F59E0B")).opacity(0.16)))
+                        .foregroundStyle(tx.isReimbursementSettled == true ? Color(hex: "#10B981") : Color(hex: "#D97706"))
+                    }
+
                     if let attName = tx.attachmentName, let attPath = tx.attachmentPath {
                         Button {
                             NSWorkspace.shared.open(URL(fileURLWithPath: attPath))
@@ -1379,13 +1467,18 @@ public struct TransactionsView: View {
 
             // Amount
             VStack(alignment: .trailing, spacing: 1) {
-                Text((tx.type == .expense ? "- " : "+ ") + BRLFormatters.currency(effectiveAmount))
+                Text((tx.type == .expense ? "- " : "+ ") + BRLFormatters.currency(effectiveAmount, currencyCode: tx.effectiveCurrencyCode))
                     .font(.system(size: 15, weight: .bold, design: .rounded))
                     .foregroundStyle(
                         (tx.ignoreInConsolidated || isShadowed)
                             ? Color.secondary
                             : (isPayoffPlannedAmort ? Color(hex: "#10B981") : (isPlannedAmort ? Color(hex: "#6366F1") : (tx.type == .expense ? Color(hex: "#EF4444") : Color(hex: "#10B981"))))
                     )
+                if tx.effectiveCurrencyCode != "BRL" {
+                    Text("≈ \(BRLFormatters.currency(store.effectiveTransactionAmountInBRL(for: tx)))")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
                 if isShadowed || abs(effectiveAmount - tx.amount) > 0.01 {
                     Text(BRLFormatters.currency(tx.amount))
                         .font(.caption2)
@@ -1424,6 +1517,17 @@ public struct TransactionsView: View {
                     .buttonStyle(.borderless)
                     .help("Cancelar recorrência / assinatura")
                 }
+
+                Button {
+                    let rule = store.createReconciliationRule(from: tx)
+                    createdRuleBanner = "Regra \"\(rule.name)\" criada com sucesso!"
+                } label: {
+                    Image(systemName: "wand.and.stars")
+                        .foregroundStyle(Color(hex: "#6366F1"))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(.borderless)
+                .help("Criar regra determinística a partir desta transação")
 
                 Button {
                     editingTransaction = tx
@@ -1487,6 +1591,10 @@ public struct TransactionEditorSheet: View {
     @State private var ignoreInConsolidated: Bool = false
     @State private var attachmentPath: String? = nil
     @State private var attachmentName: String? = nil
+    @State private var currencyCode: String = "BRL"
+    @State private var isReimbursable: Bool = false
+    @State private var reimbursableAmountText: String = ""
+    @State private var reimbursableDebtor: String = ""
 
     // Modalidade de lançamento (Único, Parcelado, Repetido, Recorrente) e Frequência
     @State private var recurrenceMode: TransactionRecurrenceMode = .single
@@ -1771,6 +1879,30 @@ public struct TransactionEditorSheet: View {
                         isOn: $ignoreInConsolidated
                     )
 
+                    Picker("Moeda", selection: $currencyCode) {
+                        ForEach(SupportedCurrency.allCases) { cur in
+                            Text(cur.displayName).tag(cur.rawValue)
+                        }
+                    }
+
+                    if type == .expense {
+                        Toggle("Despesa Reembolsável / A Receber", isOn: $isReimbursable)
+                        if isReimbursable {
+                            HStack(spacing: 12) {
+                                BorderedTextField(
+                                    label: "Valor Reembolsável (deixe vazio = integral)",
+                                    placeholder: "Ex: 150,00",
+                                    text: $reimbursableAmountText
+                                )
+                                BorderedTextField(
+                                    label: "Devedor (Ex: Empresa, João)",
+                                    placeholder: "Nome do terceiro",
+                                    text: $reimbursableDebtor
+                                )
+                            }
+                        }
+                    }
+
                     HStack {
                         Text("Anexo (Opcional):")
                         Spacer()
@@ -1845,6 +1977,12 @@ public struct TransactionEditorSheet: View {
                 ignoreInConsolidated = existing.ignoreInConsolidated
                 attachmentPath = existing.attachmentPath
                 attachmentName = existing.attachmentName
+                currencyCode = existing.effectiveCurrencyCode
+                isReimbursable = existing.isReimbursable ?? false
+                if let rAmt = existing.reimbursableAmount {
+                    reimbursableAmountText = BRLFormatters.currency(rAmt, currencyCode: existing.effectiveCurrencyCode)
+                }
+                reimbursableDebtor = existing.reimbursableDebtor ?? ""
                 recurrenceMode = existing.recurrenceMode
                 recurrenceFrequency = existing.recurrenceFrequency ?? .monthly
             } else {
@@ -1940,6 +2078,13 @@ public struct TransactionEditorSheet: View {
         let effectiveCardId: UUID? = isCardExpense ? selectedCreditCardId : nil
         let effectivePaid = isCardExpense ? false : isPaid
         let effectiveAccountId = effectiveCardId ?? accountId
+        let parsedReimbAmt: Double? = {
+            guard isReimbursable && type == .expense else { return nil }
+            let trimmedReimb = reimbursableAmountText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedReimb.isEmpty { return parsedAmount }
+            return BRLFormatters.parseAmount(trimmedReimb) ?? parsedAmount
+        }()
+        let cleanDebtor = reimbursableDebtor.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if var existing = existingTransaction {
             let didChangeDate = !store.calendar.isDate(date, inSameDayAs: existing.date)
@@ -1961,6 +2106,11 @@ public struct TransactionEditorSheet: View {
             existing.ignoreInConsolidated = ignoreInConsolidated
             existing.attachmentPath = attachmentPath
             existing.attachmentName = attachmentName
+            existing.currencyCode = currencyCode
+            existing.isReimbursable = (isReimbursable && type == .expense) ? true : false
+            existing.reimbursableAmount = (isReimbursable && type == .expense) ? parsedReimbAmt : nil
+            existing.reimbursableDebtor = (isReimbursable && type == .expense && !cleanDebtor.isEmpty) ? cleanDebtor : nil
+            if existing.needsReview == true { existing.needsReview = false }
 
             if existing.isPartOfSeries {
                 pendingSeriesUpdateTransaction = existing
@@ -1971,7 +2121,7 @@ public struct TransactionEditorSheet: View {
             }
         } else {
             let effectiveDate = (!isCardExpense && isPaid && store.isDateInFuture(date, referenceNow: now)) ? now : date
-            store.createTransaction(
+            store.createExtendedTransaction(
                 name: trimmedName,
                 details: details.trimmingCharacters(in: .whitespacesAndNewlines),
                 amount: parsedAmount,
@@ -1986,8 +2136,11 @@ public struct TransactionEditorSheet: View {
                 recurrenceMode: recurrenceMode,
                 installmentsOrMonthsCount: installmentsOrMonthsCount,
                 recurrenceFrequency: recurrenceFrequency,
-                referenceNow: now,
-                creditCardId: effectiveCardId
+                creditCardId: effectiveCardId,
+                currencyCode: currencyCode,
+                isReimbursable: isReimbursable && type == .expense,
+                reimbursableAmount: parsedReimbAmt,
+                reimbursableDebtor: cleanDebtor.isEmpty ? nil : cleanDebtor
             )
             dismiss()
         }
@@ -2288,6 +2441,34 @@ public struct StatementImportSheet: View {
                                     .background(Capsule().fill(alreadyExists ? Color.orange.opacity(0.16) : Color.green.opacity(0.16)))
                                     .foregroundStyle(alreadyExists ? .orange : .green)
                                     .frame(width: 72)
+
+                                Button {
+                                    let newRule = ReconciliationRule(
+                                        name: "Regra: \(item.cleanTitle)",
+                                        priority: (store.reconciliationRules.map(\.priority).max() ?? 0) + 10,
+                                        matchField: .rawStatementLine,
+                                        matchOperator: .contains,
+                                        matchPattern: item.rawDescription.trimmingCharacters(in: .whitespacesAndNewlines),
+                                        targetCategoryId: item.suggestedCategoryId,
+                                        cleanName: item.cleanTitle,
+                                        markRecurring: item.recurrenceMode == .recurring ? true : nil,
+                                        markReimbursable: item.markReimbursable ? true : nil,
+                                        reimbursableDebtor: item.reimbursableDebtor,
+                                        markIgnoreInConsolidated: item.ignoreInConsolidated ? true : nil
+                                    )
+                                    store.addReconciliationRule(newRule)
+                                    parsedItems = StatementImportService.applyReconciliationRulesBatch(
+                                        store.reconciliationRules,
+                                        to: parsedItems,
+                                        categories: store.categories
+                                    )
+                                } label: {
+                                    Image(systemName: "wand.and.stars")
+                                        .foregroundStyle(Color(hex: "#6366F1"))
+                                        .frame(width: 24, height: 24)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Criar regra determinística a partir deste item")
 
                                 Button {
                                     editingParsedItem = item

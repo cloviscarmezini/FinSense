@@ -386,20 +386,32 @@ public final class LocalLLMService: ObservableObject {
             rawText,
             categories: store.categories,
             filterMode: filterMode,
-            referenceDate: store.selectedMonth
+            referenceDate: store.selectedMonth,
+            reconciliationRules: store.reconciliationRules
         )
 
-        // Enriquecimento inteligente com Apple Intelligence on-device (sem transmitir dados externos)
-        parsed = await LocalLLMRuntime.shared.enrichParsedStatementTransactions(
-            parsed,
-            categories: store.categories
-        )
+        // Apenas itens não resolvidos deterministicamente pelo motor de regras vão para a LLM/Apple Intelligence
+        let ruleMatchedIndices = Set(parsed.indices.filter { parsed[$0].matchedRuleName != nil })
+        let unmatchedItems = parsed.enumerated().filter { !ruleMatchedIndices.contains($0.offset) }.map(\.element)
+        let enrichedUnmatched = unmatchedItems.isEmpty
+            ? []
+            : await LocalLLMRuntime.shared.enrichParsedStatementTransactions(
+                unmatchedItems,
+                categories: store.categories
+            )
 
+        var enrichedCursor = 0
         let backend = LocalLLMRuntime.shared.resolveActiveBackend(for: store)
         let modelLabel = backend.displayBadge
         for idx in parsed.indices {
-            if !parsed[idx].extractedDetails.contains("IA") {
-                parsed[idx].extractedDetails = "[\(modelLabel)] \(parsed[idx].extractedDetails)"
+            if !ruleMatchedIndices.contains(idx) {
+                if enrichedCursor < enrichedUnmatched.count {
+                    parsed[idx] = enrichedUnmatched[enrichedCursor]
+                    enrichedCursor += 1
+                }
+                if !parsed[idx].extractedDetails.contains("IA") {
+                    parsed[idx].extractedDetails = "[\(modelLabel)] \(parsed[idx].extractedDetails)"
+                }
             }
         }
 

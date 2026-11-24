@@ -641,6 +641,33 @@ public enum BRLFormatters {
         return raw.replacingOccurrences(of: "\u{00A0}", with: " ")
     }
 
+    public static func currency(_ value: Double, currencyCode: String) -> String {
+        let upper = currencyCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if upper.isEmpty || upper == "BRL" {
+            return currency(value)
+        }
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = upper
+        formatter.locale = upper == "USD" || upper == "CAD" || upper == "AUD" || upper == "GBP"
+            ? Locale(identifier: "en_US")
+            : Locale(identifier: "pt_BR")
+        formatter.minimumFractionDigits = upper == "JPY" ? 0 : 2
+        formatter.maximumFractionDigits = upper == "JPY" ? 0 : 2
+        switch upper {
+        case "USD": formatter.currencySymbol = "US$"
+        case "EUR": formatter.currencySymbol = "€"
+        case "GBP": formatter.currencySymbol = "£"
+        case "CAD": formatter.currencySymbol = "C$"
+        case "AUD": formatter.currencySymbol = "A$"
+        case "CHF": formatter.currencySymbol = "CHF"
+        case "JPY": formatter.currencySymbol = "¥"
+        default: formatter.currencySymbol = upper
+        }
+        let raw = formatter.string(from: NSNumber(value: value)) ?? "\(upper) \(String(format: "%.2f", value))"
+        return raw.replacingOccurrences(of: "\u{00A0}", with: " ")
+    }
+
     public static func dayMonth(_ date: Date) -> String {
         dayMonthFormatter.string(from: date)
     }

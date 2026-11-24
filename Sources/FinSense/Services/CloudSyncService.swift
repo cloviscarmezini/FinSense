@@ -388,7 +388,7 @@ public final class CloudSyncService: ObservableObject {
         while remainingBatches > 0 {
             remainingBatches -= 1
 
-            let localStoreIsEmpty = store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty && store.contracts.isEmpty && store.investments.isEmpty && store.debts.isEmpty && store.sinkingFunds.isEmpty && store.whatIfScenarios.isEmpty && store.insights.isEmpty && store.monthlyReviews.isEmpty
+            let localStoreIsEmpty = store.transactions.isEmpty && store.accounts.isEmpty && store.categories.isEmpty && store.contracts.isEmpty && store.investments.isEmpty && store.debts.isEmpty && store.sinkingFunds.isEmpty && store.whatIfScenarios.isEmpty && store.insights.isEmpty && store.monthlyReviews.isEmpty && store.reconciliationRules.isEmpty && store.assets.isEmpty && store.incomeSources.isEmpty && store.netWorthSnapshots.isEmpty && store.fireScenarios.isEmpty
             let effectiveSinceRevision: Int64
             if localStoreIsEmpty && lastServerRevision == 0 {
                 effectiveSinceRevision = 0
@@ -465,7 +465,7 @@ public final class CloudSyncService: ObservableObject {
                 applyServerChanges(response, into: store)
 
                 let serverIsEmpty = response.latestRevision == 0 && (response.serverChanges?.isEmpty ?? true) && (response.deltas?.isEmpty ?? true)
-                let hasLocalData = !store.transactions.isEmpty || !store.accounts.isEmpty || !store.categories.isEmpty || !store.contracts.isEmpty || !store.investments.isEmpty || !store.debts.isEmpty || !store.provisions.isEmpty || !store.categoryQuotas.isEmpty || !store.sinkingFunds.isEmpty || !store.whatIfScenarios.isEmpty || !store.insights.isEmpty || !store.monthlyReviews.isEmpty
+                let hasLocalData = !store.transactions.isEmpty || !store.accounts.isEmpty || !store.categories.isEmpty || !store.contracts.isEmpty || !store.investments.isEmpty || !store.debts.isEmpty || !store.provisions.isEmpty || !store.categoryQuotas.isEmpty || !store.sinkingFunds.isEmpty || !store.whatIfScenarios.isEmpty || !store.insights.isEmpty || !store.monthlyReviews.isEmpty || !store.reconciliationRules.isEmpty || !store.assets.isEmpty || !store.incomeSources.isEmpty || !store.netWorthSnapshots.isEmpty || !store.fireScenarios.isEmpty
 
                 if !hasEnqueuedAutoSeed && serverIsEmpty && hasLocalData && outboxQueue.isEmpty {
                     hasEnqueuedAutoSeed = true
@@ -538,6 +538,11 @@ public final class CloudSyncService: ObservableObject {
         let insights = store.insights
         let reviews = store.monthlyReviews
         let mlProfiles = store.mlBehavioralProfile.lastTrainedAt != nil ? [store.mlBehavioralProfile] : []
+        let rules = store.reconciliationRules
+        let assets = store.assets
+        let incomeSources = store.incomeSources
+        let netWorthSnapshots = store.netWorthSnapshots
+        let fireScenarios = store.fireScenarios
         let transactions = store.transactions
 
         let encoder = JSONEncoder()
@@ -580,6 +585,11 @@ public final class CloudSyncService: ObservableObject {
         addItems(items: insights, entityName: "financial_insights", idKeyPath: \.id)
         addItems(items: reviews, entityName: "monthly_reviews", idKeyPath: \.id)
         addItems(items: mlProfiles, entityName: "ml_behavioral_profiles", idKeyPath: \.id)
+        addItems(items: rules, entityName: "reconciliation_rules", idKeyPath: \.id)
+        addItems(items: assets, entityName: "asset_items", idKeyPath: \.id)
+        addItems(items: incomeSources, entityName: "income_sources", idKeyPath: \.id)
+        addItems(items: netWorthSnapshots, entityName: "net_worth_snapshots", idKeyPath: \.id)
+        addItems(items: fireScenarios, entityName: "fire_scenarios", idKeyPath: \.id)
         addItems(items: transactions, entityName: "financial_transactions", idKeyPath: \.id)
 
         for mutation in allMutations {
@@ -634,6 +644,11 @@ public final class CloudSyncService: ObservableObject {
                     case "what_if_scenarios": store.whatIfScenarios.removeAll { $0.id == change.entityId }
                     case "financial_insights": store.insights.removeAll { $0.id == change.entityId }
                     case "monthly_reviews": store.monthlyReviews.removeAll { $0.id == change.entityId }
+                    case "reconciliation_rules": store.reconciliationRules.removeAll { $0.id == change.entityId }
+                    case "asset_items": store.assets.removeAll { $0.id == change.entityId }
+                    case "income_sources": store.incomeSources.removeAll { $0.id == change.entityId }
+                    case "net_worth_snapshots": store.netWorthSnapshots.removeAll { $0.id == change.entityId }
+                    case "fire_scenarios": store.fireScenarios.removeAll { $0.id == change.entityId }
                     default: break
                     }
                     appliedChangesCount += 1
@@ -642,7 +657,10 @@ public final class CloudSyncService: ObservableObject {
                     do {
                         switch change.entityName {
                         case "financial_transactions":
-                            let item = try decoder.decode(FinancialTransaction.self, from: rawData)
+                            var item = try decoder.decode(FinancialTransaction.self, from: rawData)
+                            if item.needsReview == true {
+                                store.applyReconciliationRulesIfNeeded(to: &item)
+                            }
                             if let idx = store.transactions.firstIndex(where: { $0.id == item.id }) { store.transactions[idx] = item }
                             else { store.transactions.append(item) }
                             appliedChangesCount += 1
@@ -721,6 +739,31 @@ public final class CloudSyncService: ObservableObject {
                             let item = try decoder.decode(MLBehavioralProfile.self, from: rawData)
                             store.mlBehavioralProfile = item
                             appliedChangesCount += 1
+                        case "reconciliation_rules":
+                            let item = try decoder.decode(ReconciliationRule.self, from: rawData)
+                            if let idx = store.reconciliationRules.firstIndex(where: { $0.id == item.id }) { store.reconciliationRules[idx] = item }
+                            else { store.reconciliationRules.append(item) }
+                            appliedChangesCount += 1
+                        case "asset_items":
+                            let item = try decoder.decode(AssetItem.self, from: rawData)
+                            if let idx = store.assets.firstIndex(where: { $0.id == item.id }) { store.assets[idx] = item }
+                            else { store.assets.append(item) }
+                            appliedChangesCount += 1
+                        case "income_sources":
+                            let item = try decoder.decode(IncomeSource.self, from: rawData)
+                            if let idx = store.incomeSources.firstIndex(where: { $0.id == item.id }) { store.incomeSources[idx] = item }
+                            else { store.incomeSources.append(item) }
+                            appliedChangesCount += 1
+                        case "net_worth_snapshots":
+                            let item = try decoder.decode(NetWorthSnapshot.self, from: rawData)
+                            if let idx = store.netWorthSnapshots.firstIndex(where: { $0.id == item.id }) { store.netWorthSnapshots[idx] = item }
+                            else { store.netWorthSnapshots.append(item) }
+                            appliedChangesCount += 1
+                        case "fire_scenarios":
+                            let item = try decoder.decode(FIREPlanScenario.self, from: rawData)
+                            if let idx = store.fireScenarios.firstIndex(where: { $0.id == item.id }) { store.fireScenarios[idx] = item }
+                            else { store.fireScenarios.append(item) }
+                            appliedChangesCount += 1
                         default: break
                         }
                     } catch {
@@ -768,14 +811,32 @@ public final class CloudSyncService: ObservableObject {
             case "what_if_scenarios": store.whatIfScenarios.removeAll { $0.id == tomb.entityId }
             case "financial_insights": store.insights.removeAll { $0.id == tomb.entityId }
             case "monthly_reviews": store.monthlyReviews.removeAll { $0.id == tomb.entityId }
+            case "reconciliation_rules": store.reconciliationRules.removeAll { $0.id == tomb.entityId }
+            case "asset_items": store.assets.removeAll { $0.id == tomb.entityId }
+            case "income_sources": store.incomeSources.removeAll { $0.id == tomb.entityId }
+            case "net_worth_snapshots": store.netWorthSnapshots.removeAll { $0.id == tomb.entityId }
+            case "fire_scenarios": store.fireScenarios.removeAll { $0.id == tomb.entityId }
             default: break
+            }
+        }
+
+        // Aplicação de regras antes de transações (para casar Apple Pay / pendentes no mesmo delta)
+        if let rules = deltas.reconciliationRules {
+            for item in rules {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.reconciliationRules.firstIndex(where: { $0.id == item.id }) { store.reconciliationRules[idx] = item }
+                else { store.reconciliationRules.append(item) }
             }
         }
 
         // Aplicação de upserts preservando mutações locais mais recentes
         if let txs = deltas.financialTransactions {
-            for item in txs {
-                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+            for rawItem in txs {
+                if outboxQueue.contains(where: { $0.entityId == rawItem.id }) { continue }
+                var item = rawItem
+                if item.needsReview == true {
+                    store.applyReconciliationRulesIfNeeded(to: &item)
+                }
                 if let idx = store.transactions.firstIndex(where: { $0.id == item.id }) { store.transactions[idx] = item }
                 else { store.transactions.append(item) }
             }
@@ -884,6 +945,34 @@ public final class CloudSyncService: ObservableObject {
                 store.mlBehavioralProfile = latestProfile
             }
         }
+        if let assets = deltas.assetItems {
+            for item in assets {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.assets.firstIndex(where: { $0.id == item.id }) { store.assets[idx] = item }
+                else { store.assets.append(item) }
+            }
+        }
+        if let incomeSources = deltas.incomeSources {
+            for item in incomeSources {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.incomeSources.firstIndex(where: { $0.id == item.id }) { store.incomeSources[idx] = item }
+                else { store.incomeSources.append(item) }
+            }
+        }
+        if let snapshots = deltas.netWorthSnapshots {
+            for item in snapshots {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.netWorthSnapshots.firstIndex(where: { $0.id == item.id }) { store.netWorthSnapshots[idx] = item }
+                else { store.netWorthSnapshots.append(item) }
+            }
+        }
+        if let fireScenarios = deltas.fireScenarios {
+            for item in fireScenarios {
+                if outboxQueue.contains(where: { $0.entityId == item.id }) { continue }
+                if let idx = store.fireScenarios.firstIndex(where: { $0.id == item.id }) { store.fireScenarios[idx] = item }
+                else { store.fireScenarios.append(item) }
+            }
+        }
 
         store.save()
     }
@@ -910,7 +999,21 @@ public final class CloudSyncService: ObservableObject {
         let insights = store.insights
         let reviews = store.monthlyReviews
         let mlProfiles = store.mlBehavioralProfile.lastTrainedAt != nil ? [store.mlBehavioralProfile] : []
-        let totalCount = accounts.count + creditCards.count + creditCardInvoices.count + categories.count + transactions.count + investments.count + debts.count + contracts.count + provisions.count + quotas.count + sinkingFunds.count + scenarios.count + insights.count + reviews.count + mlProfiles.count
+        let rules = store.reconciliationRules
+        let assets = store.assets
+        let incomeSources = store.incomeSources
+        let netWorthSnapshots = store.netWorthSnapshots
+        let fireScenarios = store.fireScenarios
+        let countParts: [Int] = [
+            accounts.count, creditCards.count, creditCardInvoices.count,
+            categories.count, transactions.count, investments.count,
+            debts.count, contracts.count, provisions.count,
+            quotas.count, sinkingFunds.count, scenarios.count,
+            insights.count, reviews.count, mlProfiles.count,
+            rules.count, assets.count, incomeSources.count,
+            netWorthSnapshots.count, fireScenarios.count
+        ]
+        let totalCount = countParts.reduce(0, +)
 
         Task { [weak self] in
             guard let self else { return }
@@ -968,6 +1071,11 @@ public final class CloudSyncService: ObservableObject {
             await processBatch(items: insights, entityName: "financial_insights", idKeyPath: \.id, progressLabel: "Insights")
             await processBatch(items: reviews, entityName: "monthly_reviews", idKeyPath: \.id, progressLabel: "Revisões Mensais")
             await processBatch(items: mlProfiles, entityName: "ml_behavioral_profiles", idKeyPath: \.id, progressLabel: "Perfil ML")
+            await processBatch(items: rules, entityName: "reconciliation_rules", idKeyPath: \.id, progressLabel: "Regras de Conciliação")
+            await processBatch(items: assets, entityName: "asset_items", idKeyPath: \.id, progressLabel: "Patrimônio")
+            await processBatch(items: incomeSources, entityName: "income_sources", idKeyPath: \.id, progressLabel: "Fontes de Renda")
+            await processBatch(items: netWorthSnapshots, entityName: "net_worth_snapshots", idKeyPath: \.id, progressLabel: "Histórico Net Worth")
+            await processBatch(items: fireScenarios, entityName: "fire_scenarios", idKeyPath: \.id, progressLabel: "Cenários FIRE")
 
             for mutation in allMutations {
                 self.enqueueMutation(mutation)

@@ -219,12 +219,17 @@ public struct InvestmentsView: View {
 
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Saldo Acumulado")
+                    Text("Saldo Acumulado (\(item.currencyCode))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(BRLFormatters.currency(item.balance))
+                    Text(BRLFormatters.currency(item.balance, currencyCode: item.currencyCode))
                         .font(.system(size: 24, weight: .bold, design: .rounded))
                         .foregroundStyle(Color(hex: "#10B981"))
+                    if item.currencyCode != "BRL" {
+                        Text("≈ \(BRLFormatters.currency(store.convertToBRL(item.balance, currencyCode: item.currencyCode)))")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer()
@@ -321,6 +326,7 @@ public struct CreateInvestmentSheet: View {
     @State private var showInConsolidated: Bool = true
     @State private var iconSymbol: String = "chart.line.uptrend.xyaxis"
     @State private var colorHex: String = "#10B981"
+    @State private var currencyCode: String = "BRL"
     @State private var notes: String = ""
     @State private var errorMsg: String? = nil
 
@@ -365,8 +371,13 @@ public struct CreateInvestmentSheet: View {
                             Text(acc.name).tag(acc.id)
                         }
                     }
+                    Picker("Moeda do Investimento", selection: $currencyCode) {
+                        ForEach(SupportedCurrency.allCases) { cur in
+                            Text(cur.displayName).tag(cur.rawValue)
+                        }
+                    }
                     BRLCurrencyTextField(
-                        label: "Saldo Inicial já investido (R$)",
+                        label: "Saldo Inicial já investido (\(currencyCode))",
                         text: $initialBalanceText
                     )
                     Toggle("Exibir no consolidado geral", isOn: $showInConsolidated)
@@ -426,7 +437,8 @@ public struct CreateInvestmentSheet: View {
                         showInConsolidated: showInConsolidated,
                         iconSymbol: iconSymbol,
                         colorHex: colorHex,
-                        notes: notes
+                        notes: notes,
+                        currencyCode: currencyCode
                     )
                     dismiss()
                 }

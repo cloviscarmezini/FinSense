@@ -23,6 +23,11 @@ public struct FinancialDatabaseSnapshot: Codable {
     public var insights: [FinancialInsight]?
     public var monthlyReviews: [MonthlyReviewRecord]?
     public var mlBehavioralProfile: MLBehavioralProfile?
+    public var reconciliationRules: [ReconciliationRule]?
+    public var assetItems: [AssetItem]?
+    public var incomeSources: [IncomeSource]?
+    public var netWorthSnapshots: [NetWorthSnapshot]?
+    public var fireScenarios: [FIREPlanScenario]?
     public var assets: [ExportedAssetFile]?
     public var llmConfig: LLMConfiguration
     public var chatHistory: [ChatMessage]
@@ -47,6 +52,11 @@ public struct FinancialDatabaseSnapshot: Codable {
         insights: [FinancialInsight]? = [],
         monthlyReviews: [MonthlyReviewRecord]? = [],
         mlBehavioralProfile: MLBehavioralProfile? = nil,
+        reconciliationRules: [ReconciliationRule]? = [],
+        assetItems: [AssetItem]? = [],
+        incomeSources: [IncomeSource]? = [],
+        netWorthSnapshots: [NetWorthSnapshot]? = [],
+        fireScenarios: [FIREPlanScenario]? = [],
         assets: [ExportedAssetFile]? = nil,
         llmConfig: LLMConfiguration = LLMConfiguration(),
         chatHistory: [ChatMessage] = [],
@@ -70,6 +80,11 @@ public struct FinancialDatabaseSnapshot: Codable {
         self.insights = insights
         self.monthlyReviews = monthlyReviews
         self.mlBehavioralProfile = mlBehavioralProfile
+        self.reconciliationRules = reconciliationRules
+        self.assetItems = assetItems
+        self.incomeSources = incomeSources
+        self.netWorthSnapshots = netWorthSnapshots
+        self.fireScenarios = fireScenarios
         self.assets = assets
         self.llmConfig = llmConfig
         self.chatHistory = chatHistory
@@ -138,6 +153,10 @@ public struct SelectiveImportExecutionResult {
     public var importedSinkingFunds: Int = 0
     public var importedWhatIfScenarios: Int = 0
     public var importedInsightsAndReviews: Int = 0
+    public var importedReconciliationRules: Int = 0
+    public var importedNetWorthAssets: Int = 0
+    public var importedIncomeSources: Int = 0
+    public var importedFIREScenarios: Int = 0
     public var importedAssets: Int = 0
     public var skippedDuplicatesTotal: Int = 0
     public var autoCreatedDependenciesCount: Int = 0
@@ -159,6 +178,10 @@ public struct SelectiveImportExecutionResult {
             .sinkingFunds: importedSinkingFunds,
             .decisionsAndScenarios: importedWhatIfScenarios,
             .insightsAndML: importedInsightsAndReviews,
+            .reconciliationRules: importedReconciliationRules,
+            .netWorthAndAssets: importedNetWorthAssets,
+            .incomeSources: importedIncomeSources,
+            .fireScenarios: importedFIREScenarios,
             .assets: importedAssets
         ]
     }
@@ -166,7 +189,9 @@ public struct SelectiveImportExecutionResult {
     public var totalImportedItems: Int {
         importedAccounts + importedCreditCards + importedCategories + importedTransactions + importedInvestments +
         importedLoans + importedFinancings + importedDebts + importedProvisionsAndQuotas +
-        importedSinkingFunds + importedWhatIfScenarios + importedInsightsAndReviews + importedAssets
+        importedSinkingFunds + importedWhatIfScenarios + importedInsightsAndReviews +
+        importedReconciliationRules + importedNetWorthAssets + importedIncomeSources + importedFIREScenarios +
+        importedAssets
     }
 }
 
@@ -415,6 +440,21 @@ public final class FinancialDataStore: ObservableObject {
         didSet { invalidateDerivedCaches() }
     }
     @Published public var mlBehavioralProfile: MLBehavioralProfile = MLBehavioralProfile()
+    @Published public var reconciliationRules: [ReconciliationRule] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var assets: [AssetItem] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var incomeSources: [IncomeSource] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var netWorthSnapshots: [NetWorthSnapshot] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
+    @Published public var fireScenarios: [FIREPlanScenario] = [] {
+        didSet { invalidateDerivedCaches() }
+    }
     @Published public var llmConfig: LLMConfiguration = LLMConfiguration()
     @Published public var chatHistory: [ChatMessage] = []
     @Published public var selectedMonth: Date = Date()
@@ -603,6 +643,11 @@ public final class FinancialDataStore: ObservableObject {
             self.insights = decoded.insights ?? []
             self.monthlyReviews = decoded.monthlyReviews ?? []
             self.mlBehavioralProfile = decoded.mlBehavioralProfile ?? MLBehavioralProfile()
+            self.reconciliationRules = decoded.reconciliationRules ?? []
+            self.assets = decoded.assetItems ?? []
+            self.incomeSources = decoded.incomeSources ?? []
+            self.netWorthSnapshots = decoded.netWorthSnapshots ?? []
+            self.fireScenarios = decoded.fireScenarios ?? []
             self.llmConfig = decoded.llmConfig
             self.chatHistory = decoded.chatHistory
             self.hasSeededInitialStatement = decoded.hasSeededInitialStatement
@@ -656,6 +701,11 @@ public final class FinancialDataStore: ObservableObject {
             self.insights = []
             self.monthlyReviews = []
             self.mlBehavioralProfile = MLBehavioralProfile()
+            self.reconciliationRules = []
+            self.assets = []
+            self.incomeSources = []
+            self.netWorthSnapshots = []
+            self.fireScenarios = []
             self.llmConfig = LLMConfiguration()
             self.chatHistory = [
                 ChatMessage(
@@ -693,6 +743,11 @@ public final class FinancialDataStore: ObservableObject {
             insights: insights,
             monthlyReviews: monthlyReviews,
             mlBehavioralProfile: mlBehavioralProfile,
+            reconciliationRules: reconciliationRules,
+            assetItems: assets,
+            incomeSources: incomeSources,
+            netWorthSnapshots: netWorthSnapshots,
+            fireScenarios: fireScenarios,
             llmConfig: llmConfig,
             chatHistory: chatHistory,
             hasSeededInitialStatement: hasSeededInitialStatement
@@ -824,6 +879,19 @@ public final class FinancialDataStore: ObservableObject {
             monthlyReviews.removeAll()
             mlBehavioralProfile = MLBehavioralProfile()
         }
+        if targets.contains(.reconciliationRules) {
+            reconciliationRules.removeAll()
+        }
+        if targets.contains(.netWorthAndAssets) {
+            assets.removeAll()
+            netWorthSnapshots.removeAll()
+        }
+        if targets.contains(.incomeSources) {
+            incomeSources.removeAll()
+        }
+        if targets.contains(.fireScenarios) {
+            fireScenarios.removeAll()
+        }
         if targets.contains(.aiModelsAndChat) {
             for model in llmConfig.downloadedModels {
                 let fileURL = URL(fileURLWithPath: model.localPath)
@@ -924,6 +992,11 @@ public final class FinancialDataStore: ObservableObject {
             insights: insights,
             monthlyReviews: monthlyReviews,
             mlBehavioralProfile: mlBehavioralProfile,
+            reconciliationRules: reconciliationRules,
+            assetItems: assets,
+            incomeSources: incomeSources,
+            netWorthSnapshots: netWorthSnapshots,
+            fireScenarios: fireScenarios,
             assets: collectExportableAssets(),
             llmConfig: LLMConfiguration(),
             chatHistory: [],
@@ -978,6 +1051,11 @@ public final class FinancialDataStore: ObservableObject {
             insights: targets.contains(.insightsAndML) ? insights : [],
             monthlyReviews: targets.contains(.insightsAndML) ? monthlyReviews : [],
             mlBehavioralProfile: targets.contains(.insightsAndML) ? mlBehavioralProfile : nil,
+            reconciliationRules: targets.contains(.reconciliationRules) ? reconciliationRules : [],
+            assetItems: targets.contains(.netWorthAndAssets) ? assets : [],
+            incomeSources: targets.contains(.incomeSources) ? incomeSources : [],
+            netWorthSnapshots: targets.contains(.netWorthAndAssets) ? netWorthSnapshots : [],
+            fireScenarios: targets.contains(.fireScenarios) ? fireScenarios : [],
             assets: targets.contains(.assets) ? collectExportableAssets() : nil,
             llmConfig: LLMConfiguration(),
             chatHistory: [],
@@ -1392,6 +1470,70 @@ public final class FinancialDataStore: ObservableObject {
             totalCount: totalInsightsItems,
             newCount: max(0, totalInsightsItems - totalInsightsDups),
             duplicateCount: totalInsightsDups
+        )
+
+        // 8e. Regras de Conciliação
+        let snapRules = snapshot.reconciliationRules ?? []
+        let existingRuleIds = Set(reconciliationRules.map(\.id))
+        let existingRuleKeys = Set(reconciliationRules.map { Self.normalizeKey($0.name) })
+        let ruleDups = snapRules.filter {
+            existingRuleIds.contains($0.id) || existingRuleKeys.contains(Self.normalizeKey($0.name))
+        }.count
+        analyses[.reconciliationRules] = ImportTargetAnalysis(
+            target: .reconciliationRules,
+            totalCount: snapRules.count,
+            newCount: max(0, snapRules.count - ruleDups),
+            duplicateCount: ruleDups
+        )
+
+        // 8f. Patrimônio & Net Worth Snapshots
+        let snapNetWorthAssets = snapshot.assetItems ?? []
+        let snapNetWorthSnaps = snapshot.netWorthSnapshots ?? []
+        let existingAssetIds = Set(assets.map(\.id))
+        let existingAssetKeys = Set(assets.map { Self.normalizeKey($0.name) })
+        let nwAssetDups = snapNetWorthAssets.filter {
+            existingAssetIds.contains($0.id) || existingAssetKeys.contains(Self.normalizeKey($0.name))
+        }.count
+        let existingSnapIds = Set(netWorthSnapshots.map(\.id))
+        let existingSnapMonths = Set(netWorthSnapshots.map(\.yearMonthKey))
+        let nwSnapDups = snapNetWorthSnaps.filter {
+            existingSnapIds.contains($0.id) || existingSnapMonths.contains($0.yearMonthKey)
+        }.count
+        let totalNW = snapNetWorthAssets.count + snapNetWorthSnaps.count
+        let totalNWDups = nwAssetDups + nwSnapDups
+        analyses[.netWorthAndAssets] = ImportTargetAnalysis(
+            target: .netWorthAndAssets,
+            totalCount: totalNW,
+            newCount: max(0, totalNW - totalNWDups),
+            duplicateCount: totalNWDups
+        )
+
+        // 8g. Fontes de Renda
+        let snapIncomes = snapshot.incomeSources ?? []
+        let existingIncomeIds = Set(incomeSources.map(\.id))
+        let existingIncomeKeys = Set(incomeSources.map { Self.normalizeKey($0.name) })
+        let incomeDups = snapIncomes.filter {
+            existingIncomeIds.contains($0.id) || existingIncomeKeys.contains(Self.normalizeKey($0.name))
+        }.count
+        analyses[.incomeSources] = ImportTargetAnalysis(
+            target: .incomeSources,
+            totalCount: snapIncomes.count,
+            newCount: max(0, snapIncomes.count - incomeDups),
+            duplicateCount: incomeDups
+        )
+
+        // 8h. Cenários FIRE
+        let snapFire = snapshot.fireScenarios ?? []
+        let existingFireIds = Set(fireScenarios.map(\.id))
+        let existingFireKeys = Set(fireScenarios.map { Self.normalizeKey($0.name) })
+        let fireDups = snapFire.filter {
+            existingFireIds.contains($0.id) || existingFireKeys.contains(Self.normalizeKey($0.name))
+        }.count
+        analyses[.fireScenarios] = ImportTargetAnalysis(
+            target: .fireScenarios,
+            totalCount: snapFire.count,
+            newCount: max(0, snapFire.count - fireDups),
+            duplicateCount: fireDups
         )
 
         // 9. Assets
@@ -2069,6 +2211,101 @@ public final class FinancialDataStore: ObservableObject {
             }
         }
 
+        // 8e. Regras de Conciliação
+        if selectedTargets.contains(.reconciliationRules) {
+            var existingRuleIds = Set(reconciliationRules.map(\.id))
+            var existingRuleKeys = Set(reconciliationRules.map { Self.normalizeKey($0.name) })
+            for srcRule in (snapshot.reconciliationRules ?? []) {
+                let key = Self.normalizeKey(srcRule.name)
+                if existingRuleIds.contains(srcRule.id) || existingRuleKeys.contains(key) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                var newRule = srcRule
+                if let oldCat = srcRule.targetCategoryId {
+                    newRule.targetCategoryId = ensureValidCategoryId(for: oldCat, fallbackType: .expense, titleHint: srcRule.name)
+                }
+                reconciliationRules.append(newRule)
+                existingRuleIds.insert(newRule.id)
+                existingRuleKeys.insert(key)
+                res.importedReconciliationRules += 1
+            }
+        }
+
+        // 8f. Patrimônio & Net Worth Snapshots
+        if selectedTargets.contains(.netWorthAndAssets) {
+            var existingAssetIds = Set(assets.map(\.id))
+            var existingAssetKeys = Set(assets.map { Self.normalizeKey($0.name) })
+            let validContractIds = Set(contracts.map(\.id))
+            for srcAsset in (snapshot.assetItems ?? []) {
+                let key = Self.normalizeKey(srcAsset.name)
+                if existingAssetIds.contains(srcAsset.id) || existingAssetKeys.contains(key) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                var newAsset = srcAsset
+                if let contractId = srcAsset.linkedFinancingContractId, !validContractIds.contains(contractId) {
+                    newAsset.linkedFinancingContractId = nil
+                }
+                assets.append(newAsset)
+                existingAssetIds.insert(newAsset.id)
+                existingAssetKeys.insert(key)
+                res.importedNetWorthAssets += 1
+            }
+
+            var existingSnapIds = Set(netWorthSnapshots.map(\.id))
+            var existingSnapMonths = Set(netWorthSnapshots.map(\.yearMonthKey))
+            for srcSnap in (snapshot.netWorthSnapshots ?? []) {
+                if existingSnapIds.contains(srcSnap.id) || existingSnapMonths.contains(srcSnap.yearMonthKey) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                netWorthSnapshots.append(srcSnap)
+                existingSnapIds.insert(srcSnap.id)
+                existingSnapMonths.insert(srcSnap.yearMonthKey)
+                res.importedNetWorthAssets += 1
+            }
+        }
+
+        // 8g. Fontes de Renda
+        if selectedTargets.contains(.incomeSources) {
+            var existingIncomeIds = Set(incomeSources.map(\.id))
+            var existingIncomeKeys = Set(incomeSources.map { Self.normalizeKey($0.name) })
+            let validAccountIds = Set(accounts.map(\.id))
+            for srcIncome in (snapshot.incomeSources ?? []) {
+                let key = Self.normalizeKey(srcIncome.name)
+                if existingIncomeIds.contains(srcIncome.id) || existingIncomeKeys.contains(key) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                var newIncome = srcIncome
+                if let accId = srcIncome.linkedAccountId, !validAccountIds.contains(accId) {
+                    newIncome.linkedAccountId = accounts.first?.id
+                }
+                incomeSources.append(newIncome)
+                existingIncomeIds.insert(newIncome.id)
+                existingIncomeKeys.insert(key)
+                res.importedIncomeSources += 1
+            }
+        }
+
+        // 8h. Cenários FIRE
+        if selectedTargets.contains(.fireScenarios) {
+            var existingFireIds = Set(fireScenarios.map(\.id))
+            var existingFireKeys = Set(fireScenarios.map { Self.normalizeKey($0.name) })
+            for srcFire in (snapshot.fireScenarios ?? []) {
+                let key = Self.normalizeKey(srcFire.name)
+                if existingFireIds.contains(srcFire.id) || existingFireKeys.contains(key) {
+                    res.skippedDuplicatesTotal += 1
+                    continue
+                }
+                fireScenarios.append(srcFire)
+                existingFireIds.insert(srcFire.id)
+                existingFireKeys.insert(key)
+                res.importedFIREScenarios += 1
+            }
+        }
+
         // 9. Ordenação única e gravação atômica
         onProgress?(0.96, "Consolidando e salvando base de dados...")
         for target in ExportDataTarget.allCases {
@@ -2558,7 +2795,8 @@ public final class FinancialDataStore: ObservableObject {
         colorHex: String,
         initialBalance: Double,
         agency: String = "",
-        accountNumber: String = ""
+        accountNumber: String = "",
+        currencyCode: String = "BRL"
     ) {
         let account = BankAccount(
             name: name,
@@ -2568,7 +2806,8 @@ public final class FinancialDataStore: ObservableObject {
             colorHex: colorHex,
             initialBalance: initialBalance,
             agency: agency,
-            accountNumber: accountNumber
+            accountNumber: accountNumber,
+            currencyCode: currencyCode
         )
         accounts.append(account)
         if !creditCards.isEmpty {
@@ -4236,6 +4475,16 @@ public final class FinancialDataStore: ObservableObject {
                 cloudSyncService?.recordLocalMutation(entityName: "credit_card_invoices", entityId: creditCardInvoices[idx].id, operation: .upsert, entity: creditCardInvoices[idx])
             }
 
+        case .reimbursementReceipt:
+            if let originalTxId = tx.linkedEntityID,
+               let origIdx = transactions.firstIndex(where: { $0.id == originalTxId }) {
+                let currentReceived = transactions[origIdx].reimbursementReceivedAmount ?? 0.0
+                let updatedReceived = max(0.0, currentReceived - tx.amount)
+                transactions[origIdx].reimbursementReceivedAmount = updatedReceived
+                transactions[origIdx].isReimbursementSettled = updatedReceived + 0.01 >= transactions[origIdx].effectiveReimbursableAmount
+                cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: transactions[origIdx].id, operation: .upsert, entity: transactions[origIdx])
+            }
+
         case .standard, .quotaAllocation, .internalTransfer:
             break
         }
@@ -4418,7 +4667,7 @@ public final class FinancialDataStore: ObservableObject {
         }
     }
 
-    private func sortTransactions() {
+    public func sortTransactions() {
         transactions.sort { a, b in
             if a.date == b.date {
                 return a.createdAt > b.createdAt
@@ -4551,6 +4800,7 @@ public final class FinancialDataStore: ObservableObject {
             let effectiveFirstPaid = !isDateInFuture(item.date)
             let targetCardId = (isCreditCardTarget && item.type == .expense) ? accountId : nil
 
+            var createdIdsForItem: [UUID] = []
             if item.recurrenceMode == .installment && item.type == .expense && item.installmentsCount >= 2 {
                 let totalFullAmount = item.amount * Double(item.installmentsCount)
                 let createdSeries = createTransaction(
@@ -4562,16 +4812,12 @@ public final class FinancialDataStore: ObservableObject {
                     isPaid: effectiveFirstPaid,
                     categoryId: resolvedCategoryId,
                     accountId: accountId,
-                    ignoreInConsolidated: false,
+                    ignoreInConsolidated: item.ignoreInConsolidated,
                     recurrenceMode: .installment,
                     installmentsOrMonthsCount: item.installmentsCount,
                     creditCardId: targetCardId
                 )
-                if let firstId = createdSeries.first?.id,
-                   let idx = transactions.firstIndex(where: { $0.id == firstId }) {
-                    transactions[idx].rawStatementLine = item.rawLine
-                    transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
-                }
+                createdIdsForItem = createdSeries.map(\.id)
                 added += 1
                 addedExp += 1
             } else if item.recurrenceMode == .repeated && item.installmentsCount >= 2 {
@@ -4584,16 +4830,12 @@ public final class FinancialDataStore: ObservableObject {
                     isPaid: effectiveFirstPaid,
                     categoryId: resolvedCategoryId,
                     accountId: accountId,
-                    ignoreInConsolidated: false,
+                    ignoreInConsolidated: item.ignoreInConsolidated,
                     recurrenceMode: .repeated,
                     installmentsOrMonthsCount: item.installmentsCount,
                     creditCardId: targetCardId
                 )
-                if let firstId = createdSeries.first?.id,
-                   let idx = transactions.firstIndex(where: { $0.id == firstId }) {
-                    transactions[idx].rawStatementLine = item.rawLine
-                    transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
-                }
+                createdIdsForItem = createdSeries.map(\.id)
                 added += 1
                 if item.type == .expense { addedExp += 1 } else { addedInc += 1 }
             } else if item.recurrenceMode == .recurring {
@@ -4606,16 +4848,12 @@ public final class FinancialDataStore: ObservableObject {
                     isPaid: effectiveFirstPaid,
                     categoryId: resolvedCategoryId,
                     accountId: accountId,
-                    ignoreInConsolidated: false,
+                    ignoreInConsolidated: item.ignoreInConsolidated,
                     recurrenceMode: .recurring,
                     recurrenceFrequency: item.recurrenceFrequency,
                     creditCardId: targetCardId
                 )
-                if let firstId = createdSeries.first?.id,
-                   let idx = transactions.firstIndex(where: { $0.id == firstId }) {
-                    transactions[idx].rawStatementLine = item.rawLine
-                    transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
-                }
+                createdIdsForItem = createdSeries.map(\.id)
                 added += 1
                 if item.type == .expense { addedExp += 1 } else { addedInc += 1 }
             } else if targetCardId != nil {
@@ -4628,15 +4866,11 @@ public final class FinancialDataStore: ObservableObject {
                     isPaid: true,
                     categoryId: resolvedCategoryId,
                     accountId: accountId,
-                    ignoreInConsolidated: false,
+                    ignoreInConsolidated: item.ignoreInConsolidated,
                     recurrenceMode: .single,
                     creditCardId: targetCardId
                 )
-                if let firstId = createdSingle.first?.id,
-                   let idx = transactions.firstIndex(where: { $0.id == firstId }) {
-                    transactions[idx].rawStatementLine = item.rawLine
-                    transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
-                }
+                createdIdsForItem = createdSingle.map(\.id)
                 added += 1
                 addedExp += 1
             } else {
@@ -4649,14 +4883,32 @@ public final class FinancialDataStore: ObservableObject {
                     isPaid: effectiveFirstPaid,
                     categoryId: resolvedCategoryId,
                     accountId: accountId,
-                    ignoreInConsolidated: false,
+                    ignoreInConsolidated: item.ignoreInConsolidated,
                     recurrenceMode: .single,
                     rawStatementLine: item.rawLine,
                     statementOccurrenceIndex: item.occurrenceIndex
                 )
                 transactions.append(tx)
+                createdIdsForItem = [tx.id]
                 added += 1
                 if item.type == .expense { addedExp += 1 } else { addedInc += 1 }
+            }
+
+            if let firstId = createdIdsForItem.first,
+               let idx = transactions.firstIndex(where: { $0.id == firstId }) {
+                transactions[idx].rawStatementLine = item.rawLine
+                transactions[idx].statementOccurrenceIndex = item.occurrenceIndex
+            }
+            if item.markReimbursable && item.type == .expense {
+                for createdId in createdIdsForItem {
+                    if let idx = transactions.firstIndex(where: { $0.id == createdId }) {
+                        transactions[idx].isReimbursable = true
+                        transactions[idx].reimbursableAmount = transactions[idx].amount
+                        transactions[idx].reimbursableDebtor = item.reimbursableDebtor
+                        transactions[idx].reimbursementReceivedAmount = 0.0
+                        transactions[idx].isReimbursementSettled = false
+                    }
+                }
             }
         }
 
@@ -4690,7 +4942,8 @@ public final class FinancialDataStore: ObservableObject {
         showInConsolidated: Bool = true,
         iconSymbol: String = "chart.line.uptrend.xyaxis",
         colorHex: String = "#10B981",
-        notes: String = ""
+        notes: String = "",
+        currencyCode: String = "BRL"
     ) {
         let item = InvestmentItem(
             name: name,
@@ -4700,7 +4953,8 @@ public final class FinancialDataStore: ObservableObject {
             showInConsolidated: showInConsolidated,
             iconSymbol: iconSymbol,
             colorHex: colorHex,
-            notes: notes
+            notes: notes,
+            currencyCode: currencyCode
         )
         investments.append(item)
         save()
@@ -6777,6 +7031,42 @@ public final class FinancialDataStore: ObservableObject {
         return tx.amount
     }
 
+    /// Taxa efetiva de conversão para BRL da transação (usa taxa congelada ou taxa atual da moeda da conta/transação).
+    public func effectiveExchangeRateToBRL(for tx: FinancialTransaction) -> Double {
+        let code = (account(for: tx.accountId)?.currencyCode ?? tx.effectiveCurrencyCode).uppercased()
+        if code == "BRL" { return 1.0 }
+        if let locked = tx.exchangeRateToBRL, locked > 0 { return locked }
+        return ExchangeRateService.shared.rateToBRL(for: code)
+    }
+
+    public func convertToBRL(_ amount: Double, currencyCode: String) -> Double {
+        let code = currencyCode.uppercased()
+        if code == "BRL" { return amount }
+        return amount * ExchangeRateService.shared.rateToBRL(for: code)
+    }
+
+    /// Valor efetivo da transação já convertido para BRL (para consolidações multi-moeda).
+    public func effectiveTransactionAmountInBRL(for tx: FinancialTransaction) -> Double {
+        effectiveTransactionAmount(for: tx) * effectiveExchangeRateToBRL(for: tx)
+    }
+
+    /// Valor assinado efetivo (`+` para receita, `-` para despesa) em BRL.
+    public func effectiveSignedTransactionAmountInBRL(for tx: FinancialTransaction) -> Double {
+        let amt = effectiveTransactionAmountInBRL(for: tx)
+        return tx.type == .income ? amt : -amt
+    }
+
+    /// Parte da despesa que impacta orçamento, tetos de categoria e gráficos de gastos (exclui a parcela reembolsável).
+    public func effectiveExpenseAmountForBudgetAndCharts(for tx: FinancialTransaction) -> Double {
+        let rate = effectiveExchangeRateToBRL(for: tx)
+        let grossBRL = effectiveTransactionAmount(for: tx) * rate
+        guard tx.type == .expense, tx.isReimbursable == true else {
+            return grossBRL
+        }
+        let reimbBRL = tx.effectiveReimbursableAmount * rate
+        return max(0.0, grossBRL - reimbBRL)
+    }
+
     /// Valor assinado efetivo (`+` para receita, `-` para despesa) respeitando o cenário ativo e supressão `.shadowed`.
     public func effectiveSignedTransactionAmount(for tx: FinancialTransaction) -> Double {
         let amt = effectiveTransactionAmount(for: tx)
@@ -7276,8 +7566,13 @@ public final class FinancialDataStore: ObservableObject {
 
     public func monthlyIncome(for monthReference: Date, onlyPaid: Bool = false) -> Double {
         transactionsForMonth(monthReference)
-            .filter { $0.type == .income && !$0.ignoreInConsolidated && (!onlyPaid || $0.isPaid) }
-            .reduce(0) { $0 + effectiveTransactionAmount(for: $1) }
+            .filter {
+                $0.type == .income &&
+                !$0.ignoreInConsolidated &&
+                $0.transactionOrigin != .reimbursementReceipt &&
+                (!onlyPaid || $0.isPaid)
+            }
+            .reduce(0) { $0 + effectiveTransactionAmountInBRL(for: $1) }
     }
 
     public func monthlyReceivedIncome(for monthReference: Date) -> Double {
@@ -7286,8 +7581,13 @@ public final class FinancialDataStore: ObservableObject {
 
     public func monthlyPendingIncome(for monthReference: Date) -> Double {
         transactionsForMonth(monthReference)
-            .filter { $0.type == .income && !$0.ignoreInConsolidated && !$0.isPaid }
-            .reduce(0) { $0 + effectiveTransactionAmount(for: $1) }
+            .filter {
+                $0.type == .income &&
+                !$0.ignoreInConsolidated &&
+                $0.transactionOrigin != .reimbursementReceipt &&
+                !$0.isPaid
+            }
+            .reduce(0) { $0 + effectiveTransactionAmountInBRL(for: $1) }
     }
 
     public func monthlyExpense(for monthReference: Date, onlyPaid: Bool = false) -> Double {
@@ -7298,7 +7598,7 @@ public final class FinancialDataStore: ObservableObject {
                 !$0.isCreditCardInvoicePayment &&
                 (!onlyPaid || $0.isPaid || $0.isCreditCardExpense)
             }
-            .reduce(0) { $0 + effectiveTransactionAmount(for: $1) }
+            .reduce(0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
     }
 
     public func monthlyPaidExpense(for monthReference: Date) -> Double {
@@ -7308,7 +7608,7 @@ public final class FinancialDataStore: ObservableObject {
     public func monthlyPendingExpense(for monthReference: Date) -> Double {
         transactionsForMonth(monthReference)
             .filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isPaid }
-            .reduce(0) { $0 + effectiveTransactionAmount(for: $1) }
+            .reduce(0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
     }
 
     public func monthlyNetBalance(for monthReference: Date, onlyPaid: Bool = false) -> Double {
@@ -8109,14 +8409,14 @@ public final class FinancialDataStore: ObservableObject {
                 $0.categoryId == categoryId &&
                 $0.linkedQuotaId == nil
             }
-            .reduce(0.0) { $0 + $1.amount }
+            .reduce(0.0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
     }
 
-    /// Gasto Realizado Total ($G_{real}$) na categoria no mês (Despesas Avulsas + Baixas de Cotas, excluindo pagamentos de fatura de cartão).
+    /// Gasto Realizado Total ($G_{real}$) na categoria no mês (Despesas Avulsas + Baixas de Cotas, excluindo pagamentos de fatura de cartão e parcela reembolsável).
     public func realizedMonthlyExpense(forCategory categoryId: UUID, in monthReference: Date) -> Double {
         transactionsForMonth(monthReference)
             .filter { $0.type == .expense && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment && $0.categoryId == categoryId }
-            .reduce(0.0) { $0 + $1.amount }
+            .reduce(0.0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
     }
 
     /// Envelope calculado exclusivamente para o Teto Geral de uma categoria no mês de referência.
@@ -8565,7 +8865,7 @@ public final class FinancialDataStore: ObservableObject {
         }
 
         let cutoff = endOfMonth(for: monthReference)
-        let initialAccountsSum = accounts.reduce(0.0) { $0 + $1.initialBalance }
+        let initialAccountsSum = accounts.reduce(0.0) { $0 + convertToBRL($1.initialBalance, currencyCode: $1.currencyCode) }
         let transactionsDelta = transactions
             .filter { tx in
                 guard !tx.ignoreInConsolidated else { return false }
@@ -8573,11 +8873,11 @@ public final class FinancialDataStore: ObservableObject {
                 guard tx.date <= cutoff else { return false }
                 return includeProjectedUnpaid ? true : tx.isPaid
             }
-            .reduce(0.0) { $0 + effectiveSignedTransactionAmount(for: $1) }
+            .reduce(0.0) { $0 + effectiveSignedTransactionAmountInBRL(for: $1) }
 
         let consolidatedInvestmentsSum = investments
             .filter(\.showInConsolidated)
-            .reduce(0.0) { $0 + $1.balance }
+            .reduce(0.0) { $0 + convertToBRL($1.balance, currencyCode: $1.currencyCode) }
 
         let remainingProvisions = includeProjectedUnpaid ? accumulatedRemainingProvisions(throughMonth: monthReference) : 0.0
 
@@ -8589,15 +8889,15 @@ public final class FinancialDataStore: ObservableObject {
     }
 
     public var totalCheckingBalanceNow: Double {
-        accounts.reduce(0.0) { $0 + currentBalance(forAccount: $1.id) }
+        accounts.reduce(0.0) { $0 + convertToBRL(currentBalance(forAccount: $1.id), currencyCode: $1.currencyCode) }
     }
 
     public var totalInvestmentsBalance: Double {
-        investments.reduce(0.0) { $0 + $1.balance }
+        investments.reduce(0.0) { $0 + convertToBRL($1.balance, currencyCode: $1.currencyCode) }
     }
 
     public var consolidatedInvestmentsBalance: Double {
-        investments.filter(\.showInConsolidated).reduce(0.0) { $0 + $1.balance }
+        investments.filter(\.showInConsolidated).reduce(0.0) { $0 + convertToBRL($1.balance, currencyCode: $1.currencyCode) }
     }
 
     public var totalConsolidatedPatrimonyNow: Double {
@@ -8608,13 +8908,21 @@ public final class FinancialDataStore: ObservableObject {
 
     public func categoryBreakdown(for monthReference: Date, type: TransactionType) -> [CategorySpendSummary] {
         let monthTxs = transactionsForMonth(monthReference)
-            .filter { $0.type == type && !$0.ignoreInConsolidated && !$0.isCreditCardInvoicePayment }
-        let grandTotal = monthTxs.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
+            .filter {
+                $0.type == type &&
+                !$0.ignoreInConsolidated &&
+                !$0.isCreditCardInvoicePayment &&
+                $0.transactionOrigin != .reimbursementReceipt
+            }
+        let grandTotal = monthTxs.reduce(0.0) { partial, tx in
+            let amt = type == .expense ? effectiveExpenseAmountForBudgetAndCharts(for: tx) : effectiveTransactionAmountInBRL(for: tx)
+            return partial + amt
+        }
         guard grandTotal > 0 else { return [] }
 
         var grouped: [UUID: (sum: Double, count: Int)] = [:]
         for tx in monthTxs {
-            let effAmt = effectiveTransactionAmount(for: tx)
+            let effAmt = type == .expense ? effectiveExpenseAmountForBudgetAndCharts(for: tx) : effectiveTransactionAmountInBRL(for: tx)
             guard effAmt > 0.001 else { continue }
             let current = grouped[tx.categoryId] ?? (0.0, 0)
             grouped[tx.categoryId] = (current.sum + effAmt, current.count + 1)
@@ -8988,17 +9296,17 @@ public final class FinancialDataStore: ObservableObject {
             tx.isCanceledRecurringSeries != true
         }
 
-        let incomeTxs = periodTxs.filter { $0.type == .income }
+        let incomeTxs = periodTxs.filter { $0.type == .income && $0.transactionOrigin != .reimbursementReceipt }
         let expenseTxs = periodTxs.filter { $0.type == .expense && !$0.isCreditCardInvoicePayment }
 
         // 3. Receitas: Recebidas, Pendentes (no prazo vs em atraso), Extraordinárias vs Habituais
-        let receivedIncome = incomeTxs.filter(\.isPaid).reduce(0.0) { $0 + $1.amount }
+        let receivedIncome = incomeTxs.filter(\.isPaid).reduce(0.0) { $0 + effectiveTransactionAmountInBRL(for: $1) }
         let pendingIncomeTxs = incomeTxs.filter { !$0.isPaid }
-        let pendingIncome = pendingIncomeTxs.reduce(0.0) { $0 + $1.amount }
+        let pendingIncome = pendingIncomeTxs.reduce(0.0) { $0 + effectiveTransactionAmountInBRL(for: $1) }
 
         let todayStart = calendar.startOfDay(for: now)
-        let pendingIncomeOverdue = pendingIncomeTxs.filter { calendar.startOfDay(for: $0.date) < todayStart }.reduce(0.0) { $0 + $1.amount }
-        let pendingIncomeOnTime = pendingIncomeTxs.filter { calendar.startOfDay(for: $0.date) >= todayStart }.reduce(0.0) { $0 + $1.amount }
+        let pendingIncomeOverdue = pendingIncomeTxs.filter { calendar.startOfDay(for: $0.date) < todayStart }.reduce(0.0) { $0 + effectiveTransactionAmountInBRL(for: $1) }
+        let pendingIncomeOnTime = pendingIncomeTxs.filter { calendar.startOfDay(for: $0.date) >= todayStart }.reduce(0.0) { $0 + effectiveTransactionAmountInBRL(for: $1) }
 
         // Receitas esperadas sem lançamento cadastrado (atualmente 0,00 documentado formalmente como limitação de modelo)
         let unrecordedExpectedIncome = 0.0
@@ -9025,13 +9333,13 @@ public final class FinancialDataStore: ObservableObject {
             }
         }()
 
-        let habitualIncome = incomeTxs.filter { !$0.isExtraordinaryIncome && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + $1.amount }
-        let extraordinaryIncome = incomeTxs.filter { $0.isExtraordinaryIncome && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + $1.amount }
+        let habitualIncome = incomeTxs.filter { !$0.isExtraordinaryIncome && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + effectiveTransactionAmountInBRL(for: $1) }
+        let extraordinaryIncome = incomeTxs.filter { $0.isExtraordinaryIncome && (isClosed ? $0.isPaid : true) }.reduce(0.0) { $0 + effectiveTransactionAmountInBRL(for: $1) }
 
         // Principal fonte de receita
         var incomeByCategory: [UUID: Double] = [:]
         for tx in incomeTxs where (isClosed ? tx.isPaid : true) {
-            incomeByCategory[tx.categoryId, default: 0.0] += tx.amount
+            incomeByCategory[tx.categoryId, default: 0.0] += effectiveTransactionAmountInBRL(for: tx)
         }
         let topCategoryEntry = incomeByCategory.max(by: { $0.value < $1.value })
         let topIncomeSourceName = topCategoryEntry.flatMap { category(for: $0.key)?.name }
@@ -9039,13 +9347,13 @@ public final class FinancialDataStore: ObservableObject {
         let effectiveIncomeForRatio = isClosed ? receivedIncome : (receivedIncome + pendingIncome)
         let topIncomeSourcePercentage = effectiveIncomeForRatio > 0 ? (topIncomeSourceAmount / effectiveIncomeForRatio) * 100.0 : 0.0
 
-        // 4. Despesas (Competência): Pagas (inclui cartão realizado), Pendentes (no prazo vs vencidas em atraso), Fixas vs Variáveis
-        let paidExpense = expenseTxs.filter { $0.isPaid || $0.isCreditCardExpense }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
+        // 4. Despesas (Competência): Pagas (inclui cartão realizado), Pendentes (no prazo vs vencidas em atraso), Fixas vs Variáveis (descontando parcela reembolsável)
+        let paidExpense = expenseTxs.filter { $0.isPaid || $0.isCreditCardExpense }.reduce(0.0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
         let pendingExpenseTxs = expenseTxs.filter { !$0.isPaid && !$0.isCreditCardExpense }
-        let pendingExpense = pendingExpenseTxs.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
+        let pendingExpense = pendingExpenseTxs.reduce(0.0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
 
-        let overdueExpenses = pendingExpenseTxs.filter { calendar.startOfDay(for: $0.date) < todayStart }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
-        let onTimePendingExpenses = pendingExpenseTxs.filter { calendar.startOfDay(for: $0.date) >= todayStart }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
+        let overdueExpenses = pendingExpenseTxs.filter { calendar.startOfDay(for: $0.date) < todayStart }.reduce(0.0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
+        let onTimePendingExpenses = pendingExpenseTxs.filter { calendar.startOfDay(for: $0.date) >= todayStart }.reduce(0.0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
 
         let recordedExpense: Double = {
             if isClosed {
@@ -9067,8 +9375,8 @@ public final class FinancialDataStore: ObservableObject {
             }
         }()
 
-        let fixedExpenses = expenseTxs.filter { $0.isFixedExpense && (isClosed ? ($0.isPaid || $0.isCreditCardExpense) : true) }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
-        let variableExpenses = expenseTxs.filter { $0.isVariableExpense && (isClosed ? ($0.isPaid || $0.isCreditCardExpense) : true) }.reduce(0.0) { $0 + effectiveTransactionAmount(for: $1) }
+        let fixedExpenses = expenseTxs.filter { $0.isFixedExpense && (isClosed ? ($0.isPaid || $0.isCreditCardExpense) : true) }.reduce(0.0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
+        let variableExpenses = expenseTxs.filter { $0.isVariableExpense && (isClosed ? ($0.isPaid || $0.isCreditCardExpense) : true) }.reduce(0.0) { $0 + effectiveExpenseAmountForBudgetAndCharts(for: $1) }
         let totalClassifiedExp = fixedExpenses + variableExpenses
         let fixedExpensesPercentage = totalClassifiedExp > 0 ? (fixedExpenses / totalClassifiedExp) * 100.0 : 0.0
         let variableExpensesPercentage = totalClassifiedExp > 0 ? (variableExpenses / totalClassifiedExp) * 100.0 : 0.0
@@ -9139,7 +9447,7 @@ public final class FinancialDataStore: ObservableObject {
         let currentAccountBalanceNow = totalCheckingBalanceNow
 
         let cutoffDate: Date = isAnnual ? endOfYear(for: referenceDate) : endOfMonth(for: referenceDate)
-        let initialAccountsSum = accounts.reduce(0.0) { $0 + $1.initialBalance }
+        let initialAccountsSum = accounts.reduce(0.0) { $0 + convertToBRL($1.initialBalance, currencyCode: $1.currencyCode) }
         let transactionsDelta = transactions
             .filter { tx in
                 guard !tx.ignoreInConsolidated else { return false }
@@ -9147,10 +9455,10 @@ public final class FinancialDataStore: ObservableObject {
                 guard tx.date <= cutoffDate else { return false }
                 return isClosed ? tx.isPaid : true
             }
-            .reduce(0.0) { $0 + effectiveSignedTransactionAmount(for: $1) }
+            .reduce(0.0) { $0 + effectiveSignedTransactionAmountInBRL(for: $1) }
         let consolidatedInvestmentsSum = investments
             .filter(\.showInConsolidated)
-            .reduce(0.0) { $0 + $1.balance }
+            .reduce(0.0) { $0 + convertToBRL($1.balance, currencyCode: $1.currencyCode) }
 
         let projectedAccountBalance = initialAccountsSum + transactionsDelta + consolidatedInvestmentsSum
         let balanceIfAllBudgetsConsumed = isClosed

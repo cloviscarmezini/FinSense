@@ -6,6 +6,7 @@ import SwiftUI
 public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
     case dashboard
     case transactions
+    case netWorth
     case creditCards
     case investments
     case loans
@@ -21,6 +22,7 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .dashboard: return "Dashboard"
         case .transactions: return "Transações"
+        case .netWorth: return "Patrimônio & Renda"
         case .creditCards: return "Cartões de Crédito"
         case .investments: return "Investimentos"
         case .loans: return "Empréstimos"
@@ -36,6 +38,7 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .dashboard: return "Insights, gráficos e visão consolidada"
         case .transactions: return "Receitas e despesas por mês"
+        case .netWorth: return "Net Worth, imóveis, veículos, FGTS e fontes de renda"
         case .creditCards: return "Limites, faturas e compras parceladas"
         case .investments: return "Carteiras, aportes e resgates"
         case .loans: return "Consignados, pessoais e amortização"
@@ -51,6 +54,7 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .dashboard: return "chart.pie.fill"
         case .transactions: return "arrow.left.arrow.right.circle.fill"
+        case .netWorth: return "chart.bar.xaxis.ascending"
         case .creditCards: return "creditcard.fill"
         case .investments: return "chart.line.uptrend.xyaxis.circle.fill"
         case .loans: return "banknote.fill"
@@ -68,6 +72,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
     case llm = "llm"
     case accounts = "accounts"
     case categories = "categories"
+    case reconciliationRules = "reconciliationRules"
 
     public var id: String { rawValue }
 
@@ -77,6 +82,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .llm: return "Apple Intelligence"
         case .accounts: return "Contas"
         case .categories: return "Categorias"
+        case .reconciliationRules: return "Regras"
         }
     }
 
@@ -86,6 +92,7 @@ public enum SettingsSection: String, CaseIterable, Identifiable, Hashable {
         case .llm: return "brain.head.profile"
         case .accounts: return "building.columns.fill"
         case .categories: return "square.grid.2x2.fill"
+        case .reconciliationRules: return "checklist.checked"
         }
     }
 }
@@ -94,6 +101,7 @@ public enum TransactionsSubmenu: String, CaseIterable, Identifiable, Hashable {
     case all
     case expenses
     case incomes
+    case receivables
 
     public var id: String { rawValue }
 
@@ -102,6 +110,7 @@ public enum TransactionsSubmenu: String, CaseIterable, Identifiable, Hashable {
         case .all: return "Transações"
         case .expenses: return "Despesas"
         case .incomes: return "Receitas"
+        case .receivables: return "A Receber"
         }
     }
 
@@ -110,6 +119,7 @@ public enum TransactionsSubmenu: String, CaseIterable, Identifiable, Hashable {
         case .all: return "arrow.left.arrow.right.circle.fill"
         case .expenses: return "arrow.up.right.circle.fill"
         case .incomes: return "arrow.down.left.circle.fill"
+        case .receivables: return "arrow.uturn.backward.circle.fill"
         }
     }
 }
@@ -140,6 +150,10 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
     case sinkingFunds
     case whatIfScenarios
     case insights
+    case reconciliationRules
+    case netWorthAndAssets
+    case incomeSources
+    case fireScenarios
     case aiModelsAndChat
 
     public var id: String { rawValue }
@@ -157,6 +171,10 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
         case .sinkingFunds: return "Sinking Funds (Caixinhas Anuais)"
         case .whatIfScenarios: return "Cenários E se? (What-If)"
         case .insights: return "Central de Insights e Perfil ML"
+        case .reconciliationRules: return "Regras de Conciliação"
+        case .netWorthAndAssets: return "Patrimônio & Snapshots Net Worth"
+        case .incomeSources: return "Fontes de Renda"
+        case .fireScenarios: return "Simulações FIRE"
         case .aiModelsAndChat: return "Modelos Locais e Histórico da IA"
         }
     }
@@ -174,6 +192,10 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
         case .sinkingFunds: return "Remove todas as provisões de gastos anuais/sazonais"
         case .whatIfScenarios: return "Remove todos os cenários salvos de Stress Test"
         case .insights: return "Remove insights gerados, feedbacks, revisões e perfil ML"
+        case .reconciliationRules: return "Remove todas as regras determinísticas de conciliação"
+        case .netWorthAndAssets: return "Remove bens patrimoniais e snapshots históricos de Net Worth"
+        case .incomeSources: return "Remove fontes de renda fixa, variável e passiva cadastradas"
+        case .fireScenarios: return "Remove todos os cenários salvos do simulador FIRE"
         case .aiModelsAndChat: return "Remove modelos baixados e histórico de conversas do chat"
         }
     }
@@ -191,6 +213,10 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
         case .sinkingFunds: return "tray.and.arrow.down.fill"
         case .whatIfScenarios: return "wand.and.stars"
         case .insights: return "brain.filled.head.profile"
+        case .reconciliationRules: return "checklist.checked"
+        case .netWorthAndAssets: return "chart.bar.xaxis.ascending"
+        case .incomeSources: return "banknote.fill"
+        case .fireScenarios: return "flame.fill"
         case .aiModelsAndChat: return "cpu.fill"
         }
     }
@@ -198,7 +224,7 @@ public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
 
 // MARK: - Transaction Types & Recurrence
 
-public enum TransactionType: String, Codable, CaseIterable, Identifiable, Hashable {
+public enum TransactionType: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
     case expense
     case income
 
@@ -219,7 +245,7 @@ public enum TransactionType: String, Codable, CaseIterable, Identifiable, Hashab
     }
 }
 
-public enum TransactionRecurrenceMode: String, Codable, CaseIterable, Identifiable, Hashable {
+public enum TransactionRecurrenceMode: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
     case single
     case installment
     case repeated
@@ -246,7 +272,7 @@ public enum TransactionRecurrenceMode: String, Codable, CaseIterable, Identifiab
     }
 }
 
-public enum RecurrenceFrequency: String, Codable, CaseIterable, Identifiable, Hashable {
+public enum RecurrenceFrequency: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
     case weekly
     case biweekly
     case monthly
@@ -439,6 +465,7 @@ public struct BankAccount: Identifiable, Codable, Hashable {
     public var initialBalance: Double
     public var agency: String
     public var accountNumber: String
+    public var currencyCode: String
     public var createdAt: Date
 
     public init(
@@ -451,6 +478,7 @@ public struct BankAccount: Identifiable, Codable, Hashable {
         initialBalance: Double = 0.0,
         agency: String = "",
         accountNumber: String = "",
+        currencyCode: String = "BRL",
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -462,7 +490,51 @@ public struct BankAccount: Identifiable, Codable, Hashable {
         self.initialBalance = initialBalance
         self.agency = agency
         self.accountNumber = accountNumber
+        self.currencyCode = currencyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : currencyCode.uppercased()
         self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, bankPresetId, customImagePath, iconSymbol, colorHex, initialBalance, agency, accountNumber, currencyCode, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.name = (try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))) ?? ""
+        self.bankPresetId = (try? c.decodeIfPresent(String.self, forKey: AnyKey("bankPresetId")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("bank_preset_id")))
+        self.customImagePath = (try? c.decodeIfPresent(String.self, forKey: AnyKey("customImagePath")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("custom_image_path")))
+        self.iconSymbol = (try? c.decodeIfPresent(String.self, forKey: AnyKey("iconSymbol")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("icon_symbol"))) ?? "building.columns.fill"
+        self.colorHex = (try? c.decodeIfPresent(String.self, forKey: AnyKey("colorHex")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("color_hex"))) ?? "#EC7000"
+        self.initialBalance = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("initialBalance")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("initial_balance"))) ?? 0.0
+        self.agency = (try? c.decodeIfPresent(String.self, forKey: AnyKey("agency"))) ?? ""
+        self.accountNumber = (try? c.decodeIfPresent(String.self, forKey: AnyKey("accountNumber")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("account_number"))) ?? ""
+        let rawCur = (try? c.decodeIfPresent(String.self, forKey: AnyKey("currencyCode")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("currency_code"))) ?? "BRL"
+        self.currencyCode = rawCur.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : rawCur.uppercased()
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(bankPresetId, forKey: .bankPresetId)
+        try c.encodeIfPresent(customImagePath, forKey: .customImagePath)
+        try c.encode(iconSymbol, forKey: .iconSymbol)
+        try c.encode(colorHex, forKey: .colorHex)
+        try c.encode(initialBalance, forKey: .initialBalance)
+        try c.encode(agency, forKey: .agency)
+        try c.encode(accountNumber, forKey: .accountNumber)
+        try c.encode(currencyCode, forKey: .currencyCode)
+        try c.encode(createdAt, forKey: .createdAt)
     }
 }
 
@@ -744,6 +816,7 @@ public enum TransactionOrigin: String, Codable, CaseIterable, Identifiable, Hash
     case quotaAllocation
     case internalTransfer
     case creditCardInvoicePayment
+    case reimbursementReceipt
 
     public var id: String { rawValue }
 }
@@ -783,6 +856,17 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
     public var baseInstallmentRegisteredAmount: Double? // Valor cadastrado original da parcela do contrato (sem a especulação de correção futura)
     public var projectedInstallmentCorrectionAmount: Double? // Aumento projetado com base na média do demonstrativo (especulação que impacta apenas o fechamento do mês)
     public var confirmedRealInterestCorrectionAmount: Double? // Juros/correção real efetivada na ocasião do pagamento da parcela
+    public var needsReview: Bool?
+    public var sourceApp: String?
+    public var isReimbursable: Bool?
+    public var reimbursableDebtor: String?
+    public var reimbursableAmount: Double?
+    public var reimbursementExpectedDate: Date?
+    public var reimbursementReceivedAmount: Double?
+    public var isReimbursementSettled: Bool?
+    public var linkedReimbursementTransactionId: UUID?
+    public var currencyCode: String?
+    public var exchangeRateToBRL: Double?
     public var createdAt: Date
 
     public init(
@@ -820,6 +904,17 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         baseInstallmentRegisteredAmount: Double? = nil,
         projectedInstallmentCorrectionAmount: Double? = nil,
         confirmedRealInterestCorrectionAmount: Double? = nil,
+        needsReview: Bool? = nil,
+        sourceApp: String? = nil,
+        isReimbursable: Bool? = nil,
+        reimbursableDebtor: String? = nil,
+        reimbursableAmount: Double? = nil,
+        reimbursementExpectedDate: Date? = nil,
+        reimbursementReceivedAmount: Double? = nil,
+        isReimbursementSettled: Bool? = nil,
+        linkedReimbursementTransactionId: UUID? = nil,
+        currencyCode: String? = nil,
+        exchangeRateToBRL: Double? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -852,11 +947,199 @@ public struct FinancialTransaction: Identifiable, Codable, Hashable {
         self.creditCardInvoiceYearMonthKey = creditCardInvoiceYearMonthKey
         self.creditCardInvoiceId = creditCardInvoiceId
         self.transactionOrigin = transactionOrigin
-        self.linkedEntityID = linkedEntityID ?? linkedContractId ?? linkedInvestmentId ?? linkedDebtId ?? linkedQuotaId ?? creditCardInvoiceId
+        self.linkedEntityID = linkedEntityID ?? linkedContractId ?? linkedInvestmentId ?? linkedDebtId ?? linkedQuotaId ?? creditCardInvoiceId ?? linkedReimbursementTransactionId
         self.baseInstallmentRegisteredAmount = baseInstallmentRegisteredAmount.map { abs($0) }
         self.projectedInstallmentCorrectionAmount = projectedInstallmentCorrectionAmount
         self.confirmedRealInterestCorrectionAmount = confirmedRealInterestCorrectionAmount
+        self.needsReview = needsReview
+        self.sourceApp = sourceApp
+        self.isReimbursable = isReimbursable
+        self.reimbursableDebtor = reimbursableDebtor
+        self.reimbursableAmount = reimbursableAmount.map { min(abs($0), abs(amount)) }
+        self.reimbursementExpectedDate = reimbursementExpectedDate
+        self.reimbursementReceivedAmount = reimbursementReceivedAmount.map { max(0.0, $0) }
+        self.isReimbursementSettled = isReimbursementSettled
+        self.linkedReimbursementTransactionId = linkedReimbursementTransactionId
+        self.currencyCode = currencyCode
+        self.exchangeRateToBRL = exchangeRateToBRL
         self.createdAt = createdAt
+    }
+
+    public var effectiveReimbursableAmount: Double {
+        guard isReimbursable == true, type == .expense else { return 0.0 }
+        return min(amount, max(0.0, reimbursableAmount ?? amount))
+    }
+
+    public var remainingReimbursableAmount: Double {
+        guard isReimbursable == true, type == .expense, isReimbursementSettled != true else { return 0.0 }
+        return max(0.0, effectiveReimbursableAmount - (reimbursementReceivedAmount ?? 0.0))
+    }
+
+    public var nonReimbursableExpensePortion: Double {
+        guard type == .expense else { return amount }
+        guard isReimbursable == true else { return amount }
+        return max(0.0, amount - effectiveReimbursableAmount)
+    }
+
+    public var effectiveCurrencyCode: String {
+        let trimmed = currencyCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
+        return trimmed.isEmpty ? "BRL" : trimmed
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, details, amount, date, type, isPaid, categoryId, accountId
+        case attachmentPath, attachmentName, ignoreInConsolidated, recurrenceMode, recurrenceFrequency
+        case isCanceledRecurringSeries, seriesGroupId, installmentIndex, installmentTotal
+        case rawStatementLine, statementOccurrenceIndex, linkedContractId, linkedInvestmentId
+        case linkedDebtId, linkedQuotaId, linkedQuotaUnits, linkedQuotaYearMonthKey
+        case creditCardId, creditCardInvoiceYearMonthKey, creditCardInvoiceId
+        case transactionOrigin, linkedEntityID
+        case baseInstallmentRegisteredAmount, projectedInstallmentCorrectionAmount, confirmedRealInterestCorrectionAmount
+        case needsReview, sourceApp, isReimbursable, reimbursableDebtor, reimbursableAmount
+        case reimbursementExpectedDate, reimbursementReceivedAmount, isReimbursementSettled
+        case linkedReimbursementTransactionId, currencyCode, exchangeRateToBRL
+        case createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        self.id = (try? c.decode(UUID.self, forKey: AnyKey("id"))) ?? UUID()
+        self.name = (try? c.decodeIfPresent(String.self, forKey: AnyKey("name"))) ?? ""
+        self.details = (try? c.decodeIfPresent(String.self, forKey: AnyKey("details"))) ?? ""
+        self.amount = abs((try? c.decodeIfPresent(Double.self, forKey: AnyKey("amount"))) ?? 0.0)
+        self.date = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("date"))) ?? Date()
+        self.type = (try? c.decodeIfPresent(TransactionType.self, forKey: AnyKey("type"))) ?? .expense
+        self.isPaid = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("isPaid")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("is_paid"))) ?? true
+        self.categoryId = (try? c.decode(UUID.self, forKey: AnyKey("categoryId")))
+            ?? (try? c.decode(UUID.self, forKey: AnyKey("category_id"))) ?? UUID()
+        self.accountId = (try? c.decode(UUID.self, forKey: AnyKey("accountId")))
+            ?? (try? c.decode(UUID.self, forKey: AnyKey("account_id"))) ?? UUID()
+        self.attachmentPath = (try? c.decodeIfPresent(String.self, forKey: AnyKey("attachmentPath")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("attachment_path")))
+        self.attachmentName = (try? c.decodeIfPresent(String.self, forKey: AnyKey("attachmentName")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("attachment_name")))
+        self.ignoreInConsolidated = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("ignoreInConsolidated")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("ignore_in_consolidated"))) ?? false
+        self.recurrenceMode = (try? c.decodeIfPresent(TransactionRecurrenceMode.self, forKey: AnyKey("recurrenceMode")))
+            ?? (try? c.decodeIfPresent(TransactionRecurrenceMode.self, forKey: AnyKey("recurrence_mode"))) ?? .single
+        self.recurrenceFrequency = (try? c.decodeIfPresent(RecurrenceFrequency.self, forKey: AnyKey("recurrenceFrequency")))
+            ?? (try? c.decodeIfPresent(RecurrenceFrequency.self, forKey: AnyKey("recurrence_frequency")))
+        self.isCanceledRecurringSeries = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("isCanceledRecurringSeries")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("is_canceled_recurring_series")))
+        self.seriesGroupId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("seriesGroupId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("series_group_id")))
+        self.installmentIndex = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("installmentIndex")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("installment_index")))
+        self.installmentTotal = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("installmentTotal")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("installment_total")))
+        self.rawStatementLine = (try? c.decodeIfPresent(String.self, forKey: AnyKey("rawStatementLine")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("raw_statement_line")))
+        self.statementOccurrenceIndex = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("statementOccurrenceIndex")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("statement_occurrence_index"))) ?? 1
+        self.linkedContractId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedContractId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_contract_id")))
+        self.linkedInvestmentId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedInvestmentId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_investment_id")))
+        self.linkedDebtId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedDebtId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_debt_id")))
+        self.linkedQuotaId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedQuotaId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_quota_id")))
+        self.linkedQuotaUnits = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("linkedQuotaUnits")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("linked_quota_units")))
+        self.linkedQuotaYearMonthKey = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("linkedQuotaYearMonthKey")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("linked_quota_year_month_key")))
+        self.creditCardId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("creditCardId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("credit_card_id")))
+        self.creditCardInvoiceYearMonthKey = (try? c.decodeIfPresent(Int.self, forKey: AnyKey("creditCardInvoiceYearMonthKey")))
+            ?? (try? c.decodeIfPresent(Int.self, forKey: AnyKey("credit_card_invoice_year_month_key")))
+        self.creditCardInvoiceId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("creditCardInvoiceId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("credit_card_invoice_id")))
+        self.transactionOrigin = (try? c.decodeIfPresent(TransactionOrigin.self, forKey: AnyKey("transactionOrigin")))
+            ?? (try? c.decodeIfPresent(TransactionOrigin.self, forKey: AnyKey("transaction_origin")))
+        self.linkedEntityID = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedEntityID")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_entity_id")))
+            ?? self.linkedContractId ?? self.linkedInvestmentId ?? self.linkedDebtId ?? self.linkedQuotaId ?? self.creditCardInvoiceId
+        self.baseInstallmentRegisteredAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("baseInstallmentRegisteredAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("base_installment_registered_amount")))
+        self.projectedInstallmentCorrectionAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("projectedInstallmentCorrectionAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("projected_installment_correction_amount")))
+        self.confirmedRealInterestCorrectionAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("confirmedRealInterestCorrectionAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("confirmed_real_interest_correction_amount")))
+        self.needsReview = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("needsReview")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("needs_review")))
+        self.sourceApp = (try? c.decodeIfPresent(String.self, forKey: AnyKey("sourceApp")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("source_app")))
+        self.isReimbursable = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("isReimbursable")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("is_reimbursable")))
+        self.reimbursableDebtor = (try? c.decodeIfPresent(String.self, forKey: AnyKey("reimbursableDebtor")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("reimbursable_debtor")))
+        self.reimbursableAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("reimbursableAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("reimbursable_amount")))
+        self.reimbursementExpectedDate = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("reimbursementExpectedDate")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("reimbursement_expected_date")))
+        self.reimbursementReceivedAmount = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("reimbursementReceivedAmount")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("reimbursement_received_amount")))
+        self.isReimbursementSettled = (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("isReimbursementSettled")))
+            ?? (try? c.decodeIfPresent(Bool.self, forKey: AnyKey("is_reimbursement_settled")))
+        self.linkedReimbursementTransactionId = (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linkedReimbursementTransactionId")))
+            ?? (try? c.decodeIfPresent(UUID.self, forKey: AnyKey("linked_reimbursement_transaction_id")))
+        self.currencyCode = (try? c.decodeIfPresent(String.self, forKey: AnyKey("currencyCode")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("currency_code")))
+        self.exchangeRateToBRL = (try? c.decodeIfPresent(Double.self, forKey: AnyKey("exchangeRateToBRL")))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: AnyKey("exchange_rate_to_brl")))
+        self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
+            ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(details, forKey: .details)
+        try c.encode(amount, forKey: .amount)
+        try c.encode(date, forKey: .date)
+        try c.encode(type, forKey: .type)
+        try c.encode(isPaid, forKey: .isPaid)
+        try c.encode(categoryId, forKey: .categoryId)
+        try c.encode(accountId, forKey: .accountId)
+        try c.encodeIfPresent(attachmentPath, forKey: .attachmentPath)
+        try c.encodeIfPresent(attachmentName, forKey: .attachmentName)
+        try c.encode(ignoreInConsolidated, forKey: .ignoreInConsolidated)
+        try c.encode(recurrenceMode, forKey: .recurrenceMode)
+        try c.encodeIfPresent(recurrenceFrequency, forKey: .recurrenceFrequency)
+        try c.encodeIfPresent(isCanceledRecurringSeries, forKey: .isCanceledRecurringSeries)
+        try c.encodeIfPresent(seriesGroupId, forKey: .seriesGroupId)
+        try c.encodeIfPresent(installmentIndex, forKey: .installmentIndex)
+        try c.encodeIfPresent(installmentTotal, forKey: .installmentTotal)
+        try c.encodeIfPresent(rawStatementLine, forKey: .rawStatementLine)
+        try c.encode(statementOccurrenceIndex, forKey: .statementOccurrenceIndex)
+        try c.encodeIfPresent(linkedContractId, forKey: .linkedContractId)
+        try c.encodeIfPresent(linkedInvestmentId, forKey: .linkedInvestmentId)
+        try c.encodeIfPresent(linkedDebtId, forKey: .linkedDebtId)
+        try c.encodeIfPresent(linkedQuotaId, forKey: .linkedQuotaId)
+        try c.encodeIfPresent(linkedQuotaUnits, forKey: .linkedQuotaUnits)
+        try c.encodeIfPresent(linkedQuotaYearMonthKey, forKey: .linkedQuotaYearMonthKey)
+        try c.encodeIfPresent(creditCardId, forKey: .creditCardId)
+        try c.encodeIfPresent(creditCardInvoiceYearMonthKey, forKey: .creditCardInvoiceYearMonthKey)
+        try c.encodeIfPresent(creditCardInvoiceId, forKey: .creditCardInvoiceId)
+        try c.encodeIfPresent(transactionOrigin, forKey: .transactionOrigin)
+        try c.encodeIfPresent(linkedEntityID, forKey: .linkedEntityID)
+        try c.encodeIfPresent(baseInstallmentRegisteredAmount, forKey: .baseInstallmentRegisteredAmount)
+        try c.encodeIfPresent(projectedInstallmentCorrectionAmount, forKey: .projectedInstallmentCorrectionAmount)
+        try c.encodeIfPresent(confirmedRealInterestCorrectionAmount, forKey: .confirmedRealInterestCorrectionAmount)
+        try c.encodeIfPresent(needsReview, forKey: .needsReview)
+        try c.encodeIfPresent(sourceApp, forKey: .sourceApp)
+        try c.encodeIfPresent(isReimbursable, forKey: .isReimbursable)
+        try c.encodeIfPresent(reimbursableDebtor, forKey: .reimbursableDebtor)
+        try c.encodeIfPresent(reimbursableAmount, forKey: .reimbursableAmount)
+        try c.encodeIfPresent(reimbursementExpectedDate, forKey: .reimbursementExpectedDate)
+        try c.encodeIfPresent(reimbursementReceivedAmount, forKey: .reimbursementReceivedAmount)
+        try c.encodeIfPresent(isReimbursementSettled, forKey: .isReimbursementSettled)
+        try c.encodeIfPresent(linkedReimbursementTransactionId, forKey: .linkedReimbursementTransactionId)
+        try c.encodeIfPresent(currencyCode, forKey: .currencyCode)
+        try c.encodeIfPresent(exchangeRateToBRL, forKey: .exchangeRateToBRL)
+        try c.encode(createdAt, forKey: .createdAt)
     }
 
     /// Indica se o lançamento é uma despesa realizada no Cartão de Crédito (Competência, não desconta saldo bancário).
@@ -999,6 +1282,7 @@ public struct InvestmentItem: Identifiable, Codable, Hashable {
     public var iconSymbol: String
     public var colorHex: String
     public var notes: String
+    public var currencyCode: String
     public var movements: [InvestmentMovement]
     public var createdAt: Date
 
@@ -1012,6 +1296,7 @@ public struct InvestmentItem: Identifiable, Codable, Hashable {
         iconSymbol: String = "chart.line.uptrend.xyaxis",
         colorHex: String = "#10B981",
         notes: String = "",
+        currencyCode: String = "BRL",
         movements: [InvestmentMovement] = [],
         createdAt: Date = Date()
     ) {
@@ -1024,13 +1309,14 @@ public struct InvestmentItem: Identifiable, Codable, Hashable {
         self.iconSymbol = iconSymbol
         self.colorHex = colorHex
         self.notes = notes
+        self.currencyCode = currencyCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : currencyCode.uppercased()
         self.movements = movements
         self.createdAt = createdAt
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, groupName, investmentAccountId, balance, showInConsolidated
-        case iconSymbol, colorHex, notes, movements, createdAt
+        case iconSymbol, colorHex, notes, currencyCode, movements, createdAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -1049,6 +1335,9 @@ public struct InvestmentItem: Identifiable, Codable, Hashable {
         self.colorHex = (try? c.decodeIfPresent(String.self, forKey: AnyKey("colorHex")))
             ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("color_hex"))) ?? "#10B981"
         self.notes = (try? c.decodeIfPresent(String.self, forKey: AnyKey("notes"))) ?? ""
+        let rawCur = (try? c.decodeIfPresent(String.self, forKey: AnyKey("currencyCode")))
+            ?? (try? c.decodeIfPresent(String.self, forKey: AnyKey("currency_code"))) ?? "BRL"
+        self.currencyCode = rawCur.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "BRL" : rawCur.uppercased()
         self.movements = (try? c.decodeIfPresent([InvestmentMovement].self, forKey: AnyKey("movements"))) ?? []
         self.createdAt = (try? c.decodeIfPresent(Date.self, forKey: AnyKey("createdAt")))
             ?? (try? c.decodeIfPresent(Date.self, forKey: AnyKey("created_at"))) ?? Date()
@@ -1065,6 +1354,7 @@ public struct InvestmentItem: Identifiable, Codable, Hashable {
         try c.encode(iconSymbol, forKey: .iconSymbol)
         try c.encode(colorHex, forKey: .colorHex)
         try c.encode(notes, forKey: .notes)
+        try c.encode(currencyCode, forKey: .currencyCode)
         try c.encode(movements, forKey: .movements)
         try c.encode(createdAt, forKey: .createdAt)
     }
@@ -2958,6 +3248,10 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
     case sinkingFunds = "sinkingFunds"
     case decisionsAndScenarios = "decisionsAndScenarios"
     case insightsAndML = "insightsAndML"
+    case reconciliationRules = "reconciliationRules"
+    case netWorthAndAssets = "netWorthAndAssets"
+    case incomeSources = "incomeSources"
+    case fireScenarios = "fireScenarios"
     case assets = "assets"
 
     public var id: String { rawValue }
@@ -2988,6 +3282,14 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
             return "Cenários E se? (What-If)"
         case .insightsAndML:
             return "Insights, Revisões Mensais e ML"
+        case .reconciliationRules:
+            return "Regras Determinísticas de Conciliação"
+        case .netWorthAndAssets:
+            return "Patrimônio (Imóveis, Veículos, FGTS) e Net Worth"
+        case .incomeSources:
+            return "Fontes de Renda (Fixa, Variável, Passiva)"
+        case .fireScenarios:
+            return "Cenários de Independência Financeira (FIRE)"
         case .assets:
             return "Assets, Ícones e Comprovantes"
         }
@@ -3019,6 +3321,14 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
             return "Cenários salvos de Stress Test e premissas CDI/Selic"
         case .insightsAndML:
             return "Alertas ativos, feedbacks do usuário, fechamentos e perfil ML"
+        case .reconciliationRules:
+            return "Regras automáticas para categorizar e limpar lançamentos"
+        case .netWorthAndAssets:
+            return "Cadastro de bens não-bancários, equity e evolução histórica"
+        case .incomeSources:
+            return "Salários, bônus sazonais e rendas passivas estruturadas"
+        case .fireScenarios:
+            return "Parâmetros salvos do simulador de renda passiva FIRE"
         case .assets:
             return "Imagens personalizadas de contas/cartões/dívidas e anexos"
         }
@@ -3038,6 +3348,10 @@ public enum ExportDataTarget: String, CaseIterable, Identifiable, Hashable, Coda
         case .sinkingFunds: return "tray.and.arrow.down.fill"
         case .decisionsAndScenarios: return "wand.and.stars"
         case .insightsAndML: return "brain.filled.head.profile"
+        case .reconciliationRules: return "checklist.checked"
+        case .netWorthAndAssets: return "chart.bar.xaxis.ascending"
+        case .incomeSources: return "banknote.fill"
+        case .fireScenarios: return "flame.fill"
         case .assets: return "photo.on.rectangle.angled"
         }
     }

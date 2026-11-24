@@ -148,7 +148,20 @@ FinSense (macOS App)
 - Mutações locais são gravadas atomicamente numa fila de mutações (`MutationJournal`).
 - Resolução de conflitos *Last-Write-Wins* (LWW) com controle de versão monótona do usuário.
 - **Verificação Leve de Status (`/api/v1/sync/status`):** Consulta ultra-rápida (<5ms) com ETag e revisão de servidor para saber se há atualizações na nuvem sem onerar a rede ou travar o app, atualizando o ícone de sincronização na barra superior.
-- **Exportação e Importação de Dados:** Suporta backup completo em JSON (`.json`) com compatibilidade retroativa para versões anteriores da base.
+- **Exportação e Importação de Dados:** Suporta backup completo em JSON (`.json`) e pacotes comprimidos (`.fcbackup`), incluindo `reconciliationRules`, `assetItems`, `incomeSources`, `netWorthSnapshots` e `fireScenarios`, mantendo 100% de compatibilidade retroativa com backups legados.
+
+### 2.9. Quick-Add Global, Regras Determinísticas & Revisão Apple Pay
+- **Barra Rápida Global (Feature 2):** `MenuBarExtra` + atalhos globais (`⌘+Shift+$` e `⌘+Option+Space` via `GlobalHotKeyManager.swift`) exibem painel flutuante `QuickAddBarView` interpretado pelo `QuickAddParserService` (suporte a parcelas `Nx`, cartão/conta destino, moeda e reembolsável).
+- **Motor de Regras Determinístico (Feature 3):** `ReconciliationRulesEngine` avalia regras ativas por prioridade crescente (`contains`, `startsWith`, `equals`, `regex`, faixa de valor e origem) antes do fallback para `LocalLLMService` na importação (`StatementImportService`) e em transações sincronizadas via Apple Pay com `needsReview = true`.
+- **Gestão em UI:** Tab `Regras` em Configurações (`ReconciliationRulesView`), filtro `A Revisar` + botão `Aprovar` em `TransactionsView`, e criação de regra em 1 clique a partir de qualquer transação ou linha de extrato.
+
+### 2.10. Patrimônio Líquido (Net Worth), Fontes de Renda & Simulador FIRE
+- **Tela Isolada de Patrimônio & Renda (`NetWorthDashboardView`, Sidebar `.netWorth`):** Separada do fluxo de caixa operacional. Consolida liquidez, investimentos, bens não-bancários (`AssetItem`: imóveis com cálculo automático de equity via financiamento vinculado, veículos, FGTS, previdência), passivos e fontes de renda (`IncomeSource`), com snapshots mensais históricos (`NetWorthSnapshot`).
+- **Simulador FIRE (`FIRESimulatorView`, em `Decisões & Cenários`):** Read-only usando custo de vida real médio de 6 meses (excluindo amortizações extraordinárias/transferências/parcelas reembolsáveis), consulta BCB Selic/IPCA com equação real de Fisher `(1+nom)/(1+inf)-1`, SWR configurável (default 4%), aceleração por quitação de dívidas e cenários salváveis (`FIREPlanScenario`).
+
+### 2.11. Gestão de Reembolsos ("A Receber") & Multimoeda (Câmbio)
+- **Contabilização de Reembolsos (`TransactionOrigin.reimbursementReceipt`):** Despesas marcadas com `isReimbursable = true` debitam **valor integral** da conta bancária ou fatura de cartão, porém tetos orçamentários, `categoryBreakdown`, `monthlyExpense` e KPIs computam **apenas a parcela pessoal não reembolsável**. O submenu `A Receber` (`ReceivablesManagementView`) agrupa valores por devedor e registra recebimentos totais ou parciais sem inflar categorias de Salário/Receita em gráficos.
+- **Multimoeda (`ExchangeRateService`):** `BankAccount`, `InvestmentItem`, `SinkingFund`, `AssetItem`, `IncomeSource` e `FinancialTransaction` suportam moedas estrangeiras (`USD`, `EUR`, `GBP`, `CAD`, `CHF`, `AUD`, `JPY`). Saldos nativos por conta são preservados enquanto consolidações, KPIs e Net Worth convertem automaticamente para BRL com cache em disco (`fx_rates_cache.json`), atualização pública e suporte a taxa manual offline.
 
 ---
 
@@ -183,4 +196,7 @@ swift test --filter CreditCardTests
 
 # Rodar testes de Sincronização e Autenticação
 swift test --filter CloudSyncAndAuthTests
+
+# Rodar testes da Evolução FinSense (Quick-Add, Regras, Net Worth, FIRE, Reembolsos, Multimoeda)
+swift test --filter EvolutionFeaturesTests
 ```

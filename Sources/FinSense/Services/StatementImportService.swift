@@ -20,6 +20,10 @@ public struct ParsedStatementTransaction: Identifiable, Hashable, Codable {
     public var recurrenceFrequency: RecurrenceFrequency
     public var rawLine: String
     public var occurrenceIndex: Int
+    public var matchedRuleName: String? = nil
+    public var markReimbursable: Bool = false
+    public var reimbursableDebtor: String? = nil
+    public var ignoreInConsolidated: Bool = false
 
     public init(
         id: UUID = UUID(),
@@ -37,7 +41,11 @@ public struct ParsedStatementTransaction: Identifiable, Hashable, Codable {
         installmentsCount: Int = 1,
         recurrenceFrequency: RecurrenceFrequency = .monthly,
         rawLine: String,
-        occurrenceIndex: Int
+        occurrenceIndex: Int,
+        matchedRuleName: String? = nil,
+        markReimbursable: Bool = false,
+        reimbursableDebtor: String? = nil,
+        ignoreInConsolidated: Bool = false
     ) {
         self.id = id
         self.date = date
@@ -55,6 +63,10 @@ public struct ParsedStatementTransaction: Identifiable, Hashable, Codable {
         self.recurrenceFrequency = recurrenceFrequency
         self.rawLine = rawLine
         self.occurrenceIndex = occurrenceIndex
+        self.matchedRuleName = matchedRuleName
+        self.markReimbursable = markReimbursable
+        self.reimbursableDebtor = reimbursableDebtor
+        self.ignoreInConsolidated = ignoreInConsolidated
     }
 
     public var recurrenceSummaryBadge: String {
@@ -211,7 +223,8 @@ public enum StatementImportService {
         _ rawText: String,
         categories: [CategoryItem],
         filterMode: StatementImportFilterMode = .hybrid,
-        referenceDate: Date = Date()
+        referenceDate: Date = Date(),
+        reconciliationRules: [ReconciliationRule] = []
     ) -> [ParsedStatementTransaction] {
         let lines = rawText
             .components(separatedBy: .newlines)
@@ -312,24 +325,74 @@ public enum StatementImportService {
                 categories: categories
             )
 
-            results.append(
-                ParsedStatementTransaction(
-                    date: date,
-                    rawDescription: rawDesc,
-                    cleanTitle: analysis.cleanTitle,
-                    extractedDetails: analysis.details,
-                    paymentMethod: analysis.paymentMethod,
-                    amount: abs(signedValue),
-                    type: txType,
-                    suggestedCategoryId: analysis.category?.id,
-                    suggestedCategoryName: analysis.category?.name ?? (txType == .expense ? "Outras Despesas" : "Outras Receitas"),
-                    rawLine: "\(dateStr) \(rawDesc) \(valStr)",
-                    occurrenceIndex: nextOccurrence
-                )
+            var parsedTx = ParsedStatementTransaction(
+                date: date,
+                rawDescription: rawDesc,
+                cleanTitle: analysis.cleanTitle,
+                extractedDetails: analysis.details,
+                paymentMethod: analysis.paymentMethod,
+                amount: abs(signedValue),
+                type: txType,
+                suggestedCategoryId: analysis.category?.id,
+                suggestedCategoryName: analysis.category?.name ?? (txType == .expense ? "Outras Despesas" : "Outras Receitas"),
+                rawLine: "\(dateStr) \(rawDesc) \(valStr)",
+                occurrenceIndex: nextOccurrence
             )
+            applyReconciliationRulesIfMatched(reconciliationRules, to: &parsedTx, categories: categories)
+            results.append(parsedTx)
         }
 
-        return results
+        return applyReconciliationRulesBatch(reconciliationRules, to: results, categories: categories)
+    }
+
+    public static func applyReconciliationRulesIfMatched(
+        _ rules: [ReconciliationRule],
+        to item: inout ParsedStatementTransaction,
+        categories: [CategoryItem]
+    ) {
+        guard !rules.isEmpty,
+              let outcome = ReconciliationRulesEngine.firstMatch(
+                rules: rules,
+                name: item.cleanTitle,
+                details: "\(item.rawDescription) \(item.extractedDetails)",
+                rawStatementLine: item.rawLine,
+                amount: item.amount
+              ) else { return }
+
+        item.matchedRuleName = outcome.matchedRule.name
+        if let catId = outcome.appliedCategoryId,
+           let cat = categories.first(where: { $0.id == catId }) {
+            item.suggestedCategoryId = cat.id
+            item.suggestedCategoryName = cat.name
+        }
+        if let clean = outcome.appliedCleanName {
+            item.cleanTitle = clean
+        }
+        if outcome.markedRecurring {
+            item.recurrenceMode = .recurring
+        }
+        if outcome.markedReimbursable {
+            item.markReimbursable = true
+            item.reimbursableDebtor = outcome.reimbursableDebtor
+        }
+        if let ign = outcome.markedIgnoreInConsolidated {
+            item.ignoreInConsolidated = ign
+        }
+        item.extractedDetails = "[Regra: \(outcome.matchedRule.name)] \(item.extractedDetails)"
+    }
+
+    public static func applyReconciliationRulesBatch(
+        _ rules: [ReconciliationRule],
+        to items: [ParsedStatementTransaction],
+        categories: [CategoryItem]
+    ) -> [ParsedStatementTransaction] {
+        guard !rules.isEmpty else { return items }
+        return items.map { item in
+            if item.matchedRuleName != nil { return item }
+            var copy = item
+            applyReconciliationRulesIfMatched(rules, to: &copy, categories: categories)
+            return copy
+        }
     }
 
     /// Analisa linhas inteligentes de despesas e receitas como:

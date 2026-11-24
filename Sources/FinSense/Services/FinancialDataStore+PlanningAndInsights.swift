@@ -45,7 +45,7 @@ extension FinancialDataStore {
                 self?.isTransactionVisibleInCurrentScenario(tx) ?? true
             },
             effectiveSignedAmount: { [weak self] tx in
-                self?.effectiveSignedTransactionAmount(for: tx) ?? tx.signedAmount
+                self?.effectiveSignedTransactionAmountInBRL(for: tx) ?? tx.signedAmount
             }
         )
         if referenceNow == nil {
@@ -59,7 +59,10 @@ extension FinancialDataStore {
     public var totalMonthlySinkingFundContribution: Double {
         sinkingFunds
             .filter(\.isEnabled)
-            .reduce(0.0) { $0 + DecisionAndScenarioEngine.monthlyReserveContribution(for: $1) }
+            .reduce(0.0) { partial, fund in
+                let native = DecisionAndScenarioEngine.monthlyReserveContribution(for: fund)
+                return partial + convertToBRL(native, currencyCode: fund.currencyCode)
+            }
     }
 
     public func totalMonthlySinkingFundContribution(for monthReference: Date) -> Double {

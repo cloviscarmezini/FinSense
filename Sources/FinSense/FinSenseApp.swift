@@ -91,7 +91,7 @@ public struct MainContentView: View {
                         .buttonStyle(.plain)
                         .tag(SidebarDestination.transactions)
 
-                        ForEach([TransactionsSubmenu.expenses, TransactionsSubmenu.incomes]) { sub in
+                        ForEach([TransactionsSubmenu.expenses, TransactionsSubmenu.incomes, TransactionsSubmenu.receivables]) { sub in
                             Button {
                                 store.selectedDestination = .transactions
                                 store.selectedTransactionsSubmenu = sub
@@ -101,7 +101,7 @@ public struct MainContentView: View {
                                         .font(.caption)
                                         .foregroundStyle(
                                             store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == sub
-                                                ? (sub == .expenses ? Color(hex: "#EF4444") : Color(hex: "#10B981"))
+                                                ? (sub == .expenses ? Color(hex: "#EF4444") : (sub == .receivables ? Color(hex: "#F59E0B") : Color(hex: "#10B981")))
                                                 : .secondary
                                         )
                                         .frame(width: 18)
@@ -137,6 +137,7 @@ public struct MainContentView: View {
                     }
 
                     Section("Planejamento & Inteligência") {
+                        sidebarRow(.netWorth)
                         sidebarRow(.decisions)
 
                         NavigationLink(value: SidebarDestination.insights) {
@@ -275,6 +276,8 @@ public struct MainContentView: View {
                     DashboardView(store: store, llmService: llmService)
                 case .transactions:
                     TransactionsView(store: store, llmService: llmService)
+                case .netWorth:
+                    NetWorthDashboardView(store: store)
                 case .creditCards:
                     CreditCardsView(store: store, llmService: llmService)
                 case .investments:
@@ -308,6 +311,14 @@ public struct MainContentView: View {
         }
         .onAppear {
             llmService.activateBuiltInAppleIntelligenceIfNeeded(in: store)
+            GlobalHotKeyManager.shared.registerQuickAddHotKeys {
+                QuickAddPanelController.shared.toggle {
+                    QuickAddBarView(store: store) {
+                        QuickAddPanelController.shared.close()
+                    }
+                }
+            }
+            Task { await ExchangeRateService.shared.refreshRates() }
             llmService.prewarmAppleIntelligence(store: store)
             _ = store.runDailyBehavioralMLAnalysisIfNeeded(force: false)
         }
@@ -542,7 +553,23 @@ public struct FinSenseApp: App {
                     store.openAIChat()
                 }
                 .keyboardShortcut("k", modifiers: [.command])
+
+                Button("Quick-Add Rápido (Spotlight)") {
+                    QuickAddPanelController.shared.toggle {
+                        QuickAddBarView(store: store) {
+                            QuickAddPanelController.shared.close()
+                        }
+                    }
+                }
+                .keyboardShortcut("$", modifiers: [.command, .shift])
             }
         }
+
+        MenuBarExtra("FinSense Quick-Add", systemImage: "dollarsign.circle.fill") {
+            QuickAddBarView(store: store) {
+                NSApplication.shared.keyWindow?.close()
+            }
+        }
+        .menuBarExtraStyle(.window)
     }
 }
