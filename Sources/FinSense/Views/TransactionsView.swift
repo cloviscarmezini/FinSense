@@ -1588,6 +1588,8 @@ public struct TransactionEditorSheet: View {
     @State private var accountId: UUID = UUID()
     @State private var paymentMethodIsCard: Bool = false
     @State private var selectedCreditCardId: UUID? = nil
+    @State private var selectedCreditCardInvoiceKey: Int? = nil
+    @State private var invoiceManuallySelected: Bool = false
     @State private var ignoreInConsolidated: Bool = false
     @State private var attachmentPath: String? = nil
     @State private var attachmentName: String? = nil
@@ -1732,17 +1734,36 @@ public struct TransactionEditorSheet: View {
                         }
 
                         if let card = store.creditCard(for: selectedCreditCardId) {
-                            let allocated = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card)
+                            let options = store.selectableCreditCardInvoices(
+                                for: card,
+                                purchaseDate: date,
+                                additionalKey: selectedCreditCardInvoiceKey
+                            )
+                            let chosenYM = selectedCreditCardInvoiceKey ?? store.defaultCreditCardInvoiceKey(forPurchaseDate: date, card: card)
+                            let chosenComps = CreditCardEngine.yearMonthComponents(fromKey: chosenYM)
                             let dates = CreditCardEngine.closingAndDueDates(
-                                forInvoiceYear: allocated.year,
-                                month: allocated.month,
+                                forInvoiceYear: chosenComps.year,
+                                month: chosenComps.month,
                                 card: card
                             )
+
+                            Picker("Fatura de Cobrança", selection: Binding(
+                                get: { selectedCreditCardInvoiceKey ?? store.defaultCreditCardInvoiceKey(forPurchaseDate: date, card: card) },
+                                set: { newYM in
+                                    selectedCreditCardInvoiceKey = newYM
+                                    invoiceManuallySelected = true
+                                }
+                            )) {
+                                ForEach(options, id: \.yearMonthKey) { opt in
+                                    Text(opt.label).tag(opt.yearMonthKey)
+                                }
+                            }
+
                             HStack(spacing: 8) {
                                 Image(systemName: "calendar.badge.clock")
                                     .foregroundStyle(Color(hex: card.colorHex))
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text("Esta compra entrará na fatura de \(CreditCardEngine.fullInvoiceLabel(year: allocated.year, month: allocated.month)).")
+                                    Text("Esta compra entrará na fatura de \(CreditCardEngine.fullInvoiceLabel(year: chosenComps.year, month: chosenComps.month)).")
                                         .font(.caption.weight(.semibold))
                                     Text("Fechamento dia \(card.closingDay) (\(BRLFormatters.shortDate(dates.closingDate))) • Vencimento dia \(card.dueDay) (\(BRLFormatters.shortDate(dates.dueDate))).")
                                         .font(.caption2)
@@ -1970,9 +1991,18 @@ public struct TransactionEditorSheet: View {
                 if let cardId = existing.creditCardId {
                     paymentMethodIsCard = true
                     selectedCreditCardId = cardId
+                    if let card = store.creditCard(for: cardId) {
+                        selectedCreditCardInvoiceKey = existing.creditCardInvoiceYearMonthKey
+                            ?? store.defaultCreditCardInvoiceKey(forPurchaseDate: existing.date, card: card)
+                    }
+                    invoiceManuallySelected = true
                 } else {
                     paymentMethodIsCard = false
                     selectedCreditCardId = store.creditCards.first?.id
+                    if let firstCard = store.creditCards.first {
+                        selectedCreditCardInvoiceKey = store.defaultCreditCardInvoiceKey(forPurchaseDate: existing.date, card: firstCard)
+                    }
+                    invoiceManuallySelected = false
                 }
                 ignoreInConsolidated = existing.ignoreInConsolidated
                 attachmentPath = existing.attachmentPath
@@ -1992,13 +2022,29 @@ public struct TransactionEditorSheet: View {
                 isPaid = !store.isDateInFuture(defaultDate)
                 categoryId = store.fallbackCategoryId(for: type)
                 accountId = store.accounts.first?.id ?? UUID()
-                if let initCardId = initialCreditCardId, store.creditCard(for: initCardId) != nil {
+                if let initCardId = initialCreditCardId, let card = store.creditCard(for: initCardId) {
                     paymentMethodIsCard = true
                     selectedCreditCardId = initCardId
+                    selectedCreditCardInvoiceKey = store.defaultCreditCardInvoiceKey(forPurchaseDate: defaultDate, card: card)
                 } else {
                     paymentMethodIsCard = false
                     selectedCreditCardId = store.creditCards.first?.id
+                    if let firstCard = store.creditCards.first {
+                        selectedCreditCardInvoiceKey = store.defaultCreditCardInvoiceKey(forPurchaseDate: defaultDate, card: firstCard)
+                    }
                 }
+                invoiceManuallySelected = false
+            }
+        }
+        .onChange(of: date) { _, newDate in
+            if !invoiceManuallySelected, let card = store.creditCard(for: selectedCreditCardId) {
+                selectedCreditCardInvoiceKey = store.defaultCreditCardInvoiceKey(forPurchaseDate: newDate, card: card)
+            }
+        }
+        .onChange(of: selectedCreditCardId) { _, newCardId in
+            if !invoiceManuallySelected || existingTransaction == nil, let card = store.creditCard(for: newCardId) {
+                selectedCreditCardInvoiceKey = store.defaultCreditCardInvoiceKey(forPurchaseDate: date, card: card)
+                invoiceManuallySelected = false
             }
         }
         .sheet(isPresented: $showEmbeddedStatementImporter) {
@@ -2029,17 +2075,17 @@ public struct TransactionEditorSheet: View {
             presenting: pendingSeriesUpdateTransaction
         ) { updatedTx in
             Button("Alterar em todas as parcelas") {
-                store.updateTransaction(updatedTx, scope: .allInSeries)
+                store.updateTransaction(updatedTx, scope: .allInSeries, preserveExplicitCreditCardInvoice: updatedTx.creditCardId != nil)
                 pendingSeriesUpdateTransaction = nil
                 dismiss()
             }
             Button("Somente naquela transação") {
-                store.updateTransaction(updatedTx, scope: .onlyThis)
+                store.updateTransaction(updatedTx, scope: .onlyThis, preserveExplicitCreditCardInvoice: updatedTx.creditCardId != nil)
                 pendingSeriesUpdateTransaction = nil
                 dismiss()
             }
             Button("Da transação atual e todas no futuro") {
-                store.updateTransaction(updatedTx, scope: .thisAndFuture)
+                store.updateTransaction(updatedTx, scope: .thisAndFuture, preserveExplicitCreditCardInvoice: updatedTx.creditCardId != nil)
                 pendingSeriesUpdateTransaction = nil
                 dismiss()
             }
@@ -2103,6 +2149,11 @@ public struct TransactionEditorSheet: View {
             existing.categoryId = categoryId
             existing.accountId = effectiveAccountId
             existing.creditCardId = effectiveCardId
+            if isCardExpense, let chosenYM = selectedCreditCardInvoiceKey {
+                existing.creditCardInvoiceYearMonthKey = chosenYM
+            } else if !isCardExpense {
+                existing.creditCardInvoiceYearMonthKey = nil
+            }
             existing.ignoreInConsolidated = ignoreInConsolidated
             existing.attachmentPath = attachmentPath
             existing.attachmentName = attachmentName
@@ -2116,11 +2167,22 @@ public struct TransactionEditorSheet: View {
                 pendingSeriesUpdateTransaction = existing
                 return
             } else {
-                store.updateTransaction(existing, scope: .onlyThis, referenceNow: now)
+                store.updateTransaction(
+                    existing,
+                    scope: .onlyThis,
+                    referenceNow: now,
+                    preserveExplicitCreditCardInvoice: isCardExpense && selectedCreditCardInvoiceKey != nil
+                )
                 dismiss()
             }
         } else {
             let effectiveDate = (!isCardExpense && isPaid && store.isDateInFuture(date, referenceNow: now)) ? now : date
+            let resolvedCardInvoiceKey: Int? = {
+                guard isCardExpense, let chosenCardId = effectiveCardId, let card = store.creditCard(for: chosenCardId) else {
+                    return nil
+                }
+                return selectedCreditCardInvoiceKey ?? store.defaultCreditCardInvoiceKey(forPurchaseDate: effectiveDate, card: card)
+            }()
             store.createExtendedTransaction(
                 name: trimmedName,
                 details: details.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -2137,6 +2199,7 @@ public struct TransactionEditorSheet: View {
                 installmentsOrMonthsCount: installmentsOrMonthsCount,
                 recurrenceFrequency: recurrenceFrequency,
                 creditCardId: effectiveCardId,
+                creditCardInvoiceYearMonthKey: resolvedCardInvoiceKey,
                 currencyCode: currencyCode,
                 isReimbursable: isReimbursable && type == .expense,
                 reimbursableAmount: parsedReimbAmt,

@@ -533,6 +533,7 @@ public final class FinancialDataStore: ObservableObject {
     @Published public var selectedDestination: SidebarDestination = .dashboard
     @Published public var selectedTransactionsSubmenu: TransactionsSubmenu = .all
     @Published public var dashboardPeriodMode: DashboardPeriodMode = .monthly
+    @Published public var selectedDecisionsTab: DecisionsTab = .amortizeVsInvest
     @Published public var selectedSettingsSection: SettingsSection = .general
     @Published public var isAIChatPresented: Bool = false
     @Published public var isLLMInstallAlertPresented: Bool = false
@@ -3524,17 +3525,31 @@ public final class FinancialDataStore: ObservableObject {
         installmentsOrMonthsCount: Int = 1,
         recurrenceFrequency: RecurrenceFrequency = .monthly,
         referenceNow: Date = Date(),
-        creditCardId: UUID? = nil
+        creditCardId: UUID? = nil,
+        creditCardInvoiceYearMonthKey: Int? = nil
     ) -> [FinancialTransaction] {
         var created: [FinancialTransaction] = []
         let cleanAmount = abs(amount)
 
-        // Fluxo dedicado para despesas no Cartão de Crédito (Competência + Alocação Automática de Fatura)
+        // Fluxo dedicado para despesas no Cartão de Crédito (Competência + Alocação Automática ou Explícita de Fatura)
         if let cardId = creditCardId, type == .expense, let card = creditCard(for: cardId) {
             var affectedInvoiceKeys: Set<Int> = []
+            let resolvedStartCycle: CreditCardEngine.AllocatedInvoiceCycle = {
+                if let explicitYM = creditCardInvoiceYearMonthKey {
+                    let comps = CreditCardEngine.yearMonthComponents(fromKey: explicitYM)
+                    let dates = CreditCardEngine.closingAndDueDates(forInvoiceYear: comps.year, month: comps.month, card: card, calendar: calendar)
+                    return CreditCardEngine.AllocatedInvoiceCycle(
+                        year: comps.year,
+                        month: comps.month,
+                        yearMonthKey: explicitYM,
+                        closingDate: dates.closingDate,
+                        dueDate: dates.dueDate
+                    )
+                }
+                return CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card, calendar: calendar)
+            }()
 
             if recurrenceMode == .single || (recurrenceMode != .recurring && installmentsOrMonthsCount <= 1) {
-                let alloc = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card, calendar: calendar)
                 let tx = FinancialTransaction(
                     name: name,
                     details: details,
@@ -3549,20 +3564,19 @@ public final class FinancialDataStore: ObservableObject {
                     ignoreInConsolidated: ignoreInConsolidated,
                     recurrenceMode: .single,
                     creditCardId: card.id,
-                    creditCardInvoiceYearMonthKey: alloc.yearMonthKey
+                    creditCardInvoiceYearMonthKey: resolvedStartCycle.yearMonthKey
                 )
                 transactions.append(tx)
                 created.append(tx)
-                affectedInvoiceKeys.insert(alloc.yearMonthKey)
+                affectedInvoiceKeys.insert(resolvedStartCycle.yearMonthKey)
             } else if recurrenceMode == .installment {
                 let count = max(installmentsOrMonthsCount, 2)
                 let groupId = UUID()
                 let splitAmounts = CreditCardEngine.splitInstallmentsExactCents(totalAmount: cleanAmount, count: count)
-                let firstAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card, calendar: calendar)
 
                 for index in 0..<count {
                     let installmentDate = calendar.date(byAdding: .month, value: index, to: date) ?? date
-                    let targetYM = CreditCardEngine.addMonths(index, toYear: firstAlloc.year, month: firstAlloc.month)
+                    let targetYM = CreditCardEngine.addMonths(index, toYear: resolvedStartCycle.year, month: resolvedStartCycle.month)
                     let value = splitAmounts[index]
                     let tx = FinancialTransaction(
                         name: "\(name) (\(index + 1)/\(count))",
@@ -3590,10 +3604,9 @@ public final class FinancialDataStore: ObservableObject {
             } else if recurrenceMode == .repeated {
                 let count = max(installmentsOrMonthsCount, 2)
                 let groupId = UUID()
-                let firstAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card, calendar: calendar)
                 for index in 0..<count {
                     let occurrenceDate = calendar.date(byAdding: .month, value: index, to: date) ?? date
-                    let targetYM = CreditCardEngine.addMonths(index, toYear: firstAlloc.year, month: firstAlloc.month)
+                    let targetYM = CreditCardEngine.addMonths(index, toYear: resolvedStartCycle.year, month: resolvedStartCycle.month)
                     let tx = FinancialTransaction(
                         name: name,
                         details: details.isEmpty ? "Despesa repetida no cartão (\(index + 1)/\(count))" : details,
@@ -3621,9 +3634,16 @@ public final class FinancialDataStore: ObservableObject {
             } else if recurrenceMode == .recurring {
                 let groupId = UUID()
                 let initialCount = recurrenceFrequency.defaultInitialHorizonCount
+                let autoFirstAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: date, card: card, calendar: calendar)
+                let explicitMonthShift = (creditCardInvoiceYearMonthKey != nil)
+                    ? ((resolvedStartCycle.year * 12 + resolvedStartCycle.month) - (autoFirstAlloc.year * 12 + autoFirstAlloc.month))
+                    : 0
                 for index in 0..<initialCount {
                     let occurrenceDate = recurrenceFrequency.nextDate(from: date, occurrenceIndex: index, calendar: calendar)
-                    let alloc = CreditCardEngine.allocateInvoice(forPurchaseDate: occurrenceDate, card: card, calendar: calendar)
+                    let autoAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: occurrenceDate, card: card, calendar: calendar)
+                    let shiftedYM = explicitMonthShift == 0
+                        ? autoAlloc.yearMonthKey
+                        : CreditCardEngine.addMonths(explicitMonthShift, toYear: autoAlloc.year, month: autoAlloc.month).yearMonthKey
                     let tx = FinancialTransaction(
                         name: name,
                         details: details.isEmpty ? "Assinatura recorrente no cartão (\(recurrenceFrequency.shortTitle))" : details,
@@ -3643,11 +3663,11 @@ public final class FinancialDataStore: ObservableObject {
                         installmentIndex: index + 1,
                         installmentTotal: nil,
                         creditCardId: card.id,
-                        creditCardInvoiceYearMonthKey: alloc.yearMonthKey
+                        creditCardInvoiceYearMonthKey: shiftedYM
                     )
                     transactions.append(tx)
                     created.append(tx)
-                    affectedInvoiceKeys.insert(alloc.yearMonthKey)
+                    affectedInvoiceKeys.insert(shiftedYM)
                 }
             }
 
@@ -3877,7 +3897,8 @@ public final class FinancialDataStore: ObservableObject {
     public func updateTransaction(
         _ updated: FinancialTransaction,
         scope: SeriesEditScope = .onlyThis,
-        referenceNow: Date? = nil
+        referenceNow: Date? = nil,
+        preserveExplicitCreditCardInvoice: Bool = false
     ) {
         let now = referenceNow ?? effectiveCurrentDate
         guard let targetIdx = transactions.firstIndex(where: { $0.id == updated.id }) else { return }
@@ -3904,9 +3925,12 @@ public final class FinancialDataStore: ObservableObject {
             if let card = creditCard(for: cleanUpdated.creditCardId) {
                 cleanUpdated.accountId = card.id
                 cleanUpdated.isPaid = true
-                if didUserChangeDate || cleanUpdated.creditCardId != originalBeforeEdit.creditCardId || cleanUpdated.creditCardInvoiceYearMonthKey == nil {
+                if (!preserveExplicitCreditCardInvoice && (didUserChangeDate || cleanUpdated.creditCardId != originalBeforeEdit.creditCardId))
+                    || cleanUpdated.creditCardInvoiceYearMonthKey == nil {
                     let alloc = CreditCardEngine.allocateInvoice(forPurchaseDate: cleanUpdated.date, card: card, calendar: calendar)
                     cleanUpdated.creditCardInvoiceYearMonthKey = alloc.yearMonthKey
+                    cleanUpdated.creditCardInvoiceId = nil
+                } else if cleanUpdated.creditCardInvoiceYearMonthKey != originalBeforeEdit.creditCardInvoiceYearMonthKey {
                     cleanUpdated.creditCardInvoiceId = nil
                 }
             }

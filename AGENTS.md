@@ -71,6 +71,7 @@ FinSense (macOS App)
 - **Ciclo e Fechamento de Faturas:**
   - O cartão possui `closingDay` (fechamento), `bestPurchaseDay` (melhor dia de compra) e `dueDay` (vencimento).
   - Compras efetuadas a partir do melhor dia de compra caem automaticamente na fatura do mês subsequente.
+  - O usuário pode selecionar manualmente outra fatura de cobrança ao cadastrar ou editar uma despesa no cartão (`creditCardInvoiceYearMonthKey`), vindo selecionada por padrão a próxima fatura não paga.
   - Compras parceladas (1x até 24x) são divididas com **precisão exata de centavos** entre as faturas mensais subsequentes; eventuais resíduos de arredondamento são absorvidos na 1ª parcela.
 
 ### 2.2. Visibilidade de Descasamento de Fluxo de Caixa (Vale Intramês)
@@ -160,7 +161,7 @@ FinSense (macOS App)
 - **Simulador FIRE (`FIRESimulatorView`, em `Decisões & Cenários`):** Read-only usando custo de vida real médio de 6 meses (excluindo amortizações extraordinárias/transferências/parcelas reembolsáveis), consulta BCB Selic/IPCA com equação real de Fisher `(1+nom)/(1+inf)-1`, SWR configurável (default 4%), aceleração por quitação de dívidas e cenários salváveis (`FIREPlanScenario`).
 
 ### 2.11. Gestão de Reembolsos ("A Receber") & Multimoeda (Câmbio)
-- **Contabilização de Reembolsos (`TransactionOrigin.reimbursementReceipt`):** Despesas marcadas com `isReimbursable = true` debitam **valor integral** da conta bancária ou fatura de cartão, porém tetos orçamentários, `categoryBreakdown`, `monthlyExpense` e KPIs computam **apenas a parcela pessoal não reembolsável**. O submenu `A Receber` (`ReceivablesManagementView`) agrupa valores por devedor e registra recebimentos totais ou parciais sem inflar categorias de Salário/Receita em gráficos.
+- **Contabilização de Reembolsos (`TransactionOrigin.reimbursementReceipt`):** Despesas marcadas com `isReimbursable = true` debitam **valor integral** da conta bancária ou fatura de cartão, porém tetos orçamentários, `categoryBreakdown`, `monthlyExpense` e KPIs computam **apenas a parcela pessoal não reembolsável**. O submenu `A Receber` (`ReceivablesManagementView`) agrupa valores por devedor e registra recebimentos totais, parciais ou superiores ao previsto sem inflar categorias de Salário/Receita em gráficos; ao finalizar um reembolso com valor menor que o previsto, `reimbursableAmount` é ajustado ao montante efetivamente recebido para que a diferença permaneça contabilizada como gasto próprio do usuário.
 - **Multimoeda (`ExchangeRateService`):** `BankAccount`, `InvestmentItem`, `SinkingFund`, `AssetItem`, `IncomeSource` e `FinancialTransaction` suportam moedas estrangeiras (`USD`, `EUR`, `GBP`, `CAD`, `CHF`, `AUD`, `JPY`). Saldos nativos por conta são preservados enquanto consolidações, KPIs e Net Worth convertem automaticamente para BRL com cache em disco (`fx_rates_cache.json`), atualização pública e suporte a taxa manual offline.
 
 ---

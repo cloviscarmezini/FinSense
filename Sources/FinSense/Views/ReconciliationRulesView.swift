@@ -78,6 +78,8 @@ public struct ReconciliationRulesView: View {
                 .frame(maxWidth: .infinity)
                 .padding(32)
                 .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+
+                Spacer(minLength: 0)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -88,6 +90,7 @@ public struct ReconciliationRulesView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .sheet(isPresented: $showCreateSheet) {
             ReconciliationRuleEditorSheet(store: store, existingRule: nil)
         }

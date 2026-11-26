@@ -254,6 +254,110 @@ final class EvolutionFeaturesTests: XCTestCase {
         XCTAssertEqual(store.currentBalance(forAccount: acc.id), 5600.0, accuracy: 0.01)
         XCTAssertEqual(store.totalPendingReceivablesBRL, 0.0, accuracy: 0.01)
         XCTAssertEqual(store.openReimbursableTransactions.count, 0)
+
+        // Cenário B: Receber valor MENOR e finalizar (diferença fica como gasto próprio do usuário)
+        let txLess = store.createExtendedTransaction(
+            name: "Almoço Equipe",
+            amount: 500.0,
+            date: refNow,
+            type: .expense,
+            isPaid: true,
+            categoryId: foodCat,
+            accountId: card.id,
+            creditCardId: card.id,
+            isReimbursable: true,
+            reimbursableAmount: 500.0,
+            reimbursableDebtor: "Equipe"
+        )[0]
+        _ = store.registerReimbursementSettlement(
+            forTransactionId: txLess.id,
+            receivedAmount: 350.0,
+            accountId: acc.id,
+            date: refNow,
+            finalizeReimbursement: true
+        )
+        XCTAssertEqual(store.currentBalance(forAccount: acc.id), 5950.0, accuracy: 0.01)
+        XCTAssertEqual(store.totalPendingReceivablesBRL, 0.0, accuracy: 0.01)
+        // Diferença não recebida (R$ 150) soma ao gasto próprio (R$ 400 + R$ 150 = R$ 550)
+        XCTAssertEqual(store.monthlyExpense(for: refNow), 550.0, accuracy: 0.01)
+
+        // Cenário C: Receber valor MAIOR que o previsto e finalizar
+        let txMore = store.createExtendedTransaction(
+            name: "Corrida Uber Cliente",
+            amount: 100.0,
+            date: refNow,
+            type: .expense,
+            isPaid: true,
+            categoryId: foodCat,
+            accountId: card.id,
+            creditCardId: card.id,
+            isReimbursable: true,
+            reimbursableAmount: 100.0,
+            reimbursableDebtor: "Cliente"
+        )[0]
+        _ = store.registerReimbursementSettlement(
+            forTransactionId: txMore.id,
+            receivedAmount: 130.0,
+            accountId: acc.id,
+            date: refNow,
+            finalizeReimbursement: true
+        )
+        XCTAssertEqual(store.currentBalance(forAccount: acc.id), 6080.0, accuracy: 0.01)
+        let updatedMore = try? XCTUnwrap(store.transactions.first(where: { $0.id == txMore.id }))
+        XCTAssertEqual(updatedMore?.isReimbursementSettled, true)
+        XCTAssertEqual(updatedMore?.reimbursementReceivedAmount ?? 0, 130.0, accuracy: 0.01)
+        XCTAssertEqual(store.monthlyExpense(for: refNow), 550.0, accuracy: 0.01)
+    }
+
+    // MARK: - Credit Card Custom Invoice Allocation & Default Next Unpaid Invoice
+
+    func testCreditCardCustomInvoiceSelectionAndDefaultNextInvoice() {
+        let store = makeIsolatedStore()
+        let refNow = date(year: 2026, month: 11, day: 10)
+        store.simulatedCurrentDate = refNow
+
+        let acc = BankAccount(name: "Conta", initialBalance: 5000)
+        store.accounts = [acc]
+        let card = CreditCard(name: "Inter", totalLimit: 8000, closingDay: 25, bestPurchaseDay: 26, dueDay: 5, defaultPaymentAccountId: acc.id)
+        store.creditCards = [card]
+
+        // Compra em 10/11 cai por padrão na fatura 202612 (Dez/2026)
+        XCTAssertEqual(store.defaultCreditCardInvoiceKey(forPurchaseDate: refNow, card: card), 202612)
+
+        // Se a fatura 202612 já estiver paga, o padrão avança automaticamente para 202701
+        let decDates = CreditCardEngine.closingAndDueDates(forInvoiceYear: 2026, month: 12, card: card)
+        store.creditCardInvoices = [
+            CreditCardInvoice(
+                creditCardId: card.id,
+                year: 2026,
+                month: 12,
+                closingDate: decDates.closingDate,
+                dueDate: decDates.dueDate,
+                isPaid: true,
+                paidAmount: 0,
+                paidDate: refNow,
+                paidFromAccountId: acc.id
+            )
+        ]
+        XCTAssertEqual(store.defaultCreditCardInvoiceKey(forPurchaseDate: refNow, card: card), 202701)
+
+        // Lançamento parcelado em 2x direcionado explicitamente para a fatura 202702 -> cai em 202702 e 202703
+        let catId = store.fallbackCategoryId(for: .expense)
+        let created = store.createTransaction(
+            name: "Hotel",
+            amount: 1000.0,
+            date: refNow,
+            type: .expense,
+            categoryId: catId,
+            accountId: card.id,
+            recurrenceMode: .installment,
+            installmentsOrMonthsCount: 2,
+            creditCardId: card.id,
+            creditCardInvoiceYearMonthKey: 202702
+        )
+        XCTAssertEqual(created.count, 2)
+        XCTAssertEqual(created[0].creditCardInvoiceYearMonthKey, 202702)
+        XCTAssertEqual(created[1].creditCardInvoiceYearMonthKey, 202703)
     }
 
     // MARK: - Feature 7: Multi-Currency Conversion

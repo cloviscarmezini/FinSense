@@ -6,6 +6,7 @@ public struct MainContentView: View {
     @ObservedObject public var llmService: LocalLLMService
     @ObservedObject public var syncService: CloudSyncService
     @AppStorage("is_patrimony_hidden") private var isPatrimonyHidden: Bool = false
+    @AppStorage("sidebar_decisions_expanded") private var isDecisionsExpanded: Bool = false
 
     public init(store: FinancialDataStore, llmService: LocalLLMService, syncService: CloudSyncService) {
         self.store = store
@@ -138,7 +139,74 @@ public struct MainContentView: View {
 
                     Section("Planejamento & Inteligência") {
                         sidebarRow(.netWorth)
-                        sidebarRow(.decisions)
+
+                        HStack(spacing: 6) {
+                            Button {
+                                store.selectedDestination = .decisions
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: SidebarDestination.decisions.icon)
+                                        .foregroundStyle(store.selectedDestination == .decisions ? Color.accentColor : .primary)
+                                    Text(SidebarDestination.decisions.title)
+                                        .font(.system(size: 13.5, weight: .medium))
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.16)) {
+                                    isDecisionsExpanded.toggle()
+                                }
+                            } label: {
+                                Image(systemName: isDecisionsExpanded ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 20, height: 20)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(isDecisionsExpanded ? "Recolher módulos de Decisões & Cenários" : "Expandir módulos de Decisões & Cenários")
+                        }
+                        .tag(SidebarDestination.decisions)
+
+                        if isDecisionsExpanded {
+                            ForEach(DecisionsTab.allCases) { tab in
+                                Button {
+                                    store.selectedDestination = .decisions
+                                    store.selectedDecisionsTab = tab
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: tab.icon)
+                                            .font(.caption)
+                                            .foregroundStyle(
+                                                store.selectedDestination == .decisions && store.selectedDecisionsTab == tab
+                                                    ? Color.accentColor
+                                                    : .secondary
+                                            )
+                                            .frame(width: 18)
+                                        Text(tab.rawValue)
+                                            .font(.caption)
+                                            .fontWeight(
+                                                store.selectedDestination == .decisions && store.selectedDecisionsTab == tab
+                                                    ? .semibold
+                                                    : .regular
+                                            )
+                                            .foregroundStyle(
+                                                store.selectedDestination == .decisions && store.selectedDecisionsTab == tab
+                                                    ? Color.primary
+                                                    : .secondary
+                                            )
+                                        Spacer()
+                                    }
+                                    .padding(.leading, 18)
+                                    .padding(.vertical, 2)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
 
                         NavigationLink(value: SidebarDestination.insights) {
                             HStack {

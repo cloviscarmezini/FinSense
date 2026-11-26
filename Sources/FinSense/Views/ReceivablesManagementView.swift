@@ -105,12 +105,21 @@ public struct ReceivablesManagementView: View {
                                         Spacer()
 
                                         VStack(alignment: .trailing, spacing: 2) {
-                                            Text("Reembolso: \(BRLFormatters.currency(tx.effectiveReimbursableAmount, currencyCode: tx.effectiveCurrencyCode))")
+                                            Text("Reembolso prev.: \(BRLFormatters.currency(tx.effectiveReimbursableAmount, currencyCode: tx.effectiveCurrencyCode))")
                                                 .font(.caption.weight(.semibold))
+                                            let receivedSoFar = tx.reimbursementReceivedAmount ?? 0.0
                                             if !isSettled {
                                                 Text("Restante: \(BRLFormatters.currency(tx.remainingReimbursableAmount, currencyCode: tx.effectiveCurrencyCode))")
                                                     .font(.caption2.bold())
                                                     .foregroundStyle(Color(hex: "#F59E0B"))
+                                            } else if receivedSoFar > tx.amount + 0.01 {
+                                                Text("Recebido: \(BRLFormatters.currency(receivedSoFar, currencyCode: tx.effectiveCurrencyCode)) (+\(BRLFormatters.currency(receivedSoFar - tx.amount, currencyCode: tx.effectiveCurrencyCode)))")
+                                                    .font(.caption2.bold())
+                                                    .foregroundStyle(Color(hex: "#10B981"))
+                                            } else if tx.amount - receivedSoFar > 0.01 {
+                                                Text("Parte própria: \(BRLFormatters.currency(tx.amount - receivedSoFar, currencyCode: tx.effectiveCurrencyCode))")
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
                                             }
                                         }
 
@@ -152,6 +161,7 @@ public struct ReimbursementSettlementSheet: View {
     @State private var selectedAccountId: UUID = UUID()
     @State private var settlementDate: Date = Date()
     @State private var notes: String = ""
+    @State private var finalizeReimbursement: Bool = false
 
     public init(store: FinancialDataStore, transaction: FinancialTransaction) {
         self.store = store
@@ -159,15 +169,21 @@ public struct ReimbursementSettlementSheet: View {
     }
 
     public var body: some View {
+        let parsedAmount = max(0.0, BRLFormatters.parseCurrencyInput(amountText))
+        let remaining = transaction.remainingReimbursableAmount
+        let alreadyReceived = transaction.reimbursementReceivedAmount ?? 0.0
+        let willFullyCoverOrExceed = parsedAmount + 0.01 >= remaining
+        let differenceAsOwnExpense = max(0.0, remaining - parsedAmount)
+
         VStack(alignment: .leading, spacing: 14) {
             Text("Registrar Recebimento de Reembolso")
                 .font(.title3.bold())
-            Text("\"\(transaction.name)\" • Devedor: \(transaction.reimbursableDebtor ?? "Terceiro") • Restante: \(BRLFormatters.currency(transaction.remainingReimbursableAmount, currencyCode: transaction.effectiveCurrencyCode))")
+            Text("\"\(transaction.name)\" • Devedor: \(transaction.reimbursableDebtor ?? "Terceiro") • Restante previsto: \(BRLFormatters.currency(remaining, currencyCode: transaction.effectiveCurrencyCode))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             Form {
-                TextField("Valor Recebido (total ou parcial)", text: $amountText)
+                TextField("Valor Recebido (pode ser menor, igual ou maior)", text: $amountText)
                 Picker("Conta que Recebeu o Dinheiro", selection: $selectedAccountId) {
                     ForEach(store.accounts) { acc in
                         Text("\(acc.name) (\(acc.currencyCode))").tag(acc.id)
@@ -175,25 +191,40 @@ public struct ReimbursementSettlementSheet: View {
                 }
                 DatePicker("Data do Recebimento", selection: $settlementDate, displayedComponents: [.date])
                 TextField("Observações (Opcional)", text: $notes)
+
+                if !willFullyCoverOrExceed {
+                    Toggle("Finalizar reembolso mesmo com valor menor", isOn: $finalizeReimbursement)
+                    if finalizeReimbursement {
+                        Text("A diferença restante de \(BRLFormatters.currency(differenceAsOwnExpense, currencyCode: transaction.effectiveCurrencyCode)) permanecerá contabilizada como seu próprio gasto nos orçamentos e gráficos.")
+                            .font(.caption2)
+                            .foregroundStyle(Color(hex: "#F59E0B"))
+                    }
+                } else if parsedAmount > remaining + 0.01 {
+                    Text("Valor excedente de +\(BRLFormatters.currency(parsedAmount - remaining, currencyCode: transaction.effectiveCurrencyCode)): o reembolso será finalizado e o valor integral recebido entrará na conta.")
+                        .font(.caption2)
+                        .foregroundStyle(Color(hex: "#10B981"))
+                }
             }
             .formStyle(.grouped)
 
-            Text("Obs: O valor entra no saldo da conta sem inflar gráficos de Salário/Receita.")
+            Text("Obs: O recebimento entra no saldo da conta sem inflar gráficos de Salário/Receita.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
             HStack {
                 Spacer()
                 Button("Cancelar") { dismiss() }
-                Button("Confirmar Recebimento") {
-                    let cleanVal = BRLFormatters.parseCurrencyInput(amountText)
-                    guard cleanVal > 0 else { return }
+                Button(finalizeReimbursement || willFullyCoverOrExceed ? "Confirmar e Finalizar" : "Registrar Recebimento Parcial") {
+                    let cleanVal = max(0.0, BRLFormatters.parseCurrencyInput(amountText))
+                    let shouldFinalize = finalizeReimbursement || cleanVal + 0.01 >= remaining
+                    guard cleanVal > 0.001 || (shouldFinalize && alreadyReceived > 0.001) else { return }
                     _ = store.registerReimbursementSettlement(
                         forTransactionId: transaction.id,
                         receivedAmount: cleanVal,
                         accountId: selectedAccountId,
                         date: settlementDate,
-                        notes: notes
+                        notes: notes,
+                        finalizeReimbursement: shouldFinalize
                     )
                     dismiss()
                 }
@@ -202,10 +233,11 @@ public struct ReimbursementSettlementSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 470, height: 360)
+        .frame(width: 500, height: 420)
         .onAppear {
             amountText = String(format: "%.2f", transaction.remainingReimbursableAmount)
             selectedAccountId = store.accounts.first?.id ?? UUID()
+            finalizeReimbursement = false
         }
     }
 }

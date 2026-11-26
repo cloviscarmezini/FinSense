@@ -138,6 +138,24 @@ public enum DashboardPeriodMode: String, Codable, CaseIterable, Identifiable, Ha
     }
 }
 
+public enum DecisionsTab: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
+    case amortizeVsInvest = "Amortizar vs. Investir"
+    case stressTest = "Stress Test de Caixa"
+    case sinkingFunds = "Sinking Funds (Anuais)"
+    case fireSimulator = "Simulador FIRE"
+
+    public var id: String { rawValue }
+
+    public var icon: String {
+        switch self {
+        case .amortizeVsInvest: return "scale.3d"
+        case .stressTest: return "waveform.path.ecg.rectangle.fill"
+        case .sinkingFunds: return "tray.and.arrow.down.fill"
+        case .fireSimulator: return "flame.fill"
+        }
+    }
+}
+
 public enum ResetDataTarget: String, CaseIterable, Identifiable, Hashable {
     case transactions
     case accounts

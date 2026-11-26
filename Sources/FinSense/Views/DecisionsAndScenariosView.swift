@@ -1,18 +1,8 @@
 import SwiftUI
 import Charts
 
-public enum DecisionsTab: String, CaseIterable, Identifiable {
-    case amortizeVsInvest = "Amortizar vs. Investir"
-    case stressTest = "Stress Test de Caixa"
-    case sinkingFunds = "Sinking Funds (Anuais)"
-    case fireSimulator = "Simulador FIRE"
-
-    public var id: String { rawValue }
-}
-
 public struct DecisionsAndScenariosView: View {
     @ObservedObject public var store: FinancialDataStore
-    @State private var selectedTab: DecisionsTab = .amortizeVsInvest
 
     // Estado: Amortizar vs. Investir
     @State private var selectedContractId: UUID? = nil
@@ -50,17 +40,18 @@ public struct DecisionsAndScenariosView: View {
                     }
                     Spacer()
 
-                    Picker("Módulo", selection: $selectedTab) {
+                    Picker("Módulo", selection: $store.selectedDecisionsTab) {
                         ForEach(DecisionsTab.allCases) { tab in
                             Text(tab.rawValue).tag(tab)
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(width: 560)
+                    .fixedSize()
                 }
 
                 // Read-only badge when on simulation tabs
-                if selectedTab != .sinkingFunds {
+                if store.selectedDecisionsTab != .sinkingFunds {
                     HStack(spacing: 8) {
                         Image(systemName: "shield.checkered")
                             .foregroundStyle(Color(hex: "#0EA5E9"))
@@ -73,7 +64,7 @@ public struct DecisionsAndScenariosView: View {
                     .background(Capsule().fill(Color(hex: "#0EA5E9").opacity(0.10)))
                 }
 
-                switch selectedTab {
+                switch store.selectedDecisionsTab {
                 case .amortizeVsInvest:
                     amortizeVsInvestSection
                 case .stressTest:

@@ -29,8 +29,9 @@ public struct SettingsView: View {
                         Label(sec.title, systemImage: sec.icon).tag(sec)
                     }
                 }
+                .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 650)
+                .fixedSize()
             }
 
             Divider()
@@ -48,6 +49,7 @@ public struct SettingsView: View {
                 ReconciliationRulesView(store: store)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(24)
     }
 }
@@ -1848,6 +1850,8 @@ public struct AccountsManagementSectionView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 240)
                 .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+
+                Spacer(minLength: 0)
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {

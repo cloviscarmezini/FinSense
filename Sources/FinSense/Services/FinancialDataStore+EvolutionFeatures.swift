@@ -277,18 +277,22 @@ extension FinancialDataStore {
         .sorted { $0.remainingReceivableBRL > $1.remainingReceivableBRL }
     }
 
-    /// Registra recebimento total ou parcial de um reembolso:
-    /// credita a conta escolhida (aumenta caixa/saldo) sem inflar categoria de receita em gráficos (`transactionOrigin == .reimbursementReceipt`).
+    /// Registra recebimento total ou parcial de um reembolso (inclusive valores maiores que o previsto):
+    /// credita a conta escolhida sem inflar categoria de receita em gráficos (`transactionOrigin == .reimbursementReceipt`).
+    /// Quando `finalizeReimbursement == true`, encerra a pendência ajustando `reimbursableAmount` para que eventual
+    /// diferença não recebida permaneça contabilizada como gasto próprio do usuário nos orçamentos/gráficos.
     @discardableResult
     public func registerReimbursementSettlement(
         forTransactionId txId: UUID,
         receivedAmount: Double,
         accountId: UUID,
         date: Date = Date(),
-        notes: String = ""
+        notes: String = "",
+        finalizeReimbursement: Bool = false
     ) -> FinancialTransaction? {
         guard let idx = transactions.firstIndex(where: { $0.id == txId }),
-              receivedAmount > 0.001,
+              receivedAmount >= 0,
+              (receivedAmount > 0.001 || finalizeReimbursement),
               let acc = account(for: accountId) else {
             return nil
         }
@@ -297,37 +301,99 @@ extension FinancialDataStore {
         let expectedTotal = original.effectiveReimbursableAmount
         let alreadyReceived = original.reimbursementReceivedAmount ?? 0.0
         let cleanReceived = abs(receivedAmount)
-        let newTotalReceived = min(expectedTotal, alreadyReceived + cleanReceived)
+        let newTotalReceived = alreadyReceived + cleanReceived
+        let shouldSettle = finalizeReimbursement || (newTotalReceived + 0.01 >= expectedTotal)
 
         transactions[idx].reimbursementReceivedAmount = newTotalReceived
-        transactions[idx].isReimbursementSettled = newTotalReceived + 0.01 >= expectedTotal
+        transactions[idx].isReimbursementSettled = shouldSettle
+        if shouldSettle {
+            transactions[idx].reimbursableAmount = min(original.amount, newTotalReceived)
+        }
         let updatedOrig = transactions[idx]
 
-        let catId = fallbackCategoryId(for: .income, matchingSubstring: "Reembolso")
-        let debtorLabel = (original.reimbursableDebtor?.isEmpty == false ? original.reimbursableDebtor! : "Terceiro")
-        let receiptRate = acc.currencyCode.uppercased() == "BRL" ? 1.0 : ExchangeRateService.shared.rateToBRL(for: acc.currencyCode)
-        let receiptTx = FinancialTransaction(
-            name: "Reembolso: \(original.name)",
-            details: notes.isEmpty ? "Acerto de \(debtorLabel) ref. lançamento de \(BRLFormatters.shortDate(original.date))" : notes,
-            amount: cleanReceived,
-            date: date,
-            type: .income,
-            isPaid: true,
-            categoryId: catId,
-            accountId: acc.id,
-            ignoreInConsolidated: false,
-            transactionOrigin: .reimbursementReceipt,
-            linkedEntityID: original.id,
-            currencyCode: acc.currencyCode,
-            exchangeRateToBRL: acc.currencyCode.uppercased() == "BRL" ? nil : receiptRate
-        )
+        var createdReceipt: FinancialTransaction? = nil
+        if cleanReceived > 0.001 {
+            let catId = fallbackCategoryId(for: .income, matchingSubstring: "Reembolso")
+            let debtorLabel = (original.reimbursableDebtor?.isEmpty == false ? original.reimbursableDebtor! : "Terceiro")
+            let receiptRate = acc.currencyCode.uppercased() == "BRL" ? 1.0 : ExchangeRateService.shared.rateToBRL(for: acc.currencyCode)
+            let receiptTx = FinancialTransaction(
+                name: "Reembolso: \(original.name)",
+                details: notes.isEmpty ? "Acerto de \(debtorLabel) ref. lançamento de \(BRLFormatters.shortDate(original.date))" : notes,
+                amount: cleanReceived,
+                date: date,
+                type: .income,
+                isPaid: true,
+                categoryId: catId,
+                accountId: acc.id,
+                ignoreInConsolidated: false,
+                transactionOrigin: .reimbursementReceipt,
+                linkedEntityID: original.id,
+                currencyCode: acc.currencyCode,
+                exchangeRateToBRL: acc.currencyCode.uppercased() == "BRL" ? nil : receiptRate
+            )
+            transactions.append(receiptTx)
+            createdReceipt = receiptTx
+        }
 
-        transactions.append(receiptTx)
         sortTransactions()
         save()
         cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: updatedOrig.id, operation: .update, entity: updatedOrig)
-        cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: receiptTx.id, operation: .insert, entity: receiptTx)
-        return receiptTx
+        if let receiptTx = createdReceipt {
+            cloudSyncService?.recordLocalMutation(entityName: "financial_transactions", entityId: receiptTx.id, operation: .insert, entity: receiptTx)
+        }
+        return createdReceipt ?? updatedOrig
+    }
+
+    // MARK: - Feature: Seleção de Fatura para Despesa no Cartão
+
+    public func defaultCreditCardInvoiceKey(forPurchaseDate purchaseDate: Date, card: CreditCard) -> Int {
+        let baseAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: purchaseDate, card: card, calendar: calendar)
+        var candidate = (year: baseAlloc.year, month: baseAlloc.month, yearMonthKey: baseAlloc.yearMonthKey)
+        for offset in 0..<12 {
+            let ym = CreditCardEngine.addMonths(offset, toYear: baseAlloc.year, month: baseAlloc.month)
+            let existingPaid = creditCardInvoices.first(where: {
+                $0.creditCardId == card.id && $0.yearMonthKey == ym.yearMonthKey
+            })?.isPaid ?? false
+            if !existingPaid {
+                candidate = ym
+                break
+            }
+        }
+        return candidate.yearMonthKey
+    }
+
+    public func selectableCreditCardInvoices(
+        for card: CreditCard,
+        purchaseDate: Date,
+        additionalKey: Int? = nil
+    ) -> [(yearMonthKey: Int, label: String, cycle: CreditCardEngine.AllocatedInvoiceCycle)] {
+        let baseAlloc = CreditCardEngine.allocateInvoice(forPurchaseDate: purchaseDate, card: card, calendar: calendar)
+        var keys = Set<Int>()
+        for offset in -3...18 {
+            keys.insert(CreditCardEngine.addMonths(offset, toYear: baseAlloc.year, month: baseAlloc.month).yearMonthKey)
+        }
+        for inv in creditCardInvoices where inv.creditCardId == card.id {
+            keys.insert(inv.yearMonthKey)
+        }
+        if let additionalKey {
+            keys.insert(additionalKey)
+        }
+
+        return keys.sorted().map { ymKey in
+            let c = CreditCardEngine.yearMonthComponents(fromKey: ymKey)
+            let dates = CreditCardEngine.closingAndDueDates(forInvoiceYear: c.year, month: c.month, card: card, calendar: calendar)
+            let cycle = CreditCardEngine.AllocatedInvoiceCycle(
+                year: c.year,
+                month: c.month,
+                yearMonthKey: ymKey,
+                closingDate: dates.closingDate,
+                dueDate: dates.dueDate
+            )
+            let invSummary = invoiceSummary(for: card.id, year: c.year, month: c.month)
+            let statusTag = invSummary?.status.rawValue ?? "Aberta"
+            let fullLabel = "\(CreditCardEngine.fullInvoiceLabel(year: c.year, month: c.month)) • Venc. \(BRLFormatters.shortDate(dates.dueDate)) (\(statusTag))"
+            return (yearMonthKey: ymKey, label: fullLabel, cycle: cycle)
+        }
     }
 
     // MARK: - Feature 2 & 7: Criação com Reembolso, Multimoeda e Revisão (Quick-Add / Editor)
@@ -349,6 +415,7 @@ extension FinancialDataStore {
         installmentsOrMonthsCount: Int = 1,
         recurrenceFrequency: RecurrenceFrequency = .monthly,
         creditCardId: UUID? = nil,
+        creditCardInvoiceYearMonthKey: Int? = nil,
         currencyCode: String? = nil,
         exchangeRateToBRL: Double? = nil,
         isReimbursable: Bool = false,
@@ -374,7 +441,8 @@ extension FinancialDataStore {
             installmentsOrMonthsCount: installmentsOrMonthsCount,
             recurrenceFrequency: recurrenceFrequency,
             referenceNow: effectiveCurrentDate,
-            creditCardId: creditCardId
+            creditCardId: creditCardId,
+            creditCardInvoiceYearMonthKey: creditCardInvoiceYearMonthKey
         )
 
         let resolvedCurrency = (currencyCode?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
