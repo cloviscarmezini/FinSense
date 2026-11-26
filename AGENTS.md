@@ -152,7 +152,8 @@ FinSense (macOS App)
 - **Exportação e Importação de Dados:** Suporta backup completo em JSON (`.json`) e pacotes comprimidos (`.fcbackup`), incluindo `reconciliationRules`, `assetItems`, `incomeSources`, `netWorthSnapshots` e `fireScenarios`, mantendo 100% de compatibilidade retroativa com backups legados.
 
 ### 2.9. Quick-Add Global, Regras Determinísticas & Revisão Apple Pay
-- **Barra Rápida Global (Feature 2):** `MenuBarExtra` + atalhos globais (`⌘+Shift+$` e `⌘+Option+Space` via `GlobalHotKeyManager.swift`) exibem painel flutuante `QuickAddBarView` interpretado pelo `QuickAddParserService` (suporte a parcelas `Nx`, cartão/conta destino, moeda e reembolsável).
+- **Barra Rápida Global (Feature 2):** `MenuBarExtra` + atalho global (`Ctrl+Espaço` / `⌃Space` via `GlobalHotKeyManager.swift`) exibem painel flutuante `QuickAddBarView` interpretado pelo `QuickAddParserService` (suporte a parcelas `Nx`, cartão/conta destino, moeda e reembolsável).
+- **Ícones Personalizados de Alta Nitidez (`AccountAvatarImageCache`):** Em [`SharedComponents.swift`](Sources/FinSense/Views/SharedComponents.swift), imagens anexadas de contas/cartões/dívidas são reamostradas com `CILanczosScaleTransform` + cache Retina (`NSCache`) e interpolação `.high` em `AccountAvatarView`, evitando pixelização em avatars pequenos.
 - **Motor de Regras Determinístico (Feature 3):** `ReconciliationRulesEngine` avalia regras ativas por prioridade crescente (`contains`, `startsWith`, `equals`, `regex`, faixa de valor e origem) antes do fallback para `LocalLLMService` na importação (`StatementImportService`) e em transações sincronizadas via Apple Pay com `needsReview = true`.
 - **Gestão em UI:** Tab `Regras` em Configurações (`ReconciliationRulesView`), filtro `A Revisar` + botão `Aprovar` em `TransactionsView`, e criação de regra em 1 clique a partir de qualquer transação ou linha de extrato.
 

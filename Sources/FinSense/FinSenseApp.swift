@@ -623,13 +623,9 @@ public struct FinSenseApp: App {
                 .keyboardShortcut("k", modifiers: [.command])
 
                 Button("Quick-Add Rápido (Spotlight)") {
-                    QuickAddPanelController.shared.toggle {
-                        QuickAddBarView(store: store) {
-                            QuickAddPanelController.shared.close()
-                        }
-                    }
+                    GlobalHotKeyManager.shared.triggerWithDebounce()
                 }
-                .keyboardShortcut("$", modifiers: [.command, .shift])
+                .keyboardShortcut(.space, modifiers: [.control])
             }
         }
 

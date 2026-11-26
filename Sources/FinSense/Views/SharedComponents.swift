@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 import UniformTypeIdentifiers
 import Charts
 
@@ -83,6 +85,105 @@ public enum MacFilePicker {
     }
 }
 
+// MARK: - High-Quality Account Custom Icon Loader (Lanczos Retina Downsampling)
+
+@MainActor
+public final class AccountAvatarImageCache {
+    public static let shared = AccountAvatarImageCache()
+    private let cache = NSCache<NSString, NSImage>()
+    private let ciContext = CIContext(options: [
+        .highQualityDownsample: true,
+        .useSoftwareRenderer: false
+    ])
+
+    private init() {
+        cache.countLimit = 128
+    }
+
+    public func crispImage(forFilePath path: String, pointSize: CGFloat) -> NSImage? {
+        guard !path.isEmpty else { return nil }
+        let backingScale = max(2.0, NSScreen.main?.backingScaleFactor ?? 2.0)
+        // Oversample 3x when scale is 2x or use exact 3x/scale so curves & text downscale cleanly
+        let effectiveScale = max(backingScale, 3.0)
+        let targetPx = max(16.0, ceil(pointSize * effectiveScale))
+        let modTimestamp = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let cacheKey = "\(path)|\(Int(ceil(pointSize)))|\(Int(effectiveScale * 10))|\(Int(modTimestamp))" as NSString
+
+        if let cached = cache.object(forKey: cacheKey) {
+            return cached
+        }
+
+        guard let original = NSImage(contentsOfFile: path),
+              let srcCG = original.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return NSImage(contentsOfFile: path)
+        }
+
+        let srcW = CGFloat(srcCG.width)
+        let srcH = CGFloat(srcCG.height)
+        guard srcW > 0, srcH > 0 else { return original }
+
+        let fillScale = max(targetPx / srcW, targetPx / srcH)
+        var resultImage: NSImage? = nil
+
+        if fillScale < 0.95 {
+            let ciInput = CIImage(cgImage: srcCG)
+            let filter = CIFilter.lanczosScaleTransform()
+            filter.inputImage = ciInput
+            filter.scale = Float(fillScale)
+            filter.aspectRatio = 1.0
+
+            if let output = filter.outputImage {
+                let scaledExtent = output.extent
+                let cropOriginX = scaledExtent.origin.x + max(0, (scaledExtent.width - targetPx) / 2.0)
+                let cropOriginY = scaledExtent.origin.y + max(0, (scaledExtent.height - targetPx) / 2.0)
+                let cropRect = CGRect(
+                    x: cropOriginX,
+                    y: cropOriginY,
+                    width: min(targetPx, scaledExtent.width),
+                    height: min(targetPx, scaledExtent.height)
+                )
+                if let outCG = ciContext.createCGImage(output, from: cropRect) {
+                    resultImage = NSImage(cgImage: outCG, size: NSSize(width: pointSize, height: pointSize))
+                }
+            }
+        }
+
+        if resultImage == nil {
+            let pxInt = Int(targetPx)
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            if let ctx = CGContext(
+                data: nil,
+                width: pxInt,
+                height: pxInt,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) {
+                ctx.interpolationQuality = .high
+                ctx.setShouldAntialias(true)
+                ctx.setAllowsAntialiasing(true)
+                let drawW = srcW * fillScale
+                let drawH = srcH * fillScale
+                let drawRect = CGRect(
+                    x: (targetPx - drawW) / 2.0,
+                    y: (targetPx - drawH) / 2.0,
+                    width: drawW,
+                    height: drawH
+                )
+                ctx.draw(srcCG, in: drawRect)
+                if let outCG = ctx.makeImage() {
+                    resultImage = NSImage(cgImage: outCG, size: NSSize(width: pointSize, height: pointSize))
+                }
+            }
+        }
+
+        let finalImage = resultImage ?? original
+        cache.setObject(finalImage, forKey: cacheKey)
+        return finalImage
+    }
+}
+
 // MARK: - Bank / Custom Icon Avatar View
 
 public struct AccountAvatarView: View {
@@ -117,15 +218,17 @@ public struct AccountAvatarView: View {
     public var body: some View {
         if let path = customImagePath,
            !path.isEmpty,
-           let nsImage = NSImage(contentsOfFile: path) {
+           let nsImage = AccountAvatarImageCache.shared.crispImage(forFilePath: path, pointSize: size) {
             Image(nsImage: nsImage)
                 .resizable()
-                .scaledToFill()
+                .interpolation(.high)
+                .antialiased(true)
+                .aspectRatio(contentMode: .fill)
                 .frame(width: size, height: size)
                 .clipShape(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
-                        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.75)
                 )
         } else if let preset = BrazilianBanksCatalog.preset(for: bankPresetId) {
             ZStack {

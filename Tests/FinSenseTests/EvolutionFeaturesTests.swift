@@ -360,6 +360,47 @@ final class EvolutionFeaturesTests: XCTestCase {
         XCTAssertEqual(created[1].creditCardInvoiceYearMonthKey, 202703)
     }
 
+    // MARK: - Custom Account Image High-Quality Retina Downsampling
+
+    func testAccountAvatarHighQualityDownsampling() throws {
+        // Cria uma imagem PNG de alta resolução (512x512) em diretório temporário e valida reamostragem nítida para 36pt
+        let tmpDir = FileManager.default.temporaryDirectory
+        let fileURL = tmpDir.appendingPathComponent("test_avatar_\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let size = 512
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: size,
+            height: size,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            XCTFail("Falha ao criar contexto CG")
+            return
+        }
+        ctx.setFillColor(red: 0.92, green: 0.44, blue: 0.0, alpha: 1.0)
+        ctx.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        guard let cg = ctx.makeImage() else {
+            XCTFail("Falha ao gerar CGImage")
+            return
+        }
+        let bitmap = NSBitmapImageRep(cgImage: cg)
+        let pngData = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        try pngData.write(to: fileURL)
+
+        let downsampled = AccountAvatarImageCache.shared.crispImage(forFilePath: fileURL.path, pointSize: 36)
+        XCTAssertNotNil(downsampled)
+        XCTAssertEqual(downsampled?.size.width ?? 0, 36, accuracy: 0.1)
+        let outCG = downsampled?.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        XCTAssertNotNil(outCG)
+        // Deve possuir pixels >= 72x72 (Retina / oversampling >= 2x para 36pt)
+        XCTAssertGreaterThanOrEqual(outCG?.width ?? 0, 72)
+    }
+
     // MARK: - Feature 7: Multi-Currency Conversion
 
     func testMultiCurrencyConsolidatedBalancesAndNativeAccountPreservation() {

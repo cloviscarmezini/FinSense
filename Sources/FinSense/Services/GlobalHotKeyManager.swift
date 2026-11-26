@@ -3,16 +3,16 @@ import SwiftUI
 import AppKit
 import Carbon.HIToolbox
 
-/// Gerencia atalhos globais de teclado (⌘+Shift+$ e ⌘+Option+Space) via Carbon
+/// Gerencia o atalho global de teclado (Ctrl+Espaço) via Carbon
 /// e apresenta um NSPanel flutuante estilo Spotlight/Raycast sobre qualquer aplicativo.
 @MainActor
 public final class GlobalHotKeyManager {
     public static let shared = GlobalHotKeyManager()
 
-    private var hotKeyDollarRef: EventHotKeyRef?
-    private var hotKeySpaceRef: EventHotKeyRef?
+    private var hotKeyCtrlSpaceRef: EventHotKeyRef?
     private var eventHandlerRef: EventHandlerRef?
     private var onTrigger: (() -> Void)?
+    private var lastTriggerTime: Date = .distantPast
 
     private init() {}
 
@@ -32,7 +32,7 @@ public final class GlobalHotKeyManager {
                 guard let userData else { return noErr }
                 let mgr = Unmanaged<GlobalHotKeyManager>.fromOpaque(userData).takeUnretainedValue()
                 Task { @MainActor in
-                    mgr.onTrigger?()
+                    mgr.triggerWithDebounce()
                 }
                 return noErr
             },
@@ -42,37 +42,29 @@ public final class GlobalHotKeyManager {
             &eventHandlerRef
         )
 
-        // 1) ⌘ + Shift + $ (Tecla 4 + cmdKey + shiftKey)
-        let id1 = EventHotKeyID(signature: OSType(0x4653_5141), id: 1) // 'FSQA'
-        RegisterEventHotKey(
-            UInt32(kVK_ANSI_4),
-            UInt32(cmdKey | shiftKey),
-            id1,
-            GetApplicationEventTarget(),
-            0,
-            &hotKeyDollarRef
-        )
-
-        // 2) ⌘ + Option + Space
-        let id2 = EventHotKeyID(signature: OSType(0x4653_5142), id: 2) // 'FSQB'
+        // Atalho global: Ctrl + Espaço (controlKey + kVK_Space)
+        let hotKeyId = EventHotKeyID(signature: OSType(0x4653_5141), id: 1) // 'FSQA'
         RegisterEventHotKey(
             UInt32(kVK_Space),
-            UInt32(cmdKey | optionKey),
-            id2,
+            UInt32(controlKey),
+            hotKeyId,
             GetApplicationEventTarget(),
             0,
-            &hotKeySpaceRef
+            &hotKeyCtrlSpaceRef
         )
     }
 
+    public func triggerWithDebounce() {
+        let now = Date()
+        guard now.timeIntervalSince(lastTriggerTime) > 0.25 else { return }
+        lastTriggerTime = now
+        onTrigger?()
+    }
+
     public func unregister() {
-        if let ref = hotKeyDollarRef {
+        if let ref = hotKeyCtrlSpaceRef {
             UnregisterEventHotKey(ref)
-            hotKeyDollarRef = nil
-        }
-        if let ref = hotKeySpaceRef {
-            UnregisterEventHotKey(ref)
-            hotKeySpaceRef = nil
+            hotKeyCtrlSpaceRef = nil
         }
         if let handler = eventHandlerRef {
             RemoveEventHandler(handler)
