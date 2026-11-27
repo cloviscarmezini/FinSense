@@ -44,28 +44,20 @@ public struct LoansAndFinancingsView: View {
                     Spacer()
 
                     Button {
-                        store.openAIChat()
-                    } label: {
-                        Label("Perguntar à IA Local", systemImage: "sparkles.bubble.fill")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
                         store.requireInstalledLLM(forFeature: "Importar \(kind.title) via Documento (IA Local)") {
                             showImportDocumentSheet = true
                         }
                     } label: {
                         Label("Importar", systemImage: "doc.text.magnifyingglass")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 9, verticalPadding: 6.5, horizontalPadding: 12))
 
                     Button {
                         showCreateSheet = true
                     } label: {
-                        Label("Novo \(kind.title)", systemImage: "plus.circle.fill")
+                        Label("Novo \(kind.title)", systemImage: "plus")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(kind == .loan ? Color(hex: "#D97706") : Color(hex: "#8B5CF6"))
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
                 }
 
                 // KPI Cards (Equal-Height Grid)
@@ -128,18 +120,18 @@ public struct LoansAndFinancingsView: View {
                                     showImportDocumentSheet = true
                                 }
                             } label: {
-                                Label("Importar", systemImage: "sparkles.rectangle.stack.fill")
+                                Label("Importar", systemImage: "sparkles.rectangle.stack")
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(BentoGlassButtonStyle())
 
-                            Button("Cadastrar \(kind.title) Manualmente") {
+                            Button("Cadastrar \(kind.title)") {
                                 showCreateSheet = true
                             }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
                         }
                     }
                     .frame(maxWidth: .infinity, minHeight: 280)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                    .bentoCard(padding: 24)
                 } else {
                     Grid(horizontalSpacing: 18, verticalSpacing: 18) {
                         ForEach(Array(stride(from: 0, to: activeList.count, by: 2)), id: \.self) { rowStart in
@@ -225,6 +217,33 @@ public struct LoansAndFinancingsView: View {
 
     @ViewBuilder
     private func contractCard(_ contract: CreditContract) -> some View {
+        CreditContractCockpitCard(
+            contract: contract,
+            kind: kind,
+            store: store,
+            llmService: llmService,
+            onDelete: { contractPendingDeletion = contract },
+            onPlan: { contractToPlan = contract },
+            onAmortize: { contractToAmortize = contract },
+            onSettle: { contractToSettle = contract }
+        )
+    }
+}
+
+private struct CreditContractCockpitCard: View {
+    let contract: CreditContract
+    let kind: CreditContractKind
+    @ObservedObject var store: FinancialDataStore
+    @ObservedObject var llmService: LocalLLMService
+    let onDelete: () -> Void
+    let onPlan: () -> Void
+    let onAmortize: () -> Void
+    let onSettle: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showDetailsPopover: Bool = false
+
+    var body: some View {
         let metrics = store.progressMetrics(for: contract)
         let hasExtraAmortization = metrics.eliminatedByAmortizationCount > 0 || contract.extraAmortizedTotal > 0.01
         let paidCount = metrics.paidInFlowCount
@@ -232,373 +251,122 @@ public struct LoansAndFinancingsView: View {
         let outstandingBalance = store.currentOutstandingBalance(for: contract)
         let nominalRemaining = store.remainingNominalAmount(for: contract)
         let projectedPayoff = store.projectedPayoffAmount(for: contract)
-        let discountEstimate = max(nominalRemaining - projectedPayoff, 0)
+        let payoffHeroValue = kind == .loan ? outstandingBalance : projectedPayoff
+        let discountEstimate = max(nominalRemaining - payoffHeroValue, 0)
         let accentHex = kind == .loan ? "#D97706" : "#8B5CF6"
+        let accentColor = Color(hex: accentHex)
+
+        let currentAmortization: Double = contract.kind == .financing
+            ? (contract.effectiveFinancingModel?.currentMonthlyAmortization ?? 0.0)
+            : (contract.effectiveLoanModel?.currentMonthlyAmortization ?? 0.0)
+        let currentInterest: Double = contract.kind == .financing
+            ? (contract.effectiveFinancingModel?.currentMonthlyInterest ?? 0.0)
+            : (contract.effectiveLoanModel?.currentMonthlyInterest ?? 0.0)
+
+        let activePlan = store.amortizationPlan(for: contract.id)
+        let hasPendingPlan = activePlan?.items.contains(where: { $0.status == .pending }) == true
+        let activeProjection = hasPendingPlan ? store.loanProjection(for: contract.id) : nil
 
         VStack(alignment: .leading, spacing: 14) {
-            // Card Header
+            // MARK: 1. Cockpit Header (Badge + Name + Subtle Technical Pills)
             HStack(alignment: .top, spacing: 12) {
-                CategoryBadgeView(symbol: contract.iconSymbol, colorHex: accentHex, size: 44)
+                CategoryBadgeView(symbol: contract.iconSymbol, colorHex: accentHex, size: 42)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 6) {
                         Text(contract.name)
-                            .font(.title3.bold())
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+
                         Text(contract.subtypeDisplayName)
-                            .font(.caption2.bold())
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(Color(hex: accentHex).opacity(0.16)))
-                            .foregroundStyle(Color(hex: accentHex))
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2.5)
+                            .background(Capsule().fill(accentColor.opacity(0.14)))
+                            .foregroundStyle(accentColor)
 
                         if contract.isSettled {
                             Text("QUITADO")
-                                .font(.caption2.bold())
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
-                                .foregroundStyle(Color(hex: "#10B981"))
-                        }
-
-                        if contract.kind == .loan && (contract.loanSubtype == .consignado || contract.effectiveLoanModel?.isPayrollDeductible == true) {
-                            HStack(spacing: 4) {
-                                Image(systemName: "person.text.rectangle.fill")
-                                Text("Débito Direto em Folha")
-                            }
-                            .font(.caption2.bold())
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
-                            .foregroundStyle(Color(hex: "#10B981"))
+                                .font(.system(size: 10, weight: .bold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2.5)
+                                .background(Capsule().fill(FinSenseTheme.emerald.opacity(0.15)))
+                                .foregroundStyle(FinSenseTheme.emerald)
+                        } else if contract.kind == .loan && (contract.loanSubtype == .consignado || contract.effectiveLoanModel?.isPayrollDeductible == true) {
+                            Text("Consignado")
+                                .font(.system(size: 10, weight: .semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2.5)
+                                .background(Capsule().fill(FinSenseTheme.emerald.opacity(0.12)))
+                                .foregroundStyle(FinSenseTheme.emerald)
                         }
                     }
+
                     HStack(spacing: 6) {
-                        if contract.effectiveBankDueDay != contract.billingDay {
-                            Text("\(contract.amortizationSystem.rawValue) • Cobrança no salário: dia \(contract.billingDay) • Vencimento no banco: dia \(contract.effectiveBankDueDay)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("\(contract.amortizationSystem.rawValue) • Cobrança/Vencimento todo dia \(contract.billingDay)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if let contractNo = contract.contractNumber, !contractNo.isEmpty {
-                            Text("• Contrato: \(contractNo)")
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                Button(role: .destructive) {
-                    contractPendingDeletion = contract
-                } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Excluir contrato e todas as suas transações vinculadas")
-            }
-            .frame(minHeight: 46, alignment: .topLeading)
-
-            // Contract Details Grid
-            if contract.kind == .financing {
-                let finModel = contract.effectiveFinancingModel
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
-                    detailCell(
-                        label: "Saldo Devedor Teórico",
-                        value: BRLFormatters.currency(outstandingBalance),
-                        valueColor: Color(hex: "#EF4444")
-                    )
-                    detailCell(label: "Valor Total Contratado", value: BRLFormatters.currency(contract.totalContractedAmount))
-                    detailCell(label: "Valor Cadastrado da Parcela", value: BRLFormatters.currency(contract.installmentAmount))
-
-                    detailCell(label: "Parcela Base Price", value: BRLFormatters.currency(contract.effectiveBaseInstallmentPrice))
-                    detailCell(label: "Seguros MIP/DFI", value: BRLFormatters.currency(contract.effectiveInsuranceFee))
-                    detailCell(label: "Taxa de Administração", value: BRLFormatters.currency(contract.effectiveAdminFee))
-
-                    if let avgGrowth = contract.averageMonthlyInstallmentGrowth, avgGrowth > 0.001 {
-                        detailCell(
-                            label: "Projeção Mensal (Média Doc)",
-                            value: "+\(BRLFormatters.currency(avgGrowth))/mês (1ª: \(BRLFormatters.currency(contract.installmentAmount + avgGrowth)))",
-                            valueColor: Color(hex: "#8B5CF6")
-                        )
-                    }
-
-                    detailCell(
-                        label: "Taxa Nominal Anual",
-                        value: String(format: "%.2f%% a.a. (%.4f%% a.m.)", contract.effectiveAnnualNominalRate, contract.effectiveMonthlyNominalRateDecimal * 100.0)
-                    )
-                    detailCell(
-                        label: "Amortização Real no Mês",
-                        value: BRLFormatters.currency(finModel?.currentMonthlyAmortization ?? 0.0),
-                        valueColor: Color(hex: "#10B981")
-                    )
-                    detailCell(
-                        label: "Juros no Mês",
-                        value: BRLFormatters.currency(finModel?.currentMonthlyInterest ?? 0.0),
-                        valueColor: Color(hex: "#EF4444")
-                    )
-
-                    detailCell(label: "Indexador", value: contract.indexationRate?.rawValue ?? "TR")
-
-                    if hasExtraAmortization {
-                        detailCell(
-                            label: "Prazo Original Contratado",
-                            value: metrics.originalMonthsFormatted
-                        )
-                        detailCell(
-                            label: "Novo Prazo Recalculado",
-                            value: metrics.newRecalculatedMonthsFormatted
-                        )
-                        detailCell(
-                            label: "Tempo Poupado",
-                            value: "⚡ \(metrics.savedTimeString) adiantados",
-                            valueColor: Color(hex: "#10B981")
-                        )
-                        detailCell(
-                            label: "Total Amortizado Extraordinário",
-                            value: "\(BRLFormatters.currency(contract.extraAmortizedTotal)) (\(metrics.eliminatedByAmortizationCount) parcelas eliminadas)",
-                            valueColor: Color(hex: "#10B981")
-                        )
-                        detailCell(
-                            label: "Parcelas Futuras Restantes",
-                            value: "\(remainingCount) parcelas a pagar"
-                        )
-                        detailCell(
-                            label: "Soma Nominal Futura",
-                            value: BRLFormatters.currency(nominalRemaining)
-                        )
-                    } else {
-                        detailCell(
-                            label: "Prazo Contratado",
-                            value: metrics.originalMonthsFormatted
-                        )
-                        detailCell(
-                            label: "Parcelas Restantes",
-                            value: "\(remainingCount) parcelas a pagar"
-                        )
-                        detailCell(
-                            label: "Soma Nominal Futura",
-                            value: BRLFormatters.currency(nominalRemaining)
-                        )
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, minHeight: 215, alignment: .topLeading)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
-            } else {
-                let loanModel = contract.effectiveLoanModel
-                let estimatedInterestSavings = max(0.0, nominalRemaining - outstandingBalance)
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
-                    detailCell(
-                        label: "Saldo Devedor (Para quitar hoje)",
-                        value: BRLFormatters.currency(outstandingBalance),
-                        valueColor: Color(hex: "#EF4444")
-                    )
-                    detailCell(
-                        label: "Economia se Quitar Hoje",
-                        value: BRLFormatters.currency(estimatedInterestSavings),
-                        valueColor: Color(hex: "#10B981")
-                    )
-                    detailCell(label: "Valor Total Contratado (PV)", value: BRLFormatters.currency(contract.totalContractedAmount))
-
-                    detailCell(label: "Valor Fixo da Parcela (PMT)", value: BRLFormatters.currency(contract.installmentAmount))
-                    detailCell(
-                        label: "Amortização Real no Mês",
-                        value: BRLFormatters.currency(loanModel?.currentMonthlyAmortization ?? 0.0),
-                        valueColor: Color(hex: "#10B981")
-                    )
-                    detailCell(
-                        label: "Juros no Mês",
-                        value: BRLFormatters.currency(loanModel?.currentMonthlyInterest ?? 0.0),
-                        valueColor: Color(hex: "#EF4444")
-                    )
-
-                    detailCell(label: "Taxa de Juros Mensal", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
-
-                    if hasExtraAmortization {
-                        detailCell(
-                            label: "Prazo Original Contratado",
-                            value: metrics.originalMonthsFormatted
-                        )
-                        detailCell(
-                            label: "Novo Prazo Recalculado",
-                            value: metrics.newRecalculatedMonthsFormatted
-                        )
-                        detailCell(
-                            label: "Tempo Poupado",
-                            value: "⚡ \(metrics.savedTimeString) adiantados",
-                            valueColor: Color(hex: "#10B981")
-                        )
-                        detailCell(
-                            label: "Total Amortizado Extraordinário",
-                            value: "\(BRLFormatters.currency(contract.extraAmortizedTotal)) (\(metrics.eliminatedByAmortizationCount) parcelas eliminadas)",
-                            valueColor: Color(hex: "#10B981")
-                        )
-                        detailCell(
-                            label: "Parcelas Futuras Restantes",
-                            value: "\(remainingCount) parcelas a pagar"
-                        )
-                        detailCell(
-                            label: "Soma Nominal (Fluxo c/ Juros)",
-                            value: BRLFormatters.currency(nominalRemaining),
-                            valueColor: Color(hex: "#64748B")
-                        )
-                    } else {
-                        detailCell(
-                            label: "Prazo Contratado",
-                            value: metrics.originalMonthsFormatted
-                        )
-                        detailCell(
-                            label: "Parcelas Restantes",
-                            value: "\(remainingCount) parcelas a pagar"
-                        )
-                        detailCell(
-                            label: "Soma Nominal (Fluxo c/ Juros)",
-                            value: BRLFormatters.currency(nominalRemaining),
-                            valueColor: Color(hex: "#64748B")
-                        )
-                    }
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
-            }
-
-            // Segmented Progress Bar & Legend
-            VStack(alignment: .leading, spacing: 8) {
-                // Bar Header: Dualidade de Prazos vs. Unificado
-                Group {
-                    if hasExtraAmortization {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text("Avanço Frente ao Original: \(metrics.totalOvercomeMonths) de \(metrics.originalTotalInstallments) meses superados (\(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100)))")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                            }
-                            HStack {
-                                Text("Plano Atual: \(metrics.paidInFlowCount) de \(metrics.newRecalculatedTotalInstallments) parcelas (\(String(format: "%.0f%%", metrics.currentPlanCompletionPercentage * 100)))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                            }
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack {
-                                Text("Progresso: \(paidCount) de \(contract.totalInstallments) parcelas pagas (\(String(format: "%.0f%% concluído", metrics.globalCompletionPercentage * 100)))")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.primary)
-                                Spacer()
-                            }
-                            Text("Cronograma regular sem amortizações extraordinárias")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary.opacity(0.75))
-                        }
-                    }
-                }
-                .frame(minHeight: 34, alignment: .topLeading)
-
-                // 3-Segment Visual Bar
-                SegmentedContractProgressBar(metrics: metrics, accentHex: accentHex)
-
-                // Legend: Bullets Alinhados Minimalistas
-                HStack(alignment: .center, spacing: 18) {
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(Color(hex: accentHex))
-                            .frame(width: 8, height: 8)
-                        Text("\(paidCount) parcelas pagas")
-                            .font(.caption2)
+                        let rateStr = contract.kind == .financing
+                            ? String(format: "%.2f%% a.a.", contract.effectiveAnnualNominalRate)
+                            : String(format: "%.2f%% a.m.", contract.monthlyInterestRate)
+                        Text("\(contract.amortizationSystem.rawValue) · \(rateStr) · Dia \(contract.billingDay)")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-
-                    if hasExtraAmortization {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(Color(hex: "#10B981"))
-                                .frame(width: 8, height: 8)
-                            Text("\(metrics.eliminatedByAmortizationCount) parcelas amortizadas")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if contract.isSettled || remainingCount == 0 {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(Color(hex: "#10B981"))
-                                .frame(width: 8, height: 8)
-                            Text("Totalmente quitado")
-                                .font(.caption2.bold())
-                                .foregroundStyle(Color(hex: "#10B981"))
-                        }
-                    } else {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(Color.primary.opacity(0.28))
-                                .frame(width: 8, height: 8)
-                            Text("\(remainingCount) parcelas a pagar")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Spacer()
                 }
-                .frame(minHeight: 18, alignment: .leading)
+
+                Spacer(minLength: 6)
+
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Excluir contrato e todas as suas transações vinculadas")
             }
 
-            // Highlighted Line: "Projeção de valor para quitar" / "Contrato Quitado"
+            // MARK: 2. Hero Payoff Callout (Valor Presente para Quitar Hoje)
             if contract.isSettled {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(Color(hex: "#10B981"))
-                            Text("Contrato Liquidado com Sucesso")
+                                .foregroundStyle(FinSenseTheme.emerald)
+                            Text("Contrato Liquidado")
                                 .font(.subheadline.weight(.semibold))
                         }
-                        Text(contract.settledDate.map { "Encerrado em \(BRLFormatters.shortDate($0)) • Nenhuma parcela futura pendente" } ?? "Nenhuma parcela futura pendente")
-                            .font(.caption2)
+                        Text(contract.settledDate.map { "Encerrado em \(BRLFormatters.shortDate($0))" } ?? "Nenhuma parcela futura pendente")
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-
                     Spacer()
-
                     Text(BRLFormatters.currency(0.0))
-                        .font(.system(size: 22, weight: .heavy, design: .rounded))
-                        .foregroundStyle(Color(hex: "#10B981"))
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .foregroundStyle(FinSenseTheme.emerald)
+                        .monospacedDigit()
                 }
-                .padding(12)
-                .frame(minHeight: 64)
+                .padding(14)
                 .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(hex: "#10B981").opacity(0.10))
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(FinSenseTheme.emerald.opacity(0.10))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color(hex: "#10B981").opacity(0.30), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(FinSenseTheme.emerald.opacity(0.28), lineWidth: FinSenseTheme.hairlineWidth)
                 )
             } else {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "sparkles")
-                                .foregroundStyle(Color(hex: "#10B981"))
-                            Text(kind == .loan ? "Valor para Quitar Hoje (Saldo Devedor PV):" : "Projeção de valor para quitar:")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        Text(kind == .loan
-                            ? "Economia estimada de juros futuros: \(BRLFormatters.currency(discountEstimate)) (Soma Nominal: \(BRLFormatters.currency(nominalRemaining)))"
-                            : "Saldo Devedor: \(BRLFormatters.currency(outstandingBalance)) • Desconto est. sobre nominal: \(BRLFormatters.currency(discountEstimate))"
-                        )
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(kind == .loan ? "Valor para Quitar Hoje (PV)" : "Projeção para Quitar Hoje")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(BRLFormatters.currency(payoffHeroValue))
+                            .font(.system(size: 27, weight: .bold, design: .rounded))
+                            .foregroundStyle(.primary)
+                            .numericCurrencyTransition(value: payoffHeroValue)
+                        Text("Economia est. de juros: \(BRLFormatters.currency(discountEstimate))")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(FinSenseTheme.emerald)
                     }
 
                     Spacer()
@@ -618,36 +386,98 @@ public struct LoansAndFinancingsView: View {
                             }
                         }
                     } label: {
-                        Label("Simular Prazo com IA", systemImage: "sparkles")
-                            .font(.caption.weight(.semibold))
+                        Label("Simular na IA", systemImage: "sparkles")
                     }
-                    .buttonStyle(.bordered)
-                    .help("Gerar plano de ação na IA Local para quitar este \(contract.kind.title.lowercased()) no menor prazo possível")
-
-                    Text(BRLFormatters.currency(kind == .loan ? outstandingBalance : projectedPayoff))
-                        .font(.system(size: 22, weight: .heavy, design: .rounded))
-                        .foregroundStyle(Color(hex: "#10B981"))
+                    .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.indigo, cornerRadius: 8, verticalPadding: 5, horizontalPadding: 10))
+                    .help("Gerar plano de ação na IA Local para quitar este \(contract.kind.title.lowercased())")
                 }
-                .padding(12)
-                .frame(minHeight: 64)
+                .padding(14)
                 .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(hex: "#10B981").opacity(0.10))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color(hex: "#10B981").opacity(0.30), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(FinSenseTheme.nestedSurface(for: colorScheme))
                 )
             }
 
-            if !contract.notes.isEmpty {
-                Text(contract.notes)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+            // MARK: 3. Luminous Segmented Progress Bar + Projected Payoff Indicator
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .center, spacing: 8) {
+                    let targetTotal = hasExtraAmortization ? metrics.newRecalculatedTotalInstallments : contract.totalInstallments
+                    Text("\(paidCount) de \(targetTotal) parcelas (\(String(format: "%.0f%%", metrics.globalCompletionPercentage * 100)))")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+
+                    Spacer()
+
+                    if let projection = activeProjection, let plan = activePlan {
+                        let pendingCount = plan.items.filter { $0.status == .pending }.count
+                        let achievesPayoff = projection.doesPlanAchieveFullPayoff
+                        let pillColor = achievesPayoff ? FinSenseTheme.emerald : FinSenseTheme.indigo
+                        Button(action: onPlan) {
+                            HStack(spacing: 4) {
+                                Image(systemName: achievesPayoff ? "checkmark.seal.fill" : "calendar.badge.clock")
+                                    .font(.system(size: 10))
+                                Text(
+                                    achievesPayoff
+                                        ? "Quitação: \(BRLFormatters.shortDate(projection.projectedMaturityDate))"
+                                        : "\(pendingCount) aporte(s) planejado(s)"
+                                )
+                                .font(.system(size: 10.5, weight: .semibold))
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(pillColor.opacity(0.13)))
+                            .foregroundStyle(pillColor)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Economia projetada de juros: \(BRLFormatters.currency(LoanProjectionEngine.toDouble(projection.totalInterestSaved))) (\(projection.monthsSaved) meses)")
+                    }
+                }
+
+                SegmentedContractProgressBar(metrics: metrics, accentHex: accentHex)
+
+                HStack(spacing: 14) {
+                    HStack(spacing: 5) {
+                        Circle().fill(accentColor).frame(width: 7, height: 7)
+                        Text("\(paidCount) pagas")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if hasExtraAmortization {
+                        HStack(spacing: 5) {
+                            Circle().fill(FinSenseTheme.emerald).frame(width: 7, height: 7)
+                            Text("\(metrics.eliminatedByAmortizationCount) amortizadas")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(contract.isSettled || remainingCount == 0 ? FinSenseTheme.emerald : Color.primary.opacity(0.25))
+                            .frame(width: 7, height: 7)
+                        Text(contract.isSettled || remainingCount == 0 ? "Quitado" : "\(remainingCount) restantes")
+                            .font(.caption2)
+                            .foregroundStyle(contract.isSettled || remainingCount == 0 ? FinSenseTheme.emerald : .secondary)
+                    }
+                    Spacer()
+                }
             }
 
-            // Banner de Resolução Assistida de Aportes Vencidos (Camada 2 -> .expired)
+            // MARK: 4. Compact 3-Column Core Financial Metrics + Progressive Disclosure Trigger
+            HStack(spacing: 10) {
+                cockpitMetricColumn(label: "Parcela", value: BRLFormatters.currency(contract.installmentAmount))
+                Divider().frame(height: 28).opacity(0.4)
+                cockpitMetricColumn(label: "Juros no Mês", value: BRLFormatters.currency(currentInterest), color: FinSenseTheme.coral)
+                Divider().frame(height: 28).opacity(0.4)
+                cockpitMetricColumn(label: "Amortização Real", value: BRLFormatters.currency(currentAmortization), color: FinSenseTheme.emerald)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(FinSenseTheme.nestedSurface(for: colorScheme))
+            )
+
+            // Expired Planned Amortizations Banner (Camada 2)
             if !contract.isSettled {
                 let expiredItems = store.expiredPlannedAmortizations(for: contract.id)
                 if !expiredItems.isEmpty {
@@ -659,163 +489,182 @@ public struct LoansAndFinancingsView: View {
                         )
                     }
                 }
-
-                // Resumo do Planejamento de Amortização Ativo (Camada 3 — Read Model)
-                if let plan = store.amortizationPlan(for: contract.id),
-                   plan.items.contains(where: { $0.status == .pending }),
-                   let projection = store.loanProjection(for: contract.id) {
-                    let pendingCount = plan.items.filter { $0.status == .pending }.count
-                    let achievesPayoff = projection.doesPlanAchieveFullPayoff
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
-                            Image(systemName: achievesPayoff ? "checkmark.seal.fill" : "calendar.badge.clock")
-                                .foregroundStyle(achievesPayoff ? Color(hex: "#10B981") : Color(hex: "#6366F1"))
-                            Text(
-                                achievesPayoff
-                                    ? "Planejamento Ativo • QUITAÇÃO TOTAL em \(BRLFormatters.shortDate(projection.projectedMaturityDate)) (\(pendingCount) aporte\(pendingCount > 1 ? "s" : ""))"
-                                    : "Planejamento de Amortização Ativo (\(pendingCount) aporte\(pendingCount > 1 ? "s" : "") planejado\(pendingCount > 1 ? "s" : ""))"
-                            )
-                            .font(.caption.bold())
-                            .foregroundStyle(achievesPayoff ? Color(hex: "#10B981") : Color(hex: "#6366F1"))
-
-                            Spacer()
-
-                            Button("Ver Planejamento") {
-                                contractToPlan = contract
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.mini)
-
-                            Button(role: .destructive) {
-                                store.deleteAmortizationPlan(for: contract.id)
-                            } label: {
-                                Image(systemName: "trash")
-                            }
-                            .buttonStyle(.borderless)
-                            .controlSize(.mini)
-                            .help("Remover planejamento de amortização")
-                        }
-
-                        HStack(spacing: 16) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Início (Saldo Atual)")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Text(BRLFormatters.currency(LoanProjectionEngine.toDouble(projection.currentRealBalance)))
-                                    .font(.caption.bold())
-                            }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Meio (Total Planejado)")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Text(BRLFormatters.currency(LoanProjectionEngine.toDouble(projection.totalExtraAmortized)))
-                                    .font(.caption.bold())
-                                    .foregroundStyle(Color(hex: "#6366F1"))
-                            }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Fim (Saldo Pós-Plano)")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Text(
-                                    achievesPayoff
-                                        ? "R$ 0,00 (QUITADO)"
-                                        : BRLFormatters.currency(LoanProjectionEngine.toDouble(projection.projectedFinalBalanceAfterPlan))
-                                )
-                                .font(.caption.bold())
-                                .foregroundStyle(achievesPayoff ? Color(hex: "#10B981") : .primary)
-                            }
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Juros Economizados")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Text("\(BRLFormatters.currency(LoanProjectionEngine.toDouble(projection.totalInterestSaved))) (\(projection.monthsSaved)m)")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(Color(hex: "#3B82F6"))
-                            }
-                        }
-                    }
-                    .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill((achievesPayoff ? Color(hex: "#10B981") : Color(hex: "#6366F1")).opacity(0.08))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke((achievesPayoff ? Color(hex: "#10B981") : Color(hex: "#6366F1")).opacity(0.32), lineWidth: 1)
-                    )
-                }
             }
 
-            // Espaçador flexível (mola) para nivelamento e ancoragem dos botões na base
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
 
-            // Action Buttons: Planejar Amortização / Ver Planejamento, Amortizar Agora & Quitar (Ancorados no rodapé)
-            if contract.isSettled {
-                HStack {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(Color(hex: "#10B981"))
-                    Text("Contrato Liquidado / Quitado")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(Color(hex: "#10B981"))
+            // MARK: 5. Footer: Progressive Disclosure ("Detalhes & Memória") + Actions
+            HStack(spacing: 8) {
+                Button {
+                    showDetailsPopover.toggle()
+                } label: {
+                    Label("Detalhes", systemImage: "info.circle")
+                }
+                .buttonStyle(BentoGlassButtonStyle(cornerRadius: 8, verticalPadding: 5.5, horizontalPadding: 10))
+                .popover(isPresented: $showDetailsPopover, arrowEdge: .bottom) {
+                    contractTechnicalDetailsPopover(
+                        metrics: metrics,
+                        hasExtraAmortization: hasExtraAmortization,
+                        remainingCount: remainingCount,
+                        outstandingBalance: outstandingBalance,
+                        nominalRemaining: nominalRemaining,
+                        activePlan: activePlan,
+                        activeProjection: activeProjection
+                    )
+                }
+
+                if !contract.isSettled {
+                    let hasSavedPlan = store.hasSavedAmortizationPlan(for: contract.id)
+                    Button(action: onPlan) {
+                        Label(
+                            hasSavedPlan ? "Plano" : "Planejar",
+                            systemImage: hasSavedPlan ? "calendar.badge.checkmark" : "calendar.badge.clock"
+                        )
+                    }
+                    .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.indigo, cornerRadius: 8, verticalPadding: 5.5, horizontalPadding: 10))
+
+                    Button(action: onAmortize) {
+                        Label("Amortizar", systemImage: "arrow.down.forward.circle")
+                    }
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 8, verticalPadding: 5.5, horizontalPadding: 10))
+
+                    Spacer(minLength: 4)
+
+                    Button(action: onSettle) {
+                        Label("Quitar", systemImage: "checkmark.seal.fill")
+                    }
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.emerald, cornerRadius: 8, verticalPadding: 6, horizontalPadding: 12))
+                } else {
                     Spacer()
-                    if let settledDate = contract.settledDate {
-                        Text("Liquidado em \(BRLFormatters.shortDate(settledDate))")
+                    Text("Contrato encerrado")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(FinSenseTheme.emerald)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .bentoCard(
+            padding: 18,
+            cornerRadius: 16,
+            accent: contract.isSettled ? FinSenseTheme.emerald : accentColor,
+            isHighlighted: false
+        )
+    }
+
+    @ViewBuilder
+    private func cockpitMetricColumn(label: String, value: String, color: Color = .primary) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(color)
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func contractTechnicalDetailsPopover(
+        metrics: ContractProgressMetrics,
+        hasExtraAmortization: Bool,
+        remainingCount: Int,
+        outstandingBalance: Double,
+        nominalRemaining: Double,
+        activePlan: AmortizationPlan?,
+        activeProjection: LoanProjectionResult?
+    ) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Detalhes Técnicos & Memória")
+                        .font(.headline)
+                    Spacer()
+                    if let contractNo = contract.contractNumber, !contractNo.isEmpty {
+                        Text("Nº \(contractNo)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Divider()
+
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+                    detailCell(label: "Saldo Devedor Teórico", value: BRLFormatters.currency(outstandingBalance), valueColor: FinSenseTheme.coral)
+                    detailCell(label: "Valor Total Contratado", value: BRLFormatters.currency(contract.totalContractedAmount))
+                    detailCell(label: "Soma Nominal Futura", value: BRLFormatters.currency(nominalRemaining))
+                    detailCell(label: "Prazo Original", value: metrics.originalMonthsFormatted)
+                    detailCell(label: "Parcelas Restantes", value: "\(remainingCount) parcelas")
+
+                    if contract.kind == .financing {
+                        detailCell(label: "Parcela Base Price", value: BRLFormatters.currency(contract.effectiveBaseInstallmentPrice))
+                        detailCell(label: "Seguros MIP/DFI", value: BRLFormatters.currency(contract.effectiveInsuranceFee))
+                        detailCell(label: "Taxa de Administração", value: BRLFormatters.currency(contract.effectiveAdminFee))
+                        detailCell(label: "Indexador", value: contract.indexationRate?.rawValue ?? "TR")
+                        detailCell(
+                            label: "Taxa Nominal Anual",
+                            value: String(format: "%.2f%% a.a. (%.4f%% a.m.)", contract.effectiveAnnualNominalRate, contract.effectiveMonthlyNominalRateDecimal * 100.0)
+                        )
+                        if let avgGrowth = contract.averageMonthlyInstallmentGrowth, avgGrowth > 0.001 {
+                            detailCell(label: "Projeção Mensal (Média Doc)", value: "+\(BRLFormatters.currency(avgGrowth))/mês", valueColor: FinSenseTheme.indigo)
+                        }
+                    } else {
+                        detailCell(label: "Taxa de Juros Mensal", value: String(format: "%.2f%% a.m.", contract.monthlyInterestRate))
+                    }
+
+                    if contract.effectiveBankDueDay != contract.billingDay {
+                        detailCell(label: "Cobrança / Vencimento", value: "Salário dia \(contract.billingDay) • Banco dia \(contract.effectiveBankDueDay)")
+                    }
+
+                    if hasExtraAmortization {
+                        detailCell(label: "Novo Prazo Recalculado", value: metrics.newRecalculatedMonthsFormatted)
+                        detailCell(label: "Tempo Poupado", value: "⚡ \(metrics.savedTimeString)", valueColor: FinSenseTheme.emerald)
+                        detailCell(
+                            label: "Amortizado Extraordinário",
+                            value: "\(BRLFormatters.currency(contract.extraAmortizedTotal)) (\(metrics.eliminatedByAmortizationCount)x)",
+                            valueColor: FinSenseTheme.emerald
+                        )
+                    }
+                }
+
+                if let plan = activePlan,
+                   plan.items.contains(where: { $0.status == .pending }),
+                   let projection = activeProjection {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Planejamento de Amortização Ativo")
+                                .font(.caption.bold())
+                                .foregroundStyle(FinSenseTheme.indigo)
+                            Spacer()
+                            Button("Remover Plano", role: .destructive) {
+                                store.deleteAmortizationPlan(for: contract.id)
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption2)
+                        }
+                        Text("Pós-plano: \(projection.doesPlanAchieveFullPayoff ? "Quitado em \(BRLFormatters.shortDate(projection.projectedMaturityDate))" : BRLFormatters.currency(LoanProjectionEngine.toDouble(projection.projectedFinalBalanceAfterPlan))) • Economia: \(BRLFormatters.currency(LoanProjectionEngine.toDouble(projection.totalInterestSaved))) (\(projection.monthsSaved)m)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !contract.notes.isEmpty {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Observações")
+                            .font(.caption.bold())
+                        Text(contract.notes)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding(10)
-                .frame(minHeight: 38)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(hex: "#10B981").opacity(0.12))
-                )
-            } else {
-                let hasSavedPlan = store.hasSavedAmortizationPlan(for: contract.id)
-                HStack(spacing: 10) {
-                    Button {
-                        contractToPlan = contract
-                    } label: {
-                        Label(
-                            hasSavedPlan ? "Ver Planejamento" : "Planejar Amortização",
-                            systemImage: hasSavedPlan ? "calendar.badge.checkmark" : "calendar.badge.clock"
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#6366F1"))
-
-                    Button {
-                        contractToAmortize = contract
-                    } label: {
-                        Label("Amortizar Agora", systemImage: "arrow.down.forward.and.arrow.up.backward.circle.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        contractToSettle = contract
-                    } label: {
-                        Label("Quitar \(kind.title)", systemImage: "checkmark.seal.fill")
-                            .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#10B981"))
-                }
-                .frame(minHeight: 38)
             }
+            .padding(16)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color(hex: accentHex).opacity(0.25), lineWidth: 1.2)
-        )
+        .frame(width: 440)
+        .frame(maxHeight: 420)
     }
 
     @ViewBuilder
@@ -827,7 +676,7 @@ public struct LoansAndFinancingsView: View {
             Text(value)
                 .font(.caption.bold())
                 .foregroundStyle(valueColor)
-                .lineLimit(1)
+                .lineLimit(2)
         }
     }
 }
@@ -837,6 +686,7 @@ public struct LoansAndFinancingsView: View {
 public struct SegmentedContractProgressBar: View {
     public let metrics: ContractProgressMetrics
     public let accentHex: String
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(metrics: ContractProgressMetrics, accentHex: String) {
         self.metrics = metrics
@@ -853,22 +703,24 @@ public struct SegmentedContractProgressBar: View {
             let amortWidth = min(totalWidth * amortRatio, max(0, totalWidth - naturalWidth))
 
             ZStack(alignment: .leading) {
-                // Segment 3: Dívida Restante / Trilho Neutro
+                // Segment 3: Trilho Neutro
                 Capsule()
-                    .fill(Color.primary.opacity(0.12))
+                    .fill(FinSenseTheme.nestedSurface(for: colorScheme))
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(FinSenseTheme.cardBorder(for: colorScheme), lineWidth: 0.5)
+                    )
 
                 HStack(spacing: 0) {
-                    // Segment 1: Progresso Natural (Pagas no Fluxo)
                     if naturalWidth > 0.001 {
                         Rectangle()
-                            .fill(Color(hex: accentHex))
+                            .fill(Color(hex: accentHex).opacity(0.9))
                             .frame(width: naturalWidth)
                     }
 
-                    // Segment 2: Aceleração por Amortização (Conquista Extraordinária)
                     if metrics.eliminatedByAmortizationCount > 0 && amortWidth > 0.001 {
                         Rectangle()
-                            .fill(Color(hex: "#10B981"))
+                            .fill(FinSenseTheme.emerald)
                             .frame(width: amortWidth)
                     }
                 }

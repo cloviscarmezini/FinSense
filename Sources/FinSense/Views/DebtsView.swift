@@ -34,29 +34,20 @@ public struct DebtsView: View {
                     Spacer()
 
                     Button {
-                        store.openAIChat()
-                    } label: {
-                        Label("Perguntar à IA Local", systemImage: "sparkles.bubble.fill")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
                         store.requireInstalledLLM(forFeature: "Importar Dívidas com LLM Local") {
                             showImportDebtsSheet = true
                         }
                     } label: {
-                        Label("Importar", systemImage: "doc.viewfinder.fill")
+                        Label("Importar", systemImage: "doc.viewfinder")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#6366F1"))
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 9, verticalPadding: 6.5, horizontalPadding: 12))
 
                     Button {
                         showCreateDebtSheet = true
                     } label: {
-                        Label("Nova Dívida", systemImage: "plus.circle.fill")
+                        Label("Nova Dívida", systemImage: "plus")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#EF4444"))
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.coral))
                 }
 
                 // Summary Strip (Equal-Height Grid)
@@ -103,23 +94,23 @@ public struct DebtsView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         HStack(spacing: 12) {
-                            Button("Adicionar Dívida") {
-                                showCreateDebtSheet = true
-                            }
-                            .buttonStyle(.borderedProminent)
-
                             Button {
                                 store.requireInstalledLLM(forFeature: "Importar Dívidas com LLM Local") {
                                     showImportDebtsSheet = true
                                 }
                             } label: {
-                                Label("Importar", systemImage: "doc.viewfinder.fill")
+                                Label("Importar", systemImage: "doc.viewfinder")
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(BentoGlassButtonStyle())
+
+                            Button("Adicionar Dívida") {
+                                showCreateDebtSheet = true
+                            }
+                            .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.coral))
                         }
                     }
                     .frame(maxWidth: .infinity, minHeight: 280)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                    .bentoCard(padding: 24)
                 } else {
                     Grid(horizontalSpacing: 18, verticalSpacing: 18) {
                         ForEach(Array(stride(from: 0, to: openDebts.count, by: 2)), id: \.self) { rowStart in
@@ -174,27 +165,51 @@ public struct DebtsView: View {
 
     @ViewBuilder
     private func debtCard(_ debt: DebtItem) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Card Header: Attached Image/Icon + Title + Contracted Date
-            HStack(alignment: .top, spacing: 14) {
+        DebtCockpitCard(
+            debt: debt,
+            store: store,
+            llmService: llmService,
+            onEdit: { editingDebt = debt },
+            onDelete: { debtPendingDeletion = debt },
+            onPay: { payingDebt = debt }
+        )
+    }
+}
+
+private struct DebtCockpitCard: View {
+    let debt: DebtItem
+    @ObservedObject var store: FinancialDataStore
+    @ObservedObject var llmService: LocalLLMService
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+    let onPay: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showNotesPopover: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Card Header
+            HStack(alignment: .center, spacing: 12) {
                 AccountAvatarView(
                     customImagePath: debt.customImagePath,
                     bankPresetId: debt.bankPresetId,
                     fallbackSymbol: debt.iconSymbol,
                     colorHex: debt.colorHex,
-                    size: 48
+                    size: 44
                 )
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(debt.name)
-                        .font(.title3.bold())
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .lineLimit(1)
 
                     if let contracted = debt.contractedDate {
-                        Label("Contraída em \(BRLFormatters.shortDate(contracted))", systemImage: "calendar.badge.exclamationmark")
+                        Label("Contraída em \(BRLFormatters.shortDate(contracted))", systemImage: "calendar")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Data de contratação não informada")
+                        Text("Sem data de contratação")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -203,23 +218,23 @@ public struct DebtsView: View {
                 Spacer(minLength: 8)
 
                 Text("EM ABERTO")
-                    .font(.caption2.bold())
+                    .font(.system(size: 10, weight: .bold))
                     .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color(hex: "#EF4444").opacity(0.15)))
-                    .foregroundStyle(Color(hex: "#EF4444"))
+                    .padding(.vertical, 3.5)
+                    .background(Capsule().fill(FinSenseTheme.coral.opacity(0.14)))
+                    .foregroundStyle(FinSenseTheme.coral)
             }
-            .frame(minHeight: 48, alignment: .topLeading)
 
-            // Original Amount Box
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Valor da Dívida")
+            // Hero Saldo em Aberto Cockpit Box
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Saldo em Aberto para Acordo")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(BRLFormatters.currency(debt.originalAmount))
-                        .font(.system(size: 26, weight: .heavy, design: .rounded))
-                        .foregroundStyle(Color(hex: "#EF4444"))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .foregroundStyle(FinSenseTheme.coral)
+                        .numericCurrencyTransition(value: debt.originalAmount)
                 }
 
                 Spacer()
@@ -237,66 +252,69 @@ public struct DebtsView: View {
                         }
                     }
                 } label: {
-                    Label("Simular Prazo na IA", systemImage: "sparkles")
-                        .font(.caption.weight(.semibold))
+                    Label("Simular na IA", systemImage: "sparkles")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.indigo, cornerRadius: 8, verticalPadding: 5, horizontalPadding: 10))
                 .help("Perguntar à IA local em quanto tempo quitar esta dívida")
             }
-            .padding(12)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.035)))
+            .padding(13)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(FinSenseTheme.nestedSurface(for: colorScheme))
+            )
 
             if !debt.notes.isEmpty {
-                Text(debt.notes)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                HStack {
+                    Text(debt.notes)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("Detalhes") {
+                        showNotesPopover.toggle()
+                    }
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 7, verticalPadding: 3, horizontalPadding: 8))
+                    .popover(isPresented: $showNotesPopover, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Observações da Dívida")
+                                .font(.headline)
+                            Text(debt.notes)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(14)
+                        .frame(width: 300, alignment: .leading)
+                    }
+                }
             }
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
 
             Divider()
+                .opacity(0.45)
 
-            // Action Buttons: Editar, Excluir, Pagar
-            HStack(spacing: 10) {
-                Button {
-                    editingDebt = debt
-                } label: {
+            // Footer Actions: Glass Editar & Excluir + Emerald Primary Pagar / Negociar
+            HStack(spacing: 8) {
+                Button(action: onEdit) {
                     Label("Editar", systemImage: "pencil")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(BentoGlassButtonStyle(cornerRadius: 8, verticalPadding: 5.5, horizontalPadding: 10))
 
-                Button(role: .destructive) {
-                    debtPendingDeletion = debt
-                } label: {
+                Button(action: onDelete) {
                     Label("Excluir", systemImage: "trash")
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.coral, cornerRadius: 8, verticalPadding: 5.5, horizontalPadding: 10))
 
                 Spacer(minLength: 8)
 
-                Button {
-                    payingDebt = debt
-                } label: {
+                Button(action: onPay) {
                     Label("Pagar / Negociar", systemImage: "checkmark.circle.fill")
-                        .fontWeight(.semibold)
-                        .padding(.horizontal, 8)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(Color(hex: "#10B981"))
+                .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.emerald, cornerRadius: 8, verticalPadding: 6, horizontalPadding: 12))
             }
-            .frame(minHeight: 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color(hex: debt.colorHex).opacity(0.28), lineWidth: 1.2)
-        )
+        .bentoCard(padding: 18, cornerRadius: 16)
     }
 }
 
