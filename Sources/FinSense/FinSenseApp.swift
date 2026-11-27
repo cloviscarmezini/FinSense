@@ -67,12 +67,12 @@ public struct MainContentView: View {
                         VStack(alignment: .leading, spacing: 18) {
                             sidebarGroup(title: "Visão Geral & Fluxo") {
                                 sidebarItem(.dashboard)
-                                sidebarItem(.analytics)
                                 sidebarItem(.transactions) {
                                     store.selectedTransactionsSubmenu = .all
                                 }
                                 sidebarItem(.investments)
                                 sidebarItem(.creditCards)
+                                sidebarItem(.analytics)
                             }
 
                             sidebarGroup(title: "Passivos & Contratos") {

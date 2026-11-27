@@ -5,10 +5,10 @@ import SwiftUI
 
 public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
     case dashboard
-    case analytics
     case transactions
     case netWorth
     case creditCards
+    case analytics
     case investments
     case loans
     case financings
