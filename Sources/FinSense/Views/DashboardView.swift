@@ -354,82 +354,12 @@ public struct DashboardView: View {
 
                 // MARK: - Charts Section (Expense by Category + Monthly/Annual Cash Flow)
                 HStack(alignment: .top, spacing: 16) {
-                    // Chart 1: Gráfico de Despesa por Categoria
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Despesas por Categoria")
-                                    .font(.headline)
-                                Text(isAnnual ? "Distribuição projetada até \(periodFullLabel)" : "Distribuição de gastos em \(periodFullLabel)")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text(BRLFormatters.currency(periodExpense))
-                                .font(.subheadline.bold())
-                                .foregroundStyle(Color(hex: "#EF4444"))
-                        }
-
-                        if expenseByCategory.isEmpty {
-                            VStack(spacing: 10) {
-                                Image(systemName: "chart.pie")
-                                    .font(.system(size: 36))
-                                    .foregroundStyle(.secondary)
-                                Text(isAnnual ? "Nenhuma despesa registrada ou projetada neste ano." : "Nenhuma despesa registrada neste mês.")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 240)
-                        } else {
-                            HStack(spacing: 18) {
-                                Chart(expenseByCategory) { item in
-                                    SectorMark(
-                                        angle: .value("Total", item.total),
-                                        innerRadius: .ratio(0.58),
-                                        angularInset: 1.5
-                                    )
-                                    .cornerRadius(4)
-                                    .foregroundStyle(Color(hex: item.category.colorHex))
-                                }
-                                .frame(width: 190, height: 190)
-
-                                ScrollView {
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        ForEach(expenseByCategory) { item in
-                                            HStack(spacing: 8) {
-                                                Circle()
-                                                    .fill(Color(hex: item.category.colorHex))
-                                                    .frame(width: 10, height: 10)
-                                                Image(systemName: item.category.iconSymbol)
-                                                    .font(.caption)
-                                                    .foregroundStyle(Color(hex: item.category.colorHex))
-                                                    .frame(width: 16)
-                                                Text(item.category.name)
-                                                    .font(.caption)
-                                                    .lineLimit(1)
-                                                Spacer()
-                                                Text(String(format: "%.1f%%", item.percentage))
-                                                    .font(.caption2)
-                                                    .foregroundStyle(.secondary)
-                                                Text(BRLFormatters.currency(item.total))
-                                                    .font(.caption.bold())
-                                            }
-                                        }
-                                    }
-                                }
-                                .frame(maxHeight: 200)
-                            }
-                        }
-                    }
-                    .padding(18)
-                    .frame(maxWidth: .infinity, minHeight: 290, alignment: .topLeading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                    // Chart 1: Gráfico de Despesa por Categoria (Top 5 + Outros expansível)
+                    ExpensesByCategoryCardView(
+                        items: expenseByCategory,
+                        totalExpense: periodExpense,
+                        periodFullLabel: periodFullLabel,
+                        isAnnual: isAnnual
                     )
 
                     // Chart 2: Evolução de Receitas vs Despesas e Projeção Empilhada
@@ -2252,6 +2182,248 @@ public struct QuotaRedemptionSheet: View {
 }
 
 // MARK: - Gráfico de Fluxo de Caixa Empilhado & Tooltip de Projeção
+
+// MARK: - Despesas por Categoria (Rosca Fina Top 5 + Outros com Total Centralizado)
+
+public struct ExpensesByCategoryCardView: View {
+    public let items: [CategorySpendSummary]
+    public let totalExpense: Double
+    public let periodFullLabel: String
+    public let isAnnual: Bool
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showOthersPopover: Bool = false
+
+    private struct SliceItem: Identifiable {
+        let id: String
+        let name: String
+        let iconSymbol: String
+        let colorHex: String
+        let total: Double
+        let percentage: Double
+        let isOthers: Bool
+    }
+
+    public init(
+        items: [CategorySpendSummary],
+        totalExpense: Double,
+        periodFullLabel: String,
+        isAnnual: Bool
+    ) {
+        self.items = items
+        self.totalExpense = totalExpense
+        self.periodFullLabel = periodFullLabel
+        self.isAnnual = isAnnual
+    }
+
+    private var topSlices: [SliceItem] {
+        let sorted = items.sorted { $0.total > $1.total }
+        let top = sorted.prefix(5).map { item in
+            SliceItem(
+                id: item.id.uuidString,
+                name: item.category.name,
+                iconSymbol: item.category.iconSymbol,
+                colorHex: item.category.colorHex,
+                total: item.total,
+                percentage: item.percentage,
+                isOthers: false
+            )
+        }
+        let rest = sorted.dropFirst(5)
+        guard !rest.isEmpty else { return top }
+
+        let othersTotal = rest.reduce(0.0) { $0 + $1.total }
+        let othersPercentage = rest.reduce(0.0) { $0 + $1.percentage }
+        return top + [
+            SliceItem(
+                id: "__others__",
+                name: "Outros (\(rest.count))",
+                iconSymbol: "ellipsis.circle.fill",
+                colorHex: "#64748B",
+                total: othersTotal,
+                percentage: othersPercentage,
+                isOthers: true
+            )
+        ]
+    }
+
+    private var remainingCategories: [CategorySpendSummary] {
+        Array(items.sorted { $0.total > $1.total }.dropFirst(5))
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Despesas por Categoria")
+                        .font(.headline)
+                    Text(isAnnual ? "Distribuição projetada até \(periodFullLabel)" : "Top categorias em \(periodFullLabel)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !remainingCategories.isEmpty {
+                    Button {
+                        showOthersPopover.toggle()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("Ver todas (\(items.count))")
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .bold))
+                        }
+                    }
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 8, verticalPadding: 4, horizontalPadding: 9))
+                    .popover(isPresented: $showOthersPopover, arrowEdge: .bottom) {
+                        othersCategoriesPopoverContent
+                    }
+                }
+            }
+
+            if items.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "chart.pie")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.secondary.opacity(0.7))
+                    Text(isAnnual ? "Nenhuma despesa registrada ou projetada neste ano." : "Nenhuma despesa registrada neste mês.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 224)
+            } else {
+                HStack(alignment: .center, spacing: 20) {
+                    ZStack {
+                        Chart(topSlices) { item in
+                            SectorMark(
+                                angle: .value("Total", item.total),
+                                innerRadius: .ratio(0.74),
+                                angularInset: 2.0
+                            )
+                            .cornerRadius(5)
+                            .foregroundStyle(Color(hex: item.colorHex))
+                        }
+                        .frame(width: 194, height: 194)
+
+                        VStack(spacing: 2) {
+                            Text("Total")
+                                .font(.system(size: 10.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text(BRLFormatters.currency(totalExpense))
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                                .numericCurrencyTransition(value: totalExpense)
+                            Text("\(items.count) categ.")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(width: 108)
+                    }
+
+                    VStack(alignment: .leading, spacing: 9) {
+                        ForEach(topSlices) { item in
+                            if item.isOthers {
+                                Button {
+                                    showOthersPopover = true
+                                } label: {
+                                    categoryLegendRow(item, interactive: true)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Clique para detalhar as \(remainingCategories.count) categorias agrupadas em Outros")
+                            } else {
+                                categoryLegendRow(item, interactive: false)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 224)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 290, alignment: .topLeading)
+        .bentoCard(padding: 18)
+    }
+
+    @ViewBuilder
+    private func categoryLegendRow(_ item: SliceItem, interactive: Bool) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Color(hex: item.colorHex))
+                .frame(width: 9, height: 9)
+            Image(systemName: item.iconSymbol)
+                .font(.system(size: 11.5))
+                .foregroundStyle(Color(hex: item.colorHex))
+                .frame(width: 15)
+            Text(item.name)
+                .font(.system(size: 12, weight: interactive ? .semibold : .medium))
+                .foregroundStyle(interactive ? FinSenseTheme.cyan : .primary)
+                .lineLimit(1)
+            if interactive {
+                Image(systemName: "arrow.up.right.square")
+                    .font(.system(size: 10))
+                    .foregroundStyle(FinSenseTheme.cyan)
+            }
+            Spacer(minLength: 4)
+            Text(String(format: "%.1f%%", item.percentage))
+                .font(.system(size: 11, weight: .regular, design: .rounded))
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            Text(BRLFormatters.currency(item.total))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .frame(minWidth: 74, alignment: .trailing)
+        }
+        .padding(.horizontal, interactive ? 6 : 2)
+        .padding(.vertical, interactive ? 4 : 2)
+        .background(
+            interactive
+                ? RoundedRectangle(cornerRadius: 7, style: .continuous).fill(FinSenseTheme.glassFill(for: colorScheme))
+                : nil
+        )
+    }
+
+    private var othersCategoriesPopoverContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Demais Categorias (\(remainingCategories.count))")
+                    .font(.headline)
+                Spacer()
+                Text(BRLFormatters.currency(remainingCategories.reduce(0.0) { $0 + $1.total }))
+                    .font(.subheadline.bold())
+                    .monospacedDigit()
+            }
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(remainingCategories) { item in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(Color(hex: item.category.colorHex))
+                                .frame(width: 9, height: 9)
+                            Image(systemName: item.category.iconSymbol)
+                                .font(.caption)
+                                .foregroundStyle(Color(hex: item.category.colorHex))
+                                .frame(width: 16)
+                            Text(item.category.name)
+                                .font(.caption.weight(.medium))
+                            Spacer()
+                            Text(String(format: "%.1f%%", item.percentage))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                            Text(BRLFormatters.currency(item.total))
+                                .font(.caption.bold())
+                                .monospacedDigit()
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: 260)
+        }
+        .padding(14)
+        .frame(width: 340)
+    }
+}
 
 public struct MonthlyCashFlowChartView: View {
     public let points: [MonthlyCashFlowPoint]
