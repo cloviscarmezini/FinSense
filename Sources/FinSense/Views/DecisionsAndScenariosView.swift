@@ -75,6 +75,7 @@ public struct DecisionsAndScenariosView: View {
                     FIRESimulatorView(store: store)
                 }
             }
+            .animation(.snappy(duration: 0.24), value: store.selectedDecisionsTab)
             .padding(24)
         }
         .sheet(isPresented: $showSinkingFundEditor) {
@@ -111,7 +112,7 @@ public struct DecisionsAndScenariosView: View {
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, minHeight: 240)
-            .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+            .bentoCard(padding: 18)
         } else {
             let chosen = contracts.first(where: { $0.id == selectedContractId }) ?? contracts[0]
             let balance = store.currentOutstandingBalance(for: chosen)
@@ -184,8 +185,7 @@ public struct DecisionsAndScenariosView: View {
 
                     Spacer()
                 }
-                .padding(16)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 18)
 
                 // Banner Veredito + Break-even
                 let verdictColor: Color = {
@@ -292,8 +292,7 @@ public struct DecisionsAndScenariosView: View {
                     .frame(height: 240)
                     .chartLegend(position: .top)
                 }
-                .padding(16)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 18)
             }
         }
     }
@@ -368,8 +367,7 @@ public struct DecisionsAndScenariosView: View {
                     } label: {
                         Label("Salvar Cenário", systemImage: "bookmark.fill")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#6366F1"))
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
                 }
 
                 if !store.whatIfScenarios.isEmpty {

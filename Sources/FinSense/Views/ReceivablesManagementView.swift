@@ -3,6 +3,7 @@ import SwiftUI
 /// Tela dedicada à Gestão de Reembolsos e "A Receber" (Feature 6), agrupada por devedor.
 public struct ReceivablesManagementView: View {
     @ObservedObject public var store: FinancialDataStore
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var includeSettled: Bool = false
     @State private var settlingTransaction: FinancialTransaction? = nil
@@ -37,12 +38,10 @@ public struct ReceivablesManagementView: View {
                         .foregroundStyle(.secondary)
                     Text(BRLFormatters.currency(pendingTotal))
                         .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundStyle(pendingTotal > 0 ? Color(hex: "#F59E0B") : Color(hex: "#10B981"))
-                        .monospacedDigit()
+                        .foregroundStyle(pendingTotal > 0 ? FinSenseTheme.amber : FinSenseTheme.emerald)
+                        .numericCurrencyTransition(value: pendingTotal)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 12, cornerRadius: 11)
             }
 
             if groups.isEmpty {
@@ -59,7 +58,7 @@ public struct ReceivablesManagementView: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 20)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 14) {
@@ -129,17 +128,14 @@ public struct ReceivablesManagementView: View {
                                             } label: {
                                                 Label("Registrar Recebimento", systemImage: "checkmark.circle.fill")
                                             }
-                                            .buttonStyle(.borderedProminent)
-                                            .tint(Color(hex: "#10B981"))
-                                            .controlSize(.small)
+                                            .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.emerald, cornerRadius: 8, verticalPadding: 5, horizontalPadding: 10))
                                         }
                                     }
                                     .padding(10)
-                                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .windowBackgroundColor)))
+                                    .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(FinSenseTheme.nestedSurface(for: colorScheme)))
                                 }
                             }
-                            .padding(14)
-                            .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+                            .bentoCard(padding: 16, cornerRadius: 14)
                         }
                     }
                 }

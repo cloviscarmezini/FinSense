@@ -6,6 +6,7 @@ import AppKit
 public struct CreditCardsView: View {
     @ObservedObject public var store: FinancialDataStore
     @ObservedObject public var llmService: LocalLLMService
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var selectedMonthKey: Int = {
         let cal = Calendar.current
@@ -59,7 +60,6 @@ public struct CreditCardsView: View {
             }
             .padding(24)
         }
-        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             syncSelectedCardAndMonth()
         }
@@ -176,18 +176,16 @@ public struct CreditCardsView: View {
                     showNewPurchaseSheet = true
                 } label: {
                     Label("Nova Compra no Cartão", systemImage: "cart.badge.plus")
-                        .font(.subheadline.weight(.semibold))
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
             }
 
             Button {
                 showCreateCardSheet = true
             } label: {
-                Label("Novo Cartão", systemImage: "plus.circle.fill")
-                    .font(.subheadline.weight(.semibold))
+                Label("Novo Cartão", systemImage: "plus.circle")
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(BentoGlassButtonStyle())
         }
     }
 
@@ -197,7 +195,7 @@ public struct CreditCardsView: View {
         VStack(spacing: 16) {
             Image(systemName: "creditcard.trianglebadge.exclamationmark")
                 .font(.system(size: 46))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(FinSenseTheme.indigo)
 
             Text("Nenhum Cartão de Crédito Cadastrado")
                 .font(.title3.bold())
@@ -211,23 +209,13 @@ public struct CreditCardsView: View {
             Button {
                 showCreateCardSheet = true
             } label: {
-                Label("Cadastrar Primeiro Cartão", systemImage: "plus.circle.fill")
-                    .padding(.horizontal, 8)
+                Label("Cadastrar Primeiro Cartão", systemImage: "plus")
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo, verticalPadding: 9, horizontalPadding: 16))
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 52)
-        .padding(.horizontal, 24)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .padding(.vertical, 36)
+        .bentoCard(padding: 24, cornerRadius: 16)
     }
 
     // MARK: - Card Selector Strip
@@ -241,8 +229,10 @@ public struct CreditCardsView: View {
                     let available = store.availableLimit(for: card.id)
 
                     Button {
-                        store.selectedCreditCardIdForDetail = card.id
-                        syncSelectedCardAndMonth(resetMonthIfNeeded: true)
+                        withAnimation(.snappy(duration: 0.22)) {
+                            store.selectedCreditCardIdForDetail = card.id
+                            syncSelectedCardAndMonth(resetMonthIfNeeded: true)
+                        }
                     } label: {
                         HStack(spacing: 12) {
                             AccountAvatarView(
@@ -277,7 +267,8 @@ public struct CreditCardsView: View {
 
                                     Text("Disp: \(BRLFormatters.currency(available))")
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(used > card.totalLimit ? .red : .secondary)
+                                        .foregroundStyle(used > card.totalLimit ? FinSenseTheme.coral : .secondary)
+                                        .monospacedDigit()
                                 }
                             }
                         }
@@ -285,11 +276,11 @@ public struct CreditCardsView: View {
                         .padding(.vertical, 10)
                         .background(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(isSelected ? Color(hex: card.colorHex).opacity(0.12) : Color(nsColor: .controlBackgroundColor))
+                                .fill(isSelected ? Color(hex: card.colorHex).opacity(0.12) : FinSenseTheme.elevatedSurface(for: colorScheme))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .stroke(isSelected ? Color(hex: card.colorHex) : Color.primary.opacity(0.08), lineWidth: isSelected ? 2 : 1)
+                                .strokeBorder(isSelected ? Color(hex: card.colorHex) : FinSenseTheme.cardBorder(for: colorScheme), lineWidth: isSelected ? 1.5 : FinSenseTheme.hairlineWidth)
                         )
                     }
                     .buttonStyle(.plain)
@@ -388,21 +379,13 @@ public struct CreditCardsView: View {
 
                 HStack(spacing: 18) {
                     limitMetricPill(title: "Limite Total", value: BRLFormatters.currency(card.totalLimit), color: .primary)
-                    limitMetricPill(title: "Limite Utilizado (Faturas em Aberto)", value: BRLFormatters.currency(used), color: used > 0 ? .orange : .secondary)
-                    limitMetricPill(title: "Limite Disponível", value: BRLFormatters.currency(available), color: available > 0 ? .green : .red)
+                    limitMetricPill(title: "Limite Utilizado (Faturas em Aberto)", value: BRLFormatters.currency(used), color: used > 0 ? FinSenseTheme.amber : .secondary)
+                    limitMetricPill(title: "Limite Disponível", value: BRLFormatters.currency(available), color: available > 0 ? FinSenseTheme.emerald : FinSenseTheme.coral)
                 }
                 .padding(.top, 4)
             }
         }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color(hex: card.colorHex).opacity(0.28), lineWidth: 1.2)
-        )
+        .bentoCard(padding: 18, cornerRadius: 16, accent: Color(hex: card.colorHex), isHighlighted: true)
     }
 
     private func limitMetricPill(title: String, value: String, color: Color) -> some View {
@@ -413,12 +396,13 @@ public struct CreditCardsView: View {
             Text(value)
                 .font(.system(size: 16, weight: .bold, design: .rounded))
                 .foregroundStyle(color)
+                .numericCurrencyTransition(value: value)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
+        .padding(11)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.65))
+                .fill(FinSenseTheme.nestedSurface(for: colorScheme))
         )
     }
 
@@ -444,7 +428,9 @@ public struct CreditCardsView: View {
                             let statusColor = Color(hex: itemSummary?.status.colorHex ?? CreditCardInvoiceStatus.open.colorHex)
 
                             Button {
-                                selectedMonthKey = item.key
+                                withAnimation(.snappy(duration: 0.22)) {
+                                    selectedMonthKey = item.key
+                                }
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack(spacing: 5) {
@@ -464,11 +450,11 @@ public struct CreditCardsView: View {
                                 .padding(.vertical, 8)
                                 .background(
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(isSelected ? statusColor.opacity(0.14) : Color(nsColor: .controlBackgroundColor))
+                                        .fill(isSelected ? statusColor.opacity(0.14) : FinSenseTheme.nestedSurface(for: colorScheme))
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .stroke(isSelected ? statusColor : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.6 : 1)
+                                        .strokeBorder(isSelected ? statusColor : FinSenseTheme.cardBorder(for: colorScheme), lineWidth: isSelected ? 1.4 : FinSenseTheme.hairlineWidth)
                                 )
                             }
                             .buttonStyle(.plain)
@@ -526,8 +512,9 @@ public struct CreditCardsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text(BRLFormatters.currency(summary.totalAmount))
-                        .font(.system(size: 24, weight: .bold, design: .rounded))
-                        .foregroundStyle(summary.status == .paid ? .green : .primary)
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
+                        .foregroundStyle(summary.status == .paid ? FinSenseTheme.emerald : .primary)
+                        .numericCurrencyTransition(value: summary.totalAmount)
                 }
 
                 if summary.status != .paid && summary.totalAmount > 0.001 {
@@ -535,24 +522,20 @@ public struct CreditCardsView: View {
                         payingSummary = summary
                     } label: {
                         Label("Pagar Fatura", systemImage: "checkmark.circle.fill")
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.green)
-                    .controlSize(.large)
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.emerald, cornerRadius: 10, verticalPadding: 9, horizontalPadding: 16))
                 } else if summary.status == .paid {
                     Label("Fatura Quitada", systemImage: "checkmark.seal.fill")
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.14)))
-                        .foregroundStyle(.green)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(FinSenseTheme.emerald.opacity(0.14)))
+                        .foregroundStyle(FinSenseTheme.emerald)
                 }
             }
 
             Divider()
+                .opacity(0.45)
 
             // Transactions in this cycle
             if summary.transactions.isEmpty {
@@ -566,7 +549,7 @@ public struct CreditCardsView: View {
                     Button("Lançar Compra neste Cartão") {
                         showNewPurchaseSheet = true
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(BentoGlassButtonStyle())
                 }
                 .padding(.vertical, 16)
             } else {
@@ -586,15 +569,7 @@ public struct CreditCardsView: View {
                 }
             }
         }
-        .padding(18)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-        )
+        .bentoCard(padding: 18, cornerRadius: 16)
     }
 
     private func invoiceTransactionRow(_ tx: FinancialTransaction) -> some View {

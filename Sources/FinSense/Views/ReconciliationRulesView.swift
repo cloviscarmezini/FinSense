@@ -31,9 +31,9 @@ public struct ReconciliationRulesView: View {
                 Button {
                     showCreateSheet = true
                 } label: {
-                    Label("Nova Regra", systemImage: "plus.circle.fill")
+                    Label("Nova Regra", systemImage: "plus")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
             }
 
             // Sandbox rápido de teste
@@ -61,8 +61,7 @@ public struct ReconciliationRulesView: View {
                     }
                 }
             }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+            .bentoCard(padding: 12, cornerRadius: 11)
 
             if sortedRules.isEmpty {
                 VStack(spacing: 10) {
@@ -76,8 +75,7 @@ public struct ReconciliationRulesView: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(32)
-                .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 28, cornerRadius: 14)
 
                 Spacer(minLength: 0)
             } else {
@@ -173,8 +171,7 @@ public struct ReconciliationRulesView: View {
             }
             .buttonStyle(.borderless)
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+        .bentoCard(padding: 12, cornerRadius: 12)
         .opacity(rule.isEnabled ? 1.0 : 0.55)
     }
 }

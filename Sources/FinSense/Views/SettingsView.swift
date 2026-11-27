@@ -1643,14 +1643,12 @@ public struct LLMConfigurationSectionView: View {
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background(Capsule().fill(Color(hex: "#6366F1").opacity(0.12)))
-                            .foregroundStyle(Color(hex: "#6366F1"))
+                            .background(Capsule().fill(FinSenseTheme.indigo.opacity(0.12)))
+                            .foregroundStyle(FinSenseTheme.indigo)
                             .help("O FinSense pré-aquece o modelo da Apple Intelligence automaticamente em segundo plano ao abrir o app e a conversa, dispensando ação manual.")
                     }
                 }
-                .padding(20)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                .bentoCard(padding: 20)
 
                 // Card 2: Modo "Pensando" & Ajustes de Inferência
                 VStack(alignment: .leading, spacing: 16) {
@@ -1735,9 +1733,7 @@ public struct LLMConfigurationSectionView: View {
                         Spacer()
                     }
                 }
-                .padding(20)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                .bentoCard(padding: 20)
 
                 // Card 3: Ferramentas Nativas Conectadas ao Banco Local
                 VStack(alignment: .leading, spacing: 12) {
@@ -1771,9 +1767,7 @@ public struct LLMConfigurationSectionView: View {
                         .padding(.vertical, 2)
                     }
                 }
-                .padding(20)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08), lineWidth: 1))
+                .bentoCard(padding: 20)
             }
         }
         .onAppear {
@@ -1841,15 +1835,15 @@ public struct AccountsManagementSectionView: View {
                         Button("Adicionar Primeira Conta") {
                             showCreateAccountSheet = true
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
                         Button("Cadastrar Cartão de Crédito") {
                             showCreateCardSheet = true
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(BentoGlassButtonStyle())
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 240)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 20)
 
                 Spacer(minLength: 0)
             } else {
@@ -1894,24 +1888,22 @@ public struct AccountsManagementSectionView: View {
                                                 } label: {
                                                     Image(systemName: "pencil")
                                                 }
-                                                .buttonStyle(.bordered)
-                                                .controlSize(.small)
+                                                .buttonStyle(BentoGlassButtonStyle(cornerRadius: 7, verticalPadding: 4, horizontalPadding: 8))
 
                                                 Button(role: .destructive) {
                                                     accountPendingDeletion = account
                                                 } label: {
                                                     Image(systemName: "trash")
                                                 }
-                                                .buttonStyle(.bordered)
-                                                .controlSize(.small)
+                                                .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.coral, cornerRadius: 7, verticalPadding: 4, horizontalPadding: 8))
                                             }
                                         }
                                     }
-                                    .padding(16)
-                                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 14)
-                                            .stroke(isDragging ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDragging ? 2 : 1)
+                                    .bentoCard(
+                                        padding: 16,
+                                        cornerRadius: 14,
+                                        accent: isDragging ? FinSenseTheme.indigo : nil,
+                                        isHighlighted: isDragging
                                     )
                                     .opacity(isDragging ? 0.65 : 1.0)
                                     .onDrag {
@@ -1964,10 +1956,9 @@ public struct AccountsManagementSectionView: View {
                                     Button("Adicionar Cartão") {
                                         showCreateCardSheet = true
                                     }
-                                    .buttonStyle(.bordered)
+                                    .buttonStyle(BentoGlassButtonStyle())
                                 }
-                                .padding(14)
-                                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                                .bentoCard(padding: 16, cornerRadius: 14)
                             } else {
                                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)], spacing: 16) {
                                     ForEach(store.creditCards) { card in

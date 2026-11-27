@@ -163,7 +163,7 @@ public struct FIRESimulatorView: View {
                         } label: {
                             Label("Salvar Cenário", systemImage: "square.and.arrow.down")
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
                     }
 
                     if let msg = macroStatusMessage {
@@ -172,9 +172,8 @@ public struct FIRESimulatorView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .padding(16)
                 .frame(width: 410)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 18)
 
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Trajetória Patrimonial (Poder de Compra Real Hoje)")
@@ -236,9 +235,8 @@ public struct FIRESimulatorView: View {
                         }
                     }
                 }
-                .padding(16)
                 .frame(maxWidth: .infinity)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 18)
             }
         }
         .onAppear {

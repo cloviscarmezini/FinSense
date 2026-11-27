@@ -42,8 +42,7 @@ public struct InsightsCenterView: View {
                     } label: {
                         Label("Treinar & Analisar Agora", systemImage: "brain.filled.head.profile")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#6366F1"))
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
                 }
 
                 // Painel do Motor ML
@@ -88,7 +87,7 @@ public struct InsightsCenterView: View {
                             .frame(maxWidth: 520)
                     }
                     .frame(maxWidth: .infinity, minHeight: 200)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                    .bentoCard(padding: 20)
                 } else {
                     LazyVStack(spacing: 12) {
                         ForEach(filteredInsights) { insight in
@@ -224,25 +223,21 @@ public struct InsightsCenterView: View {
                     } label: {
                         Label("Útil", systemImage: "hand.thumbsup.fill")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#10B981"))
-                    .controlSize(.small)
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.emerald, cornerRadius: 8, verticalPadding: 4.5, horizontalPadding: 10))
 
                     Button {
                         store.submitInsightFeedback(.ignored, forInsightId: insight.id)
                     } label: {
                         Label("Ignorar", systemImage: "eye.slash")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 8, verticalPadding: 4.5, horizontalPadding: 10))
 
                     Button {
                         store.submitInsightFeedback(.dismissed, forInsightId: insight.id)
                     } label: {
                         Label("Dispensar", systemImage: "xmark")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 8, verticalPadding: 4.5, horizontalPadding: 10))
                 } else {
                     Text("Feedback registrado: \(insight.feedback.title)")
                         .font(.caption.bold())
@@ -252,11 +247,11 @@ public struct InsightsCenterView: View {
                 Spacer()
             }
         }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(sevColor.opacity(insight.feedback == .pending ? 0.35 : 0.12), lineWidth: 1)
+        .bentoCard(
+            padding: 16,
+            cornerRadius: 15,
+            accent: insight.feedback == .pending ? sevColor : nil,
+            isHighlighted: insight.feedback == .pending
         )
     }
 
@@ -313,8 +308,7 @@ public struct InsightsCenterView: View {
                     } label: {
                         Label("Concluir Fechamento", systemImage: "checkmark.circle.fill")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#10B981"))
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.emerald))
                 }
             } else if !review.notes.isEmpty {
                 Text("Notas: \(review.notes)")
@@ -322,14 +316,11 @@ public struct InsightsCenterView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(Color(hex: isEditable ? "#6366F1" : "#10B981").opacity(0.06))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color(hex: isEditable ? "#6366F1" : "#10B981").opacity(0.30), lineWidth: 1)
+        .bentoCard(
+            padding: 16,
+            cornerRadius: 15,
+            accent: isEditable ? FinSenseTheme.indigo : FinSenseTheme.emerald,
+            isHighlighted: isEditable
         )
     }
 
@@ -346,7 +337,6 @@ public struct InsightsCenterView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+        .bentoCard(padding: 10, cornerRadius: 10)
     }
 }

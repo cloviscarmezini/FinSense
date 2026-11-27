@@ -3,6 +3,7 @@ import Charts
 
 public struct NetWorthDashboardView: View {
     @ObservedObject public var store: FinancialDataStore
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var showCreateAssetSheet: Bool = false
     @State private var editingAsset: AssetItem? = nil
@@ -34,8 +35,7 @@ public struct NetWorthDashboardView: View {
                     } label: {
                         Label("Registrar Snapshot do Mês", systemImage: "camera.aperture")
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#6366F1"))
+                    .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.indigo))
                 }
 
                 // KPIs Estratégicos
@@ -114,9 +114,8 @@ public struct NetWorthDashboardView: View {
                             .frame(height: 220)
                         }
                     }
-                    .padding(16)
                     .frame(maxWidth: .infinity)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                    .bentoCard(padding: 18)
 
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Composição de Ativos")
@@ -142,9 +141,8 @@ public struct NetWorthDashboardView: View {
                             .frame(height: 220)
                         }
                     }
-                    .padding(16)
                     .frame(width: 380)
-                    .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                    .bentoCard(padding: 18)
                 }
 
                 // Seção de Bens Patrimoniais Não-Bancários (Imóveis, Veículos, FGTS, Previdência)
@@ -163,7 +161,7 @@ public struct NetWorthDashboardView: View {
                         } label: {
                             Label("Adicionar Bem/Ativo", systemImage: "plus")
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.indigo))
                     }
 
                     if overview.assetEquities.isEmpty {
@@ -218,13 +216,12 @@ public struct NetWorthDashboardView: View {
                                 }
                                 .buttonStyle(.borderless)
                             }
-                            .padding(10)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor)))
+                            .padding(11)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(FinSenseTheme.nestedSurface(for: colorScheme)))
                         }
                     }
                 }
-                .padding(16)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 18)
 
                 // Seção de Fontes de Renda Estruturadas
                 VStack(alignment: .leading, spacing: 12) {
@@ -242,7 +239,7 @@ public struct NetWorthDashboardView: View {
                         } label: {
                             Label("Adicionar Fonte de Renda", systemImage: "plus")
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.indigo))
                     }
 
                     if store.incomeSources.isEmpty {
@@ -277,13 +274,12 @@ public struct NetWorthDashboardView: View {
                                 }
                                 .buttonStyle(.borderless)
                             }
-                            .padding(10)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .windowBackgroundColor)))
+                            .padding(11)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(FinSenseTheme.nestedSurface(for: colorScheme)))
                         }
                     }
                 }
-                .padding(16)
-                .background(RoundedRectangle(cornerRadius: 14).fill(Color(nsColor: .controlBackgroundColor)))
+                .bentoCard(padding: 18)
             }
             .padding(24)
         }
