@@ -8,6 +8,8 @@ public struct MainContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("is_patrimony_hidden") private var isPatrimonyHidden: Bool = false
     @AppStorage("sidebar_decisions_expanded") private var isDecisionsExpanded: Bool = false
+    @State private var hoveredDestination: SidebarDestination? = nil
+    @State private var hoveredDecisionsTab: DecisionsTab? = nil
 
     public init(store: FinancialDataStore, llmService: LocalLLMService, syncService: CloudSyncService) {
         self.store = store
@@ -17,323 +19,240 @@ public struct MainContentView: View {
 
     public var body: some View {
         NavigationSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                // App Brand Header
-                HStack(spacing: 10) {
-                    if let appIcon = FinSenseApp.loadAppIcon() {
-                        Image(nsImage: appIcon)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .frame(width: 36, height: 36)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .shadow(color: .black.opacity(0.12), radius: 2, y: 1)
-                    } else {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color(hex: "#EC7000"), Color(hex: "#6366F1")],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
+                    // App Brand Header
+                    HStack(spacing: 10) {
+                        if let appIcon = FinSenseApp.loadAppIcon() {
+                            Image(nsImage: appIcon)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                                .frame(width: 32, height: 32)
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+                        } else {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color(hex: "#EC7000"), Color(hex: "#6366F1")],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
                                     )
-                                )
-                                .frame(width: 34, height: 34)
-                            Image(systemName: "brazilianrealsign.circle.fill")
-                                .font(.system(size: 18, weight: .bold))
-                                .foregroundStyle(.white)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 6) {
-                            Text("FinSense")
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
-                            if store.persistenceEnvironment.isDebug {
-                                Text(store.persistenceEnvironment.badgeTitle)
-                                    .font(.system(size: 9, weight: .heavy, design: .monospaced))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(Capsule().fill(Color(hex: "#F59E0B").opacity(0.18)))
-                                    .foregroundStyle(Color(hex: "#F59E0B"))
-                                    .help("Ambiente de Desenvolvimento isolado: \(store.databaseFileURL.path)")
+                                    .frame(width: 32, height: 32)
+                                Image(systemName: "brazilianrealsign.circle.fill")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundStyle(.white)
                             }
-                            SyncStatusIndicatorView(syncService: syncService)
                         }
+
+                        Text("FinSense")
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .foregroundStyle(colorScheme == .dark ? .white : .primary)
+
+                        SyncStatusIndicatorView(syncService: syncService)
+
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+
+                    Rectangle()
+                        .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06))
+                        .frame(height: 1)
+
+                    // Redesigned Clean Sidebar Navigation (Sem poluição de sub-itens fixos)
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 18) {
+                            sidebarGroup(title: "Visão Geral & Fluxo") {
+                                sidebarItem(.dashboard)
+                                sidebarItem(.transactions) {
+                                    store.selectedTransactionsSubmenu = .all
+                                }
+                                sidebarItem(.investments)
+                                sidebarItem(.creditCards)
+                            }
+
+                            sidebarGroup(title: "Passivos & Contratos") {
+                                sidebarItem(.loans)
+                                sidebarItem(.financings)
+                                sidebarItem(.debts)
+                            }
+
+                            sidebarGroup(title: "Planejamento & Inteligência") {
+                                sidebarItem(.netWorth)
+
+                                // Decisões & Cenários (com expansão opcional para módulos internos)
+                                HStack(spacing: 4) {
+                                    sidebarItemButton(
+                                        destination: .decisions,
+                                        title: SidebarDestination.decisions.title,
+                                        icon: SidebarDestination.decisions.icon
+                                    )
+
+                                    Button {
+                                        withAnimation(.snappy(duration: 0.18)) {
+                                            isDecisionsExpanded.toggle()
+                                        }
+                                    } label: {
+                                        Image(systemName: isDecisionsExpanded ? "chevron.down" : "chevron.right")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.5) : Color.secondary)
+                                            .frame(width: 22, height: 22)
+                                            .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(isDecisionsExpanded ? "Recolher módulos" : "Expandir módulos")
+                                }
+
+                                if isDecisionsExpanded {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        ForEach(DecisionsTab.allCases) { tab in
+                                            let isTabActive = store.selectedDestination == .decisions && store.selectedDecisionsTab == tab
+                                            let isTabHovered = hoveredDecisionsTab == tab
+                                            Button {
+                                                store.selectedDestination = .decisions
+                                                store.selectedDecisionsTab = tab
+                                            } label: {
+                                                HStack(spacing: 8) {
+                                                    Image(systemName: tab.icon)
+                                                        .font(.system(size: 11.5))
+                                                        .foregroundStyle(
+                                                            isTabActive
+                                                                ? FinSenseTheme.indigo
+                                                                : (colorScheme == .dark ? Color.white.opacity(0.5) : Color.secondary)
+                                                        )
+                                                        .frame(width: 16)
+                                                    Text(tab.rawValue)
+                                                        .font(.system(size: 12, weight: isTabActive ? .semibold : .regular))
+                                                        .foregroundStyle(
+                                                            isTabActive
+                                                                ? (colorScheme == .dark ? .white : .primary)
+                                                                : (colorScheme == .dark ? Color.white.opacity(0.62) : Color.secondary)
+                                                        )
+                                                    Spacer()
+                                                }
+                                                .padding(.leading, 22)
+                                                .padding(.trailing, 8)
+                                                .padding(.vertical, 5)
+                                                .background(
+                                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                                        .fill(
+                                                            isTabActive
+                                                                ? (colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.055))
+                                                                : (isTabHovered ? (colorScheme == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.03)) : Color.clear)
+                                                        )
+                                                )
+                                                .contentShape(Rectangle())
+                                            }
+                                            .buttonStyle(.plain)
+                                            .onHover { hovering in
+                                                hoveredDecisionsTab = hovering ? tab : (hoveredDecisionsTab == tab ? nil : hoveredDecisionsTab)
+                                            }
+                                        }
+                                    }
+                                }
+
+                                sidebarItem(
+                                    .insights,
+                                    badgeCount: store.activeUnreviewedInsightsCount
+                                )
+                            }
+
+                            sidebarGroup(title: "Sistema") {
+                                sidebarItem(.settings)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 14)
                     }
 
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
+                    Rectangle()
+                        .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06))
+                        .frame(height: 1)
 
-                Divider()
-
-                // Sidebar Menu Items
-                List(selection: $store.selectedDestination) {
-                    Section("Visão Geral & Fluxo") {
-                        sidebarRow(.dashboard)
+                    // Rodapé Compacto: Card Saldo Consolidado (#161618) + Chat IA Local Índigo Escuro/Glass
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Saldo Consolidado")
+                                    .font(.caption2)
+                                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.55) : .secondary)
+                                if isPatrimonyHidden {
+                                    Text("Oculto")
+                                        .font(.system(size: 15.5, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))
+                                        .font(.system(size: 15.5, weight: .bold, design: .rounded))
+                                        .foregroundStyle(store.totalConsolidatedPatrimonyNow >= 0 ? FinSenseTheme.emerald : FinSenseTheme.coral)
+                                        .numericCurrencyTransition(value: store.totalConsolidatedPatrimonyNow)
+                                }
+                            }
+                            Spacer()
+                            Button {
+                                isPatrimonyHidden.toggle()
+                            } label: {
+                                Image(systemName: isPatrimonyHidden ? "eye.slash.fill" : "eye.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.55) : .secondary)
+                                    .padding(4)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help(isPatrimonyHidden ? "Exibir valores de patrimônio" : "Ocultar valores de patrimônio (privacidade)")
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(colorScheme == .dark ? Color(hex: "#161618") : FinSenseTheme.elevatedSurface(for: colorScheme))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06), lineWidth: 0.75)
+                        )
 
                         Button {
-                            store.selectedDestination = .transactions
-                            store.selectedTransactionsSubmenu = .all
+                            store.openAIChat()
                         } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: SidebarDestination.transactions.icon)
-                                    .foregroundStyle(
-                                        store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == .all
-                                            ? Color.accentColor
-                                            : .primary
-                                    )
-                                Text(SidebarDestination.transactions.title)
-                                    .font(.system(size: 13.5, weight: .medium))
+                            HStack(spacing: 7) {
+                                Image(systemName: "sparkles.bubble.fill")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Color(hex: "#A5B4FC"))
+                                Text("Chat IA Local")
+                                    .font(.system(size: 12.5, weight: .semibold))
+                                    .foregroundStyle(colorScheme == .dark ? .white : Color(hex: "#312E81"))
                                 Spacer()
+                                Text("⌘K")
+                                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.55) : .secondary)
                             }
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .fill(Color(hex: "#4F46E5").opacity(colorScheme == .dark ? 0.24 : 0.14))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                    .strokeBorder(Color(hex: "#4F46E5").opacity(colorScheme == .dark ? 0.45 : 0.30), lineWidth: 0.75)
+                            )
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .tag(SidebarDestination.transactions)
-
-                        ForEach([TransactionsSubmenu.expenses, TransactionsSubmenu.incomes, TransactionsSubmenu.receivables]) { sub in
-                            Button {
-                                store.selectedDestination = .transactions
-                                store.selectedTransactionsSubmenu = sub
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: sub.icon)
-                                        .font(.caption)
-                                        .foregroundStyle(
-                                            store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == sub
-                                                ? (sub == .expenses ? Color(hex: "#EF4444") : (sub == .receivables ? Color(hex: "#F59E0B") : Color(hex: "#10B981")))
-                                                : .secondary
-                                        )
-                                        .frame(width: 18)
-                                    Text(sub.title)
-                                        .font(.caption)
-                                        .fontWeight(
-                                            store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == sub
-                                                ? .semibold
-                                                : .regular
-                                        )
-                                        .foregroundStyle(
-                                            store.selectedDestination == .transactions && store.selectedTransactionsSubmenu == sub
-                                                ? Color.primary
-                                                : .secondary
-                                        )
-                                    Spacer()
-                                }
-                                .padding(.leading, 18)
-                                .padding(.vertical, 2)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        sidebarRow(.investments)
-                        sidebarRow(.creditCards)
                     }
-
-                    Section("Passivos & Contratos") {
-                        sidebarRow(.loans)
-                        sidebarRow(.financings)
-                        sidebarRow(.debts)
-                    }
-
-                    Section("Planejamento & Inteligência") {
-                        sidebarRow(.netWorth)
-
-                        HStack(spacing: 6) {
-                            Button {
-                                store.selectedDestination = .decisions
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: SidebarDestination.decisions.icon)
-                                        .foregroundStyle(store.selectedDestination == .decisions ? Color.accentColor : .primary)
-                                    Text(SidebarDestination.decisions.title)
-                                        .font(.system(size: 13.5, weight: .medium))
-                                    Spacer()
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.16)) {
-                                    isDecisionsExpanded.toggle()
-                                }
-                            } label: {
-                                Image(systemName: isDecisionsExpanded ? "chevron.down" : "chevron.right")
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 20, height: 20)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .help(isDecisionsExpanded ? "Recolher módulos de Decisões & Cenários" : "Expandir módulos de Decisões & Cenários")
-                        }
-                        .tag(SidebarDestination.decisions)
-
-                        if isDecisionsExpanded {
-                            ForEach(DecisionsTab.allCases) { tab in
-                                Button {
-                                    store.selectedDestination = .decisions
-                                    store.selectedDecisionsTab = tab
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: tab.icon)
-                                            .font(.caption)
-                                            .foregroundStyle(
-                                                store.selectedDestination == .decisions && store.selectedDecisionsTab == tab
-                                                    ? Color.accentColor
-                                                    : .secondary
-                                            )
-                                            .frame(width: 18)
-                                        Text(tab.rawValue)
-                                            .font(.caption)
-                                            .fontWeight(
-                                                store.selectedDestination == .decisions && store.selectedDecisionsTab == tab
-                                                    ? .semibold
-                                                    : .regular
-                                            )
-                                            .foregroundStyle(
-                                                store.selectedDestination == .decisions && store.selectedDecisionsTab == tab
-                                                    ? Color.primary
-                                                    : .secondary
-                                            )
-                                        Spacer()
-                                    }
-                                    .padding(.leading, 18)
-                                    .padding(.vertical, 2)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-
-                        NavigationLink(value: SidebarDestination.insights) {
-                            HStack {
-                                Label {
-                                    Text(SidebarDestination.insights.title)
-                                        .font(.system(size: 13.5, weight: .medium))
-                                } icon: {
-                                    Image(systemName: SidebarDestination.insights.icon)
-                                }
-                                Spacer()
-                                if store.activeUnreviewedInsightsCount > 0 {
-                                    Text("\(store.activeUnreviewedInsightsCount)")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 1.5)
-                                        .background(Capsule().fill(Color(hex: "#6366F1")))
-                                        .foregroundStyle(.white)
-                                }
-                            }
-                        }
-                    }
-
-                    Section("Configurações") {
-                        sidebarRow(.settings)
-
-                        ForEach(SettingsSection.allCases) { sec in
-                            Button {
-                                store.selectedDestination = .settings
-                                store.selectedSettingsSection = sec
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: sec.icon)
-                                        .font(.caption)
-                                        .foregroundStyle(
-                                            store.selectedDestination == .settings && store.selectedSettingsSection == sec
-                                                ? Color.accentColor
-                                                : .secondary
-                                        )
-                                        .frame(width: 18)
-                                    Text(sec.title)
-                                        .font(.caption)
-                                        .foregroundStyle(
-                                            store.selectedDestination == .settings && store.selectedSettingsSection == sec
-                                                ? Color.primary
-                                                : .secondary
-                                        )
-                                    Spacer()
-                                }
-                                .padding(.leading, 18)
-                                .padding(.vertical, 2)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                    .padding(14)
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
+                .background(FinSenseTheme.sidebarBackground(for: colorScheme))
 
-                Divider()
-                    .opacity(0.45)
-
-                // Bottom Consolidated Status & Quick AI Chat Button
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .center) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Saldo Consolidado")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            if isPatrimonyHidden {
-                                Text("Oculto")
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .foregroundStyle(store.totalConsolidatedPatrimonyNow >= 0 ? FinSenseTheme.emerald : FinSenseTheme.coral)
-                                    .numericCurrencyTransition(value: store.totalConsolidatedPatrimonyNow)
-                            }
-                        }
-                        Spacer()
-                        Button {
-                            isPatrimonyHidden.toggle()
-                        } label: {
-                            Image(systemName: isPatrimonyHidden ? "eye.slash.fill" : "eye.fill")
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .padding(4)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .help(isPatrimonyHidden ? "Exibir valores de patrimônio" : "Ocultar valores de patrimônio (privacidade)")
-                    }
-
-                    Button {
-                        store.openAIChat()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "sparkles.bubble.fill")
-                                .foregroundStyle(FinSenseTheme.indigo)
-                            Text("Chat IA Local")
-                                .fontWeight(.semibold)
-                            Spacer()
-                            Text("⌘K")
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 9, verticalPadding: 7, horizontalPadding: 10))
-
-                    if store.persistenceEnvironment.isDebug {
-                        HStack(spacing: 4) {
-                            Image(systemName: "hammer.fill")
-                                .font(.system(size: 9))
-                            Text("\(store.persistenceEnvironment.badgeTitle) • \(store.databaseFileURL.lastPathComponent)")
-                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                .lineLimit(1)
-                        }
-                        .foregroundStyle(FinSenseTheme.amber)
-                        .help("Banco de desenvolvimento isolado em: \(store.databaseFileURL.path)")
-                    }
-                }
-                .padding(14)
+                Rectangle()
+                    .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06))
+                    .frame(width: 1)
             }
-            .background(.ultraThinMaterial)
-            .navigationSplitViewColumnWidth(min: 235, ideal: 250, max: 290)
+            .navigationSplitViewColumnWidth(min: 235, ideal: 250, max: 285)
         } detail: {
             Group {
                 switch store.selectedDestination {
@@ -363,6 +282,8 @@ public struct MainContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(FinSenseTheme.canvasBackground(for: colorScheme))
+            .toolbarBackground(FinSenseTheme.windowBackground(for: colorScheme), for: .windowToolbar)
+            .toolbarBackground(.visible, for: .windowToolbar)
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
                     AppleIntelligenceStatusDot(llmService: llmService, store: store)
@@ -395,14 +316,104 @@ public struct MainContentView: View {
     }
 
     @ViewBuilder
-    private func sidebarRow(_ destination: SidebarDestination) -> some View {
-        NavigationLink(value: destination) {
-            Label {
-                Text(destination.title)
-                    .font(.system(size: 13.5, weight: .medium))
-            } icon: {
-                Image(systemName: destination.icon)
+    private func sidebarGroup<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .bold))
+                .tracking(0.6)
+                .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.38) : Color.secondary.opacity(0.85))
+                .padding(.horizontal, 10)
+                .padding(.bottom, 2)
+            content()
+        }
+    }
+
+    @ViewBuilder
+    private func sidebarItem(
+        _ destination: SidebarDestination,
+        badgeCount: Int = 0,
+        extraAction: (() -> Void)? = nil
+    ) -> some View {
+        sidebarItemButton(
+            destination: destination,
+            title: destination.title,
+            icon: destination.icon,
+            badgeCount: badgeCount,
+            extraAction: extraAction
+        )
+    }
+
+    @ViewBuilder
+    private func sidebarItemButton(
+        destination: SidebarDestination,
+        title: String,
+        icon: String,
+        badgeCount: Int = 0,
+        extraAction: (() -> Void)? = nil
+    ) -> some View {
+        let isActive = store.selectedDestination == destination
+        let isHovered = hoveredDestination == destination
+
+        Button {
+            withAnimation(.snappy(duration: 0.18)) {
+                store.selectedDestination = destination
+                extraAction?()
             }
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: icon)
+                    .font(.system(size: 13.5, weight: isActive ? .semibold : .medium))
+                    .foregroundStyle(
+                        isActive
+                            ? FinSenseTheme.indigo
+                            : (colorScheme == .dark ? Color.white.opacity(0.55) : Color.secondary)
+                    )
+                    .frame(width: 18)
+
+                Text(title)
+                    .font(.system(size: 13, weight: isActive ? .semibold : .medium))
+                    .foregroundStyle(
+                        isActive
+                            ? (colorScheme == .dark ? Color.white : Color.primary)
+                            : (colorScheme == .dark ? Color.white.opacity(0.75) : Color.primary.opacity(0.8))
+                    )
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                if badgeCount > 0 {
+                    Text("\(badgeCount)")
+                        .font(.system(size: 10, weight: .bold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .background(Capsule().fill(FinSenseTheme.indigo.opacity(0.85)))
+                        .foregroundStyle(.white)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(
+                        isActive
+                            ? (colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06))
+                            : (isHovered ? (colorScheme == .dark ? Color.white.opacity(0.04) : Color.black.opacity(0.03)) : Color.clear)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        isActive
+                            ? (colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.10))
+                            : Color.clear,
+                        lineWidth: 0.5
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            hoveredDestination = hovering ? destination : (hoveredDestination == destination ? nil : hoveredDestination)
         }
     }
 }
@@ -434,6 +445,13 @@ public final class FinSenseAppDelegate: NSObject, NSApplicationDelegate, NSWindo
                 window.delegate = self
             }
             window.isReleasedWhenClosed = false
+            window.titlebarAppearsTransparent = true
+            window.backgroundColor = NSColor(name: nil) { appearance in
+                let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                return isDark
+                    ? NSColor(red: 13.0 / 255.0, green: 13.0 / 255.0, blue: 15.0 / 255.0, alpha: 1.0)
+                    : NSColor(red: 235.0 / 255.0, green: 235.0 / 255.0, blue: 239.0 / 255.0, alpha: 1.0)
+            }
         }
     }
 

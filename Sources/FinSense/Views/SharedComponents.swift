@@ -14,18 +14,27 @@ public enum FinSenseTheme {
     public static let softCoral = Color(hex: "#F87171")
     public static let amber = Color(hex: "#F59E0B")
     public static let indigo = Color(hex: "#6366F1")
-    public static let cyan = Color(hex: "#0EA5E9")
+    public static let cyan = Color(hex: "#38BDF8")
+    public static let slateLight = Color(hex: "#94A3B8")
+
+    public static func windowBackground(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(hex: "#0D0D0F") : Color(hex: "#EBEBEF")
+    }
+
+    public static func sidebarBackground(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(hex: "#0F0F12") : Color(hex: "#ECECF0")
+    }
 
     public static func canvasBackground(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: "#121214") : Color(hex: "#F5F5F7")
+        scheme == .dark ? Color(hex: "#161618") : Color(hex: "#F5F5F7")
     }
 
     public static func elevatedSurface(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: "#1C1C1F") : Color.white
+        scheme == .dark ? Color(hex: "#1E1E22") : Color.white
     }
 
     public static func nestedSurface(for scheme: ColorScheme) -> Color {
-        scheme == .dark ? Color(hex: "#232327") : Color(hex: "#F1F1F5")
+        scheme == .dark ? Color(hex: "#18181B") : Color(hex: "#F1F1F5")
     }
 
     public static func cardBorder(for scheme: ColorScheme) -> Color {

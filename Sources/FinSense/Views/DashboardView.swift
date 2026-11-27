@@ -2239,7 +2239,7 @@ public struct ExpensesByCategoryCardView: View {
                 id: "__others__",
                 name: "Outros (\(rest.count))",
                 iconSymbol: "ellipsis.circle.fill",
-                colorHex: "#64748B",
+                colorHex: "#94A3B8",
                 total: othersTotal,
                 percentage: othersPercentage,
                 isOthers: true
@@ -2346,22 +2346,26 @@ public struct ExpensesByCategoryCardView: View {
 
     @ViewBuilder
     private func categoryLegendRow(_ item: SliceItem, interactive: Bool) -> some View {
+        let itemDisplayColor = item.isOthers
+            ? (colorScheme == .dark ? FinSenseTheme.slateLight : Color(hex: "#475569"))
+            : Color(hex: item.colorHex)
+
         HStack(spacing: 8) {
             Circle()
-                .fill(Color(hex: item.colorHex))
+                .fill(item.isOthers ? FinSenseTheme.slateLight : Color(hex: item.colorHex))
                 .frame(width: 9, height: 9)
             Image(systemName: item.iconSymbol)
                 .font(.system(size: 11.5))
-                .foregroundStyle(Color(hex: item.colorHex))
+                .foregroundStyle(itemDisplayColor)
                 .frame(width: 15)
             Text(item.name)
                 .font(.system(size: 12, weight: interactive ? .semibold : .medium))
-                .foregroundStyle(interactive ? FinSenseTheme.cyan : .primary)
+                .foregroundStyle(interactive ? itemDisplayColor : .primary)
                 .lineLimit(1)
             if interactive {
                 Image(systemName: "arrow.up.right.square")
                     .font(.system(size: 10))
-                    .foregroundStyle(FinSenseTheme.cyan)
+                    .foregroundStyle(itemDisplayColor)
             }
             Spacer(minLength: 4)
             Text(String(format: "%.1f%%", item.percentage))
@@ -2466,8 +2470,8 @@ public struct MonthlyCashFlowChartView: View {
                         Text("Previsões & Tetos").font(.caption2).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 4) {
-                        Capsule().fill(FinSenseTheme.cyan).frame(width: 10, height: 3)
-                        Circle().fill(FinSenseTheme.cyan).frame(width: 6, height: 6)
+                        Capsule().fill(Color(hex: "#38BDF8")).frame(width: 10, height: 3)
+                        Circle().fill(Color(hex: "#38BDF8")).frame(width: 6, height: 6)
                         Text("Saldo Final").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
@@ -2512,7 +2516,7 @@ public struct MonthlyCashFlowChartView: View {
                         .foregroundStyle(.secondary)
                     + Text(BRLFormatters.currency(pt.accumulatedBalance))
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(FinSenseTheme.cyan)
+                        .foregroundStyle(Color(hex: "#38BDF8"))
                     Spacer()
                 }
                 .padding(.horizontal, 10)
@@ -2572,7 +2576,7 @@ public struct MonthlyCashFlowChartView: View {
                         x: .value("Mês", pt.label),
                         y: .value("Saldo Final", pt.accumulatedBalance)
                     )
-                    .foregroundStyle(FinSenseTheme.cyan)
+                    .foregroundStyle(Color(hex: "#38BDF8"))
                     .interpolationMethod(.catmullRom)
                     .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
 
@@ -2580,24 +2584,35 @@ public struct MonthlyCashFlowChartView: View {
                         x: .value("Mês", pt.label),
                         y: .value("Saldo Final", pt.accumulatedBalance)
                     )
-                    .foregroundStyle(FinSenseTheme.cyan)
-                    .symbolSize(30)
+                    .foregroundStyle(Color(hex: "#38BDF8"))
+                    .symbolSize(34)
                 }
             }
             .chartYAxis {
-                AxisMarks(position: .leading) { _ in
+                let axisLabelColor = colorScheme == .dark ? Color.white.opacity(0.55) : Color.black.opacity(0.55)
+                AxisMarks(position: .leading) { value in
                     AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 4]))
-                        .foregroundStyle(Color.primary.opacity(0.08))
-                    AxisValueLabel()
-                        .font(.system(size: 10, design: .rounded))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.08))
+                    if let num = value.as(Double.self) {
+                        AxisValueLabel {
+                            Text(Self.formatAxisNumber(num))
+                                .font(.system(size: 10, design: .rounded))
+                                .foregroundStyle(axisLabelColor)
+                                .monospacedDigit()
+                        }
+                    }
                 }
             }
             .chartXAxis {
-                AxisMarks { _ in
-                    AxisValueLabel()
-                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
+                let axisLabelColor = colorScheme == .dark ? Color.white.opacity(0.55) : Color.black.opacity(0.55)
+                AxisMarks { value in
+                    if let label = value.as(String.self) {
+                        AxisValueLabel {
+                            Text(label)
+                                .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                                .foregroundStyle(axisLabelColor)
+                        }
+                    }
                 }
             }
             .frame(height: 205)
@@ -2628,12 +2643,25 @@ public struct MonthlyCashFlowChartView: View {
         .frame(maxWidth: .infinity, minHeight: 290, alignment: .topLeading)
         .bentoCard(padding: 18)
     }
+
+    private static let axisNumberFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.locale = Locale(identifier: "pt_BR")
+        formatter.maximumFractionDigits = 0
+        return formatter
+    }()
+
+    private static func formatAxisNumber(_ value: Double) -> String {
+        axisNumberFormatter.string(from: NSNumber(value: value)) ?? "\(Int(value.rounded()))"
+    }
 }
 
 // MARK: - Painel Analítico: Comprometimento de Renda vs. Obrigações (Fluxo / DTI)
 
 public struct DebtCommitmentsDonutChartView: View {
     public let breakdown: PeriodDebtServiceBreakdown
+    @Environment(\.colorScheme) private var colorScheme
 
     public struct DonutSegment: Identifiable, Hashable {
         public let id: String
@@ -2892,7 +2920,7 @@ public struct DebtCommitmentsDonutChartView: View {
                         }
 
                         // Lista Detalhada com Barras Horizontais Proporcionais (Na mesma ordem do gráfico)
-                        VStack(spacing: 5) {
+                        VStack(spacing: 10) {
                             ForEach(segments) { item in
                                 distributionRow(item: item)
                             }
@@ -2902,15 +2930,6 @@ public struct DebtCommitmentsDonutChartView: View {
                 }
             }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(0.02))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.primary.opacity(0.06), lineWidth: 1)
-        )
         .animation(.easeInOut(duration: 0.28), value: breakdown)
     }
 
@@ -2924,80 +2943,70 @@ public struct DebtCommitmentsDonutChartView: View {
             guard breakdown.periodIncome > 0 else { return 0.0 }
             return min(max(item.amount / breakdown.periodIncome, 0.0), 1.0)
         }()
+        let neutralCardBg = colorScheme == .dark ? Color(hex: "#18181B") : FinSenseTheme.nestedSurface(for: colorScheme)
+        let neutralBorder = colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.07)
+        let neutralMutedText = colorScheme == .dark ? Color.white.opacity(0.55) : Color.secondary
 
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                // Marcador / Ícone com fundo temático
-                ZStack {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(item.color.opacity(0.14))
-                        .frame(width: 20, height: 20)
-
-                    Image(systemName: item.icon)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(item.color)
-                }
+                // Ícone colorido temático
+                Image(systemName: item.icon)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(item.color)
+                    .frame(width: 18, height: 18)
 
                 // Título
                 Text(item.name)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
                 Spacer(minLength: 6)
 
-                // Métrica de proporção sobre a Receita
+                // Percentual em cinza neutro
                 if breakdown.periodIncome > 0 {
                     Text(
                         item.isDeficit
                             ? String(format: "+%.1f%% acima da receita", pctOfIncome)
                             : String(format: "%.1f%% da receita", pctOfIncome)
                     )
-                    .font(.system(size: 10, weight: (item.isFreeMargin || item.isDeficit) ? .bold : .medium))
-                    .foregroundStyle(item.isDeficit ? Color(hex: "#EF4444") : (item.isFreeMargin ? Color(hex: "#10B981") : .secondary))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(
-                        item.isDeficit
-                            ? Color(hex: "#EF4444").opacity(0.12)
-                            : (item.isFreeMargin ? Color(hex: "#10B981").opacity(0.12) : Color.primary.opacity(0.04))
-                    )
-                    .clipShape(Capsule())
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(item.isDeficit ? FinSenseTheme.coral : neutralMutedText)
                 }
 
-                // Valor Monetário Formatado
+                // Valor Monetário em branco puro (dark) / primary (light) com .monospacedDigit()
                 Text(item.isDeficit ? ("-" + BRLFormatters.currency(item.amount)) : BRLFormatters.currency(item.amount))
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(item.color)
+                    .foregroundStyle(colorScheme == .dark ? Color.white : Color.primary)
             }
 
-            // Barra Horizontal Proporcional
+            // Barra Horizontal Proporcional (com cor temática)
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule()
-                        .fill(Color.primary.opacity(0.05))
-                        .frame(height: 3.5)
+                        .fill(colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.06))
+                        .frame(height: 4)
 
                     Capsule()
                         .fill(item.color)
                         .frame(
                             width: max(geo.size.width * progressRatio, progressRatio > 0 ? 4 : 0),
-                            height: 3.5
+                            height: 4
                         )
                 }
             }
-            .frame(height: 3.5)
+            .frame(height: 4)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(item.color.opacity(0.04))
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(neutralCardBg)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(item.color.opacity(0.10), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(neutralBorder, lineWidth: FinSenseTheme.hairlineWidth)
         )
     }
 
@@ -3008,35 +3017,45 @@ public struct DebtCommitmentsDonutChartView: View {
         icon: String,
         subtitle: String
     ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let neutralBoxBg = colorScheme == .dark ? Color(hex: "#18181B") : FinSenseTheme.nestedSurface(for: colorScheme)
+        let neutralBorder = colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.07)
+        let neutralMutedText = colorScheme == .dark ? Color.white.opacity(0.55) : Color.secondary
+
+        return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(color)
                 Text(title)
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(neutralMutedText)
                     .lineLimit(1)
             }
 
             Text(value)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundStyle(color)
+                .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                .foregroundStyle(colorScheme == .dark ? Color.white : Color.primary)
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
 
             Text(subtitle)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(color.opacity(0.85))
+                .font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(neutralMutedText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, minHeight: 60, maxHeight: 60, alignment: .topLeading)
-        .background(color.opacity(0.07))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 62, maxHeight: 62, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(neutralBoxBg)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(neutralBorder, lineWidth: FinSenseTheme.hairlineWidth)
+        )
     }
 
     private var statusColor: Color {

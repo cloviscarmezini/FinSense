@@ -140,9 +140,24 @@ public struct TransactionsView: View {
         let intraAnalysis: IntraMonthCashFlowAnalysis? = isAnnual ? nil : store.buildIntraMonthCashFlowAnalysis(for: store.selectedMonth)
 
         Group {
-            if store.selectedTransactionsSubmenu == .receivables {
-                ReceivablesManagementView(store: store)
-            } else {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 12) {
+                    Picker("Submenu", selection: $store.selectedTransactionsSubmenu) {
+                        ForEach(TransactionsSubmenu.allCases) { sub in
+                            Text(sub.title).tag(sub)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(maxWidth: 420)
+                    Spacer()
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+
+                if store.selectedTransactionsSubmenu == .receivables {
+                    ReceivablesManagementView(store: store)
+                } else {
                 VStack(alignment: .leading, spacing: 18) {
             // MARK: - Header & Month Navigation
             HStack(alignment: .center, spacing: 14) {
@@ -808,6 +823,7 @@ public struct TransactionsView: View {
             }
                 }
                 .padding(24)
+            }
             }
         }
         .onChange(of: store.selectedTransactionsSubmenu) { _, _ in
