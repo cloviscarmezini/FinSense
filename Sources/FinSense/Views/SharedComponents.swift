@@ -1025,7 +1025,261 @@ public struct MetricCardView: View {
     }
 }
 
-// MARK: - Mini Gráfico Sparkline de Fluxo Intramês (Zona Negativa em Vermelho)
+// MARK: - Sparkline Dinâmico Bicolor (Escala Real ±10%, Área Esmeralda/Coral, Tooltip no Hover)
+
+public struct BalanceSparklineSample: Identifiable, Hashable {
+    public let id: String
+    public let xValue: Double
+    public let label: String
+    public let value: Double
+
+    public init(id: String, xValue: Double, label: String, value: Double) {
+        self.id = id
+        self.xValue = xValue
+        self.label = label
+        self.value = value
+    }
+}
+
+public struct ProjectedBalanceSparklineView: View {
+    public let samples: [BalanceSparklineSample]
+    public var height: CGFloat = 64
+    public var showHoverTooltip: Bool = true
+    public var helpText: String = "Evolução de saldo no período"
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hoveredSample: BalanceSparklineSample? = nil
+
+    private struct SparklinePoint: Identifiable {
+        let id: String
+        let x: Double
+        let y: Double
+    }
+
+    private struct SparklineSegment: Identifiable {
+        let id: String
+        let isPositive: Bool
+        let points: [SparklinePoint]
+    }
+
+    public init(
+        samples: [BalanceSparklineSample],
+        height: CGFloat = 64,
+        showHoverTooltip: Bool = true,
+        helpText: String = "Evolução de saldo no período"
+    ) {
+        self.samples = samples
+        self.height = height
+        self.showHoverTooltip = showHoverTooltip
+        self.helpText = helpText
+    }
+
+    private var domainBounds: (minY: Double, maxY: Double) {
+        let values = samples.map(\.value)
+        guard let minVal = values.min(), let maxVal = values.max() else {
+            return (0, 100)
+        }
+        let span = maxVal - minVal
+        let margin = span > 0.01 ? span * 0.10 : max(abs(maxVal) * 0.10, 50.0)
+        return (minVal - margin, maxVal + margin)
+    }
+
+    private var segmentedSeries: [SparklineSegment] {
+        guard !samples.isEmpty else { return [] }
+        if samples.count == 1 {
+            let p = samples[0]
+            return [
+                SparklineSegment(
+                    id: "seg_0",
+                    isPositive: p.value >= 0,
+                    points: [SparklinePoint(id: "pt_0", x: p.xValue, y: p.value)]
+                )
+            ]
+        }
+
+        // Insere pontos exatos de cruzamento em y = 0 para transição precisa de esmeralda/coral
+        var splitPoints: [(x: Double, y: Double, isPositive: Bool)] = []
+        for idx in 0..<(samples.count - 1) {
+            let a = samples[idx]
+            let b = samples[idx + 1]
+            let aPos = a.value >= 0
+            if splitPoints.isEmpty {
+                splitPoints.append((a.xValue, a.value, aPos))
+            }
+
+            if (a.value > 0 && b.value < 0) || (a.value < 0 && b.value > 0) {
+                let t = (0.0 - a.value) / (b.value - a.value)
+                let xCross = a.xValue + t * (b.xValue - a.xValue)
+                splitPoints.append((xCross, 0.0, aPos))
+                splitPoints.append((xCross, 0.0, b.value >= 0))
+            }
+            splitPoints.append((b.xValue, b.value, b.value >= 0))
+        }
+
+        var segments: [SparklineSegment] = []
+        var currentPoints: [SparklinePoint] = []
+        var currentIsPositive = splitPoints.first?.isPositive ?? true
+        var pointCounter = 0
+
+        for item in splitPoints {
+            if item.isPositive != currentIsPositive && !currentPoints.isEmpty {
+                segments.append(
+                    SparklineSegment(
+                        id: "seg_\(segments.count)",
+                        isPositive: currentIsPositive,
+                        points: currentPoints
+                    )
+                )
+                currentPoints = []
+                currentIsPositive = item.isPositive
+            }
+            currentPoints.append(SparklinePoint(id: "pt_\(pointCounter)", x: item.x, y: item.y))
+            pointCounter += 1
+        }
+        if !currentPoints.isEmpty {
+            segments.append(
+                SparklineSegment(
+                    id: "seg_\(segments.count)",
+                    isPositive: currentIsPositive,
+                    points: currentPoints
+                )
+            )
+        }
+        return segments
+    }
+
+    public var body: some View {
+        let bounds = domainBounds
+        let crossesZero = bounds.minY < 0 && bounds.maxY > 0
+        let posBaseline = crossesZero ? 0.0 : bounds.minY
+        let negBaseline = crossesZero ? 0.0 : bounds.maxY
+        let minX = samples.first?.xValue ?? 0
+        let maxX = samples.last?.xValue ?? 1
+        let hoveredIndex = hoveredSample.flatMap { h in samples.firstIndex(where: { $0.id == h.id }) } ?? 0
+        let tooltipOnRight = hoveredIndex < max(samples.count / 2, 1)
+
+        ZStack(alignment: tooltipOnRight ? .topTrailing : .topLeading) {
+            Chart {
+                if crossesZero {
+                    RuleMark(y: .value("Zero", 0))
+                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.18) : Color.black.opacity(0.18))
+                        .lineStyle(StrokeStyle(lineWidth: 0.75, dash: [3, 3]))
+                }
+
+                ForEach(segmentedSeries) { segment in
+                    ForEach(segment.points) { pt in
+                        AreaMark(
+                            x: .value("X", pt.x),
+                            yStart: .value("Base", segment.isPositive ? posBaseline : pt.y),
+                            yEnd: .value("Valor", segment.isPositive ? pt.y : negBaseline),
+                            series: .value("SegmentoArea", segment.id)
+                        )
+                        .interpolationMethod(.linear)
+                        .foregroundStyle(
+                            segment.isPositive
+                                ? LinearGradient(
+                                    colors: [FinSenseTheme.emerald.opacity(0.32), FinSenseTheme.emerald.opacity(0.03)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                                : LinearGradient(
+                                    colors: [FinSenseTheme.coral.opacity(0.04), FinSenseTheme.coral.opacity(0.36)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                        )
+
+                        LineMark(
+                            x: .value("X", pt.x),
+                            y: .value("Saldo", pt.y),
+                            series: .value("SegmentoLinha", segment.id)
+                        )
+                        .interpolationMethod(.linear)
+                        .foregroundStyle(segment.isPositive ? FinSenseTheme.emerald : FinSenseTheme.coral)
+                        .lineStyle(StrokeStyle(lineWidth: 2.0, lineCap: .round, lineJoin: .round))
+                    }
+                }
+
+                if let hovered = hoveredSample {
+                    RuleMark(x: .value("HoverX", hovered.xValue))
+                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.28) : Color.black.opacity(0.25))
+                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+
+                    PointMark(
+                        x: .value("HoverPtX", hovered.xValue),
+                        y: .value("HoverPtY", hovered.value)
+                    )
+                    .symbolSize(34)
+                    .foregroundStyle(hovered.value >= 0 ? FinSenseTheme.emerald : FinSenseTheme.coral)
+                }
+            }
+            .chartXAxis(.hidden)
+            .chartYAxis(.hidden)
+            .chartLegend(.hidden)
+            .chartYScale(domain: bounds.minY...bounds.maxY)
+            .chartXScale(domain: (minX == maxX ? (minX - 0.5)...(maxX + 0.5) : minX...maxX))
+            .chartOverlay { proxy in
+                if showHoverTooltip && !samples.isEmpty {
+                    GeometryReader { geometry in
+                        Rectangle()
+                            .fill(Color.clear)
+                            .contentShape(Rectangle())
+                            .onContinuousHover { phase in
+                                switch phase {
+                                case .active(let location):
+                                    guard let plotFrame = proxy.plotFrame else {
+                                        hoveredSample = nil
+                                        return
+                                    }
+                                    let origin = geometry[plotFrame].origin
+                                    let xInPlot = location.x - origin.x
+                                    if let xVal: Double = proxy.value(atX: xInPlot) {
+                                        hoveredSample = samples.min(by: { abs($0.xValue - xVal) < abs($1.xValue - xVal) })
+                                    } else {
+                                        hoveredSample = nil
+                                    }
+                                case .ended:
+                                    hoveredSample = nil
+                                }
+                            }
+                    }
+                }
+            }
+
+            if showHoverTooltip, let hovered = hoveredSample {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(hovered.value >= 0 ? FinSenseTheme.emerald : FinSenseTheme.coral)
+                        .frame(width: 6, height: 6)
+                    Text(hovered.label)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(colorScheme == .dark ? Color.white.opacity(0.70) : .secondary)
+                    Text(BRLFormatters.currency(hovered.value))
+                        .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(hovered.value >= 0 ? FinSenseTheme.emerald : FinSenseTheme.coral)
+                        .monospacedDigit()
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule()
+                        .fill(colorScheme == .dark ? Color(hex: "#0F0F12").opacity(0.92) : Color.white.opacity(0.95))
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10), lineWidth: 0.75)
+                )
+                .shadow(color: .black.opacity(0.22), radius: 6, y: 2)
+                .padding(4)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+            }
+        }
+        .frame(height: height)
+        .animation(.easeOut(duration: 0.12), value: hoveredSample?.id)
+        .help(helpText)
+    }
+}
 
 public struct IntraMonthSparklineView: View {
     public let analysis: IntraMonthCashFlowAnalysis
@@ -1036,56 +1290,21 @@ public struct IntraMonthSparklineView: View {
         self.height = height
     }
 
-    private var lineColor: Color {
-        switch analysis.alertLevel {
-        case .confirmedDeficit: return FinSenseTheme.coral
-        case .possibleRisk: return FinSenseTheme.amber
-        case .none: return FinSenseTheme.emerald
-        }
-    }
-
     public var body: some View {
-        Chart {
-            RuleMark(y: .value("Zero", 0))
-                .foregroundStyle(Color.secondary.opacity(0.28))
-                .lineStyle(StrokeStyle(lineWidth: 0.7, dash: [2, 2]))
-
-            ForEach(analysis.dailyPoints) { pt in
-                LineMark(
-                    x: .value("Dia", pt.day),
-                    y: .value("Saldo", pt.closingBalance)
-                )
-                .foregroundStyle(lineColor)
-                .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
-
-                if pt.closingBalance < -0.005 {
-                    AreaMark(
-                        x: .value("Dia", pt.day),
-                        yStart: .value("Zero", 0.0),
-                        yEnd: .value("Saldo", pt.closingBalance)
-                    )
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [FinSenseTheme.coral.opacity(0.35), FinSenseTheme.coral.opacity(0.05)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-
-                    PointMark(
-                        x: .value("Dia", pt.day),
-                        y: .value("Saldo", pt.closingBalance)
-                    )
-                    .symbolSize(12)
-                    .foregroundStyle(FinSenseTheme.coral)
-                }
-            }
+        let samples = analysis.dailyPoints.map { pt in
+            BalanceSparklineSample(
+                id: "day_\(pt.day)",
+                xValue: Double(pt.day),
+                label: "Dia \(pt.day)",
+                value: pt.closingBalance
+            )
         }
-        .chartXAxis(.hidden)
-        .chartYAxis(.hidden)
-        .chartLegend(.hidden)
-        .frame(height: height)
-        .help(analysis.alertSummaryText ?? "Evolução diária de saldo no mês")
+        ProjectedBalanceSparklineView(
+            samples: samples,
+            height: height,
+            showHoverTooltip: height >= 36,
+            helpText: analysis.alertSummaryText ?? "Evolução diária de saldo no mês"
+        )
     }
 }
 

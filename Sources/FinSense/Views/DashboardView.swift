@@ -165,6 +165,7 @@ public struct DashboardView: View {
                     summary: kpiSummary,
                     isAnnual: isAnnual,
                     intraMonthAnalysis: dashIntraAnalysis,
+                    annualCashFlowPoints: isAnnual ? cashFlowPoints : [],
                     sinkingFundsReserve: isAnnual ? 0.0 : store.totalMonthlySinkingFundContribution(for: store.selectedMonth),
                     onEditProvisions: { showProvisionsSheet = true },
                     onOpenTransactions: { store.selectedDestination = .transactions }
@@ -3098,6 +3099,7 @@ public struct DashboardTopKPICardsView: View {
     public let summary: UnifiedFinancialKPISummary
     public let isAnnual: Bool
     public var intraMonthAnalysis: IntraMonthCashFlowAnalysis?
+    public var annualCashFlowPoints: [MonthlyCashFlowPoint]
     public var sinkingFundsReserve: Double
     public var onEditProvisions: () -> Void
     public var onOpenTransactions: () -> Void
@@ -3108,6 +3110,7 @@ public struct DashboardTopKPICardsView: View {
         summary: UnifiedFinancialKPISummary,
         isAnnual: Bool,
         intraMonthAnalysis: IntraMonthCashFlowAnalysis? = nil,
+        annualCashFlowPoints: [MonthlyCashFlowPoint] = [],
         sinkingFundsReserve: Double = 0.0,
         onEditProvisions: @escaping () -> Void,
         onOpenTransactions: @escaping () -> Void = {}
@@ -3115,6 +3118,7 @@ public struct DashboardTopKPICardsView: View {
         self.summary = summary
         self.isAnnual = isAnnual
         self.intraMonthAnalysis = intraMonthAnalysis
+        self.annualCashFlowPoints = annualCashFlowPoints
         self.sinkingFundsReserve = sinkingFundsReserve
         self.onEditProvisions = onEditProvisions
         self.onOpenTransactions = onOpenTransactions
@@ -3216,8 +3220,24 @@ public struct DashboardTopKPICardsView: View {
                     .font(.system(size: 12))
                 }
 
-                if let intra = intraMonthAnalysis, !summary.isPast, !intra.dailyPoints.isEmpty {
-                    IntraMonthSparklineView(analysis: intra, height: 52)
+                if isAnnual, !annualCashFlowPoints.isEmpty {
+                    let annualSamples = annualCashFlowPoints.enumerated().map { idx, pt in
+                        BalanceSparklineSample(
+                            id: "month_\(idx)",
+                            xValue: Double(idx + 1),
+                            label: pt.label,
+                            value: pt.accumulatedBalance
+                        )
+                    }
+                    ProjectedBalanceSparklineView(
+                        samples: annualSamples,
+                        height: 68,
+                        showHoverTooltip: true,
+                        helpText: "Variação acumulada mês a mês no ano"
+                    )
+                    .padding(.top, 2)
+                } else if let intra = intraMonthAnalysis, !intra.dailyPoints.isEmpty {
+                    IntraMonthSparklineView(analysis: intra, height: 68)
                         .padding(.top, 2)
                 } else {
                     Spacer(minLength: 8)

@@ -5,6 +5,7 @@ import SwiftUI
 
 public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
     case dashboard
+    case analytics
     case transactions
     case netWorth
     case creditCards
@@ -21,6 +22,7 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
     public var title: String {
         switch self {
         case .dashboard: return "Dashboard"
+        case .analytics: return "Gráficos & Analytics"
         case .transactions: return "Transações"
         case .netWorth: return "Patrimônio & Renda"
         case .creditCards: return "Cartões de Crédito"
@@ -37,6 +39,7 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
     public var subtitle: String {
         switch self {
         case .dashboard: return "Insights, gráficos e visão consolidada"
+        case .analytics: return "Análises visuais multidimensionais e filtros dinâmicos"
         case .transactions: return "Receitas e despesas por mês"
         case .netWorth: return "Net Worth, imóveis, veículos, FGTS e fontes de renda"
         case .creditCards: return "Limites, faturas e compras parceladas"
@@ -53,6 +56,7 @@ public enum SidebarDestination: String, CaseIterable, Identifiable, Hashable {
     public var icon: String {
         switch self {
         case .dashboard: return "chart.pie.fill"
+        case .analytics: return "chart.xyaxis.line"
         case .transactions: return "arrow.left.arrow.right.circle.fill"
         case .netWorth: return "chart.bar.xaxis.ascending"
         case .creditCards: return "creditcard.fill"

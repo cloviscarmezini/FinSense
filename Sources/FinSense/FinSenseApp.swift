@@ -67,6 +67,7 @@ public struct MainContentView: View {
                         VStack(alignment: .leading, spacing: 18) {
                             sidebarGroup(title: "Visão Geral & Fluxo") {
                                 sidebarItem(.dashboard)
+                                sidebarItem(.analytics)
                                 sidebarItem(.transactions) {
                                     store.selectedTransactionsSubmenu = .all
                                 }
@@ -258,6 +259,8 @@ public struct MainContentView: View {
                 switch store.selectedDestination {
                 case .dashboard:
                     DashboardView(store: store, llmService: llmService)
+                case .analytics:
+                    AnalyticsChartsView(store: store)
                 case .transactions:
                     TransactionsView(store: store, llmService: llmService)
                 case .netWorth:
