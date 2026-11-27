@@ -4,6 +4,7 @@ import AppKit
 public struct TransactionsView: View {
     @ObservedObject public var store: FinancialDataStore
     @ObservedObject public var llmService: LocalLLMService
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var searchText: String = ""
     @State private var selectedTypeFilter: TransactionType? = nil
@@ -530,148 +531,193 @@ public struct TransactionsView: View {
             }
 
             // MARK: - Action & Filter Bar
-            HStack(spacing: 10) {
-                if store.selectedTransactionsSubmenu != .incomes {
-                    Button {
-                        showCreateExpenseSheet = true
-                    } label: {
-                        Label("Nova Despesa", systemImage: "minus.circle.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#EF4444"))
-                }
-
-                if store.selectedTransactionsSubmenu != .expenses {
-                    Button {
-                        showCreateIncomeSheet = true
-                    } label: {
-                        Label("Nova Receita", systemImage: "plus.circle.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#10B981"))
-                }
-
-                Button {
-                    store.requireInstalledLLM(forFeature: "Importar Relatório / Extrato com IA Local") {
-                        showImportSheet = true
-                    }
-                } label: {
-                    Label("Importar", systemImage: "doc.text.magnifyingglass")
-                }
-                .buttonStyle(.bordered)
-
-                Divider().frame(height: 22)
-
-                if store.selectedTransactionsSubmenu == .all {
-                    Picker("Tipo", selection: $selectedTypeFilter) {
-                        Text("Todos os Tipos").tag(TransactionType?.none)
-                        Text("Apenas Despesas").tag(TransactionType?.some(.expense))
-                        Text("Apenas Receitas").tag(TransactionType?.some(.income))
-                    }
-                    .frame(width: 155)
-                }
-
-                Picker("Categoria", selection: $selectedCategoryFilter) {
-                    Text("Todas as Categorias").tag(UUID?.none)
-                    let catsToList = enforcedTypeFromSubmenu.map { store.categories(for: $0) } ?? store.categories
-                    ForEach(catsToList) { cat in
-                        Text(cat.name).tag(UUID?.some(cat.id))
-                    }
-                }
-                .frame(width: 175)
-
-                Picker("Conta", selection: $selectedAccountFilter) {
-                    Text("Todas as Contas").tag(UUID?.none)
-                    ForEach(store.accounts) { acc in
-                        Text(acc.name).tag(UUID?.some(acc.id))
-                    }
-                    if !store.creditCards.isEmpty {
-                        Divider()
-                        ForEach(store.creditCards) { card in
-                            Text("💳 \(card.name)").tag(UUID?.some(card.id))
-                        }
-                    }
-                }
-                .frame(width: 175)
-
-                Toggle("Só Pendentes", isOn: $onlyPendingFilter)
-                    .toggleStyle(.checkbox)
-
-                if store.pendingReviewCount > 0 || onlyNeedsReviewFilter {
-                    Toggle("A Revisar (\(store.pendingReviewCount))", isOn: $onlyNeedsReviewFilter)
-                        .toggleStyle(.checkbox)
-                        .foregroundStyle(Color(hex: "#F59E0B"))
-                }
-
-                Spacer()
-
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    MacFullWidthTextInput(
-                        text: $searchText,
-                        placeholder: "Buscar...",
-                        font: .systemFont(ofSize: 13)
-                    )
-                    .frame(width: 150, height: 20)
-                    if !searchText.isEmpty {
-                        Button {
-                            searchText = ""
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    if store.selectedTransactionsSubmenu == .all {
+                        Menu {
+                            Button {
+                                showCreateExpenseSheet = true
+                            } label: {
+                                Label("Nova Despesa", systemImage: "minus.circle")
+                            }
+                            Button {
+                                showCreateIncomeSheet = true
+                            } label: {
+                                Label("Nova Receita", systemImage: "plus.circle")
+                            }
                         } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 11.5, weight: .bold))
+                                Text("Nova Transação")
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .opacity(0.8)
+                            }
                         }
-                        .buttonStyle(.plain)
+                        .menuStyle(.borderlessButton)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6.5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .fill(FinSenseTheme.indigo)
+                        )
+                        .foregroundStyle(.white)
+                        .shadow(color: FinSenseTheme.indigo.opacity(0.22), radius: 5, x: 0, y: 2)
+                        .fixedSize()
+                    } else if store.selectedTransactionsSubmenu == .expenses {
+                        Button {
+                            showCreateExpenseSheet = true
+                        } label: {
+                            Label("Nova Despesa", systemImage: "plus")
+                        }
+                        .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.coral))
+                    } else if store.selectedTransactionsSubmenu == .incomes {
+                        Button {
+                            showCreateIncomeSheet = true
+                        } label: {
+                            Label("Nova Receita", systemImage: "plus")
+                        }
+                        .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.emerald))
                     }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.primary.opacity(0.28), lineWidth: 1))
-            }
 
-            // MARK: - Sort & Grouping Bar
-            HStack(spacing: 12) {
-                Picker("Ordenar por", selection: $sortOrder) {
-                    ForEach(TransactionSortOrder.allCases) { order in
-                        Text(order.title).tag(order)
-                    }
-                }
-                .frame(width: 260)
-
-                Toggle("Agrupar por dia", isOn: $groupByDay)
-                    .toggleStyle(.checkbox)
-
-                if !visiblePendingTransactions.isEmpty {
-                    let allPendingSelected = Set(visiblePendingTransactions.map(\.id)).isSubset(of: selectedTransactionIds)
                     Button {
-                        if allPendingSelected {
-                            selectedTransactionIds.subtract(visiblePendingTransactions.map(\.id))
-                        } else {
-                            selectedTransactionIds.formUnion(visiblePendingTransactions.map(\.id))
+                        store.requireInstalledLLM(forFeature: "Importar Relatório / Extrato com IA Local") {
+                            showImportSheet = true
                         }
                     } label: {
-                        Label(
-                            allPendingSelected ? "Desmarcar Pendentes" : "Selecionar Pendentes (\(visiblePendingTransactions.count))",
-                            systemImage: allPendingSelected ? "checkmark.square.fill" : "checklist"
-                        )
-                        .font(.caption.weight(.semibold))
+                        Label("Importar", systemImage: "doc.text.magnifyingglass")
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 9, verticalPadding: 6, horizontalPadding: 11))
+
+                    Divider().frame(height: 20).opacity(0.45)
+
+                    if store.selectedTransactionsSubmenu == .all {
+                        Picker("Tipo", selection: $selectedTypeFilter) {
+                            Text("Todos os Tipos").tag(TransactionType?.none)
+                            Text("Apenas Despesas").tag(TransactionType?.some(.expense))
+                            Text("Apenas Receitas").tag(TransactionType?.some(.income))
+                        }
+                        .frame(width: 148)
+                    }
+
+                    Picker("Categoria", selection: $selectedCategoryFilter) {
+                        Text("Todas Categorias").tag(UUID?.none)
+                        let catsToList = enforcedTypeFromSubmenu.map { store.categories(for: $0) } ?? store.categories
+                        ForEach(catsToList) { cat in
+                            Text(cat.name).tag(UUID?.some(cat.id))
+                        }
+                    }
+                    .frame(width: 165)
+
+                    Picker("Conta", selection: $selectedAccountFilter) {
+                        Text("Todas Contas").tag(UUID?.none)
+                        ForEach(store.accounts) { acc in
+                            Text(acc.name).tag(UUID?.some(acc.id))
+                        }
+                        if !store.creditCards.isEmpty {
+                            Divider()
+                            ForEach(store.creditCards) { card in
+                                Text("💳 \(card.name)").tag(UUID?.some(card.id))
+                            }
+                        }
+                    }
+                    .frame(width: 165)
+
+                    Toggle("Só Pendentes", isOn: $onlyPendingFilter)
+                        .toggleStyle(.checkbox)
+
+                    if store.pendingReviewCount > 0 || onlyNeedsReviewFilter {
+                        Toggle("A Revisar (\(store.pendingReviewCount))", isOn: $onlyNeedsReviewFilter)
+                            .toggleStyle(.checkbox)
+                            .foregroundStyle(FinSenseTheme.amber)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        MacFullWidthTextInput(
+                            text: $searchText,
+                            placeholder: "Buscar lançamento...",
+                            font: .systemFont(ofSize: 12.5)
+                        )
+                        .frame(width: 155, height: 18)
+                        if !searchText.isEmpty {
+                            Button {
+                                searchText = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5.5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(FinSenseTheme.elevatedSurface(for: colorScheme))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(FinSenseTheme.cardBorder(for: colorScheme), lineWidth: FinSenseTheme.hairlineWidth)
+                    )
                 }
 
-                Spacer()
+                // MARK: - Sort & Grouping Sub-bar
+                HStack(spacing: 12) {
+                    Picker("Ordenar", selection: $sortOrder) {
+                        ForEach(TransactionSortOrder.allCases) { order in
+                            Text(order.title).tag(order)
+                        }
+                    }
+                    .frame(width: 245)
 
-                Text("\(filteredMonthTransactions.count) lançamento(s)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    Toggle("Agrupar por dia", isOn: $groupByDay)
+                        .toggleStyle(.checkbox)
+
+                    if !visiblePendingTransactions.isEmpty {
+                        let allPendingSelected = Set(visiblePendingTransactions.map(\.id)).isSubset(of: selectedTransactionIds)
+                        Button {
+                            if allPendingSelected {
+                                selectedTransactionIds.subtract(visiblePendingTransactions.map(\.id))
+                            } else {
+                                selectedTransactionIds.formUnion(visiblePendingTransactions.map(\.id))
+                            }
+                        } label: {
+                            Label(
+                                allPendingSelected ? "Desmarcar Pendentes" : "Selecionar Pendentes (\(visiblePendingTransactions.count))",
+                                systemImage: allPendingSelected ? "checkmark.square.fill" : "checklist"
+                            )
+                        }
+                        .buttonStyle(BentoGlassButtonStyle(cornerRadius: 8, verticalPadding: 4, horizontalPadding: 10))
+                    }
+
+                    Spacer()
+
+                    Text("\(filteredMonthTransactions.count) lançamento(s)")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(FinSenseTheme.nestedSurface(for: colorScheme))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(FinSenseTheme.cardBorder(for: colorScheme), lineWidth: FinSenseTheme.hairlineWidth)
+            )
 
             // MARK: - Bulk Action Bar (Pagamento / Recebimento em Massa)
             if let banner = createdRuleBanner {
                 HStack(spacing: 8) {
                     Image(systemName: "wand.and.stars")
-                        .foregroundStyle(Color(hex: "#6366F1"))
+                        .foregroundStyle(FinSenseTheme.indigo)
                     Text(banner)
                         .font(.caption.weight(.semibold))
                     Spacer()
@@ -679,8 +725,7 @@ public struct TransactionsView: View {
                         store.selectedDestination = .settings
                         store.selectedSettingsSection = .reconciliationRules
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.mini)
+                    .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.indigo, cornerRadius: 7, verticalPadding: 3, horizontalPadding: 8))
                     Button {
                         createdRuleBanner = nil
                     } label: {
@@ -690,7 +735,7 @@ public struct TransactionsView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: "#6366F1").opacity(0.10)))
+                .background(RoundedRectangle(cornerRadius: 9).fill(FinSenseTheme.indigo.opacity(0.10)))
             }
 
             if !selectedPendingTransactions.isEmpty {
@@ -700,27 +745,27 @@ public struct TransactionsView: View {
             // MARK: - Alerta de Descasamento de Caixa (Vale Intramês em 2 Níveis)
             if let intra = intraAnalysis, intra.alertLevel != .none, !kpiSummary.isPast {
                 let isConfirmed = intra.alertLevel == .confirmedDeficit
-                let bannerColorHex = isConfirmed ? "#EF4444" : "#F59E0B"
+                let bannerColor = isConfirmed ? FinSenseTheme.coral : FinSenseTheme.amber
                 HStack(spacing: 10) {
                     Image(systemName: isConfirmed ? "exclamationmark.triangle.fill" : "exclamationmark.circle.fill")
-                        .foregroundStyle(Color(hex: bannerColorHex))
+                        .foregroundStyle(bannerColor)
                     Text(
                         isConfirmed
-                            ? "\(intra.alertSummaryText ?? "Falta de caixa confirmada") • Menor saldo por transações: \(BRLFormatters.currency(intra.minimumBalance)). Veja abaixo a linha de corte e o trecho em vermelho."
-                            : "\(intra.alertSummaryText ?? "Possibilidade de caixa negativo no mês.") • Pelas transações o caixa fecha positivo (\(BRLFormatters.currency(intra.closingBalance))), porém há \(BRLFormatters.currency(intra.currentMonthProvisionsTotal)) em previsões de gastos."
+                            ? "\(intra.alertSummaryText ?? "Falta de caixa confirmada") • Menor saldo por transações: \(BRLFormatters.currency(intra.minimumBalance)). Veja abaixo a linha de corte."
+                            : "\(intra.alertSummaryText ?? "Possibilidade de caixa negativo no mês.") • Pelas transações o caixa fecha positivo (\(BRLFormatters.currency(intra.closingBalance))), porém há \(BRLFormatters.currency(intra.currentMonthProvisionsTotal)) em previsões."
                     )
-                    .font(.caption.weight(.semibold))
+                    .font(.caption.weight(.medium))
                     Spacer()
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(hex: bannerColorHex).opacity(0.09))
+                        .fill(bannerColor.opacity(0.09))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color(hex: bannerColorHex).opacity(0.30), lineWidth: 1)
+                        .strokeBorder(bannerColor.opacity(0.28), lineWidth: FinSenseTheme.hairlineWidth)
                 )
             }
 
@@ -729,8 +774,8 @@ public struct TransactionsView: View {
                 VStack(spacing: 12) {
                     Spacer()
                     Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 42))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 40))
+                        .foregroundStyle(.secondary.opacity(0.75))
                     Text("Nenhum lançamento encontrado para \(BRLFormatters.monthYear(store.selectedMonth))")
                         .font(.headline)
                     Text("Adicione um lançamento, navegue entre os meses ou importe um extrato PDF com a LLM local.")
@@ -739,10 +784,7 @@ public struct TransactionsView: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                )
+                .bentoCard(padding: 24)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -993,16 +1035,14 @@ public struct TransactionsView: View {
             Button("Limpar Seleção") {
                 selectedTransactionIds.removeAll()
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(BentoGlassButtonStyle())
 
             Button {
                 showBulkPaymentConfirmation = true
             } label: {
                 Label(bulkActionButtonTitle, systemImage: "checkmark.seal.fill")
-                    .font(.subheadline.weight(.semibold))
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Color(hex: "#10B981"))
+            .buttonStyle(BentoPrimaryButtonStyle(color: FinSenseTheme.emerald))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -1081,6 +1121,62 @@ public struct TransactionsView: View {
 
     @ViewBuilder
     private func transactionRow(_ tx: FinancialTransaction, intraAnalysis: IntraMonthCashFlowAnalysis? = nil) -> some View {
+        let projStatus = store.transactionProjectionStatus(for: tx)
+        let isShadowed = projStatus == .shadowed
+        let isEligibleForBulk = !tx.isPaid && !isShadowed && !tx.isCreditCardExpense
+        let isBulkSelected = isEligibleForBulk && selectedTransactionIds.contains(tx.id)
+        let correctionBreakdown = store.installmentCorrectionBreakdown(for: tx)
+
+        TransactionRowCardView(
+            tx: tx,
+            store: store,
+            intraAnalysis: intraAnalysis,
+            isBulkSelected: isBulkSelected,
+            onToggleBulkSelection: { toggleBulkSelection(for: tx) },
+            onTapPaymentAction: {
+                if tx.isCreditCardInvoicePayment,
+                   !tx.isPaid,
+                   let cid = tx.creditCardId,
+                   let ym = tx.creditCardInvoiceYearMonthKey {
+                    let comps = CreditCardEngine.yearMonthComponents(fromKey: ym)
+                    if let summary = store.invoiceSummary(for: cid, year: comps.year, month: comps.month) {
+                        payingCreditCardInvoiceSummary = summary
+                        return
+                    }
+                }
+                if !tx.isPaid && correctionBreakdown != nil {
+                    installmentPendingRealPaymentConfirmation = tx
+                } else {
+                    transactionPendingPaymentToggle = tx
+                }
+            },
+            onCancelRecurring: { recurringTransactionPendingCancellation = tx },
+            onCreateRule: {
+                let rule = store.createReconciliationRule(from: tx)
+                createdRuleBanner = "Regra \"\(rule.name)\" criada com sucesso!"
+            },
+            onEdit: { editingTransaction = tx },
+            onDelete: { transactionPendingDeletion = tx }
+        )
+    }
+}
+
+private struct TransactionRowCardView: View {
+    let tx: FinancialTransaction
+    @ObservedObject var store: FinancialDataStore
+    let intraAnalysis: IntraMonthCashFlowAnalysis?
+    let isBulkSelected: Bool
+    let onToggleBulkSelection: () -> Void
+    let onTapPaymentAction: () -> Void
+    let onCancelRecurring: () -> Void
+    let onCreateRule: () -> Void
+    let onEdit: () -> Void
+    let onDelete: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isHovered: Bool = false
+
+    var body: some View {
         let isCutoffTx = intraAnalysis?.cutoffTransactionIds.contains(tx.id) == true
         let isDeepeningTx = intraAnalysis?.deepeningDeficitTransactionIds.contains(tx.id) == true
         let isRecoveryTx = intraAnalysis?.recoveryTransactionIds.contains(tx.id) == true
@@ -1098,469 +1194,475 @@ public struct TransactionsView: View {
         let effectiveAmount = store.effectiveTransactionAmount(for: tx)
         let correctionBreakdown = store.installmentCorrectionBreakdown(for: tx)
         let isEligibleForBulk = !tx.isPaid && !isShadowed && !tx.isCreditCardExpense
-        let isBulkSelected = isEligibleForBulk && selectedTransactionIds.contains(tx.id)
 
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             if isCutoffTx {
-                HStack(spacing: 6) {
-                    Image(systemName: "scissors")
-                        .font(.caption.bold())
-                    Text("LINHA DE CORTE — A partir deste lançamento o saldo acumulado fica negativo")
-                        .font(.caption2.bold())
-                    Spacer()
-                }
-                .foregroundStyle(Color(hex: "#EF4444"))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: "#EF4444").opacity(0.14)))
-            } else if isDeepeningTx {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.caption.bold())
-                    Text("CAIXA NEGATIVO — Nova despesa aprofunda o déficit acumulado")
-                        .font(.caption2.bold())
-                    Spacer()
-                }
-                .foregroundStyle(Color(hex: "#EF4444"))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: "#EF4444").opacity(0.12)))
-            } else if isRecoveryTx {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.up.right.circle.fill")
-                        .font(.caption.bold())
-                    Text("CAIXA NORMALIZADO — Receita recompõe o saldo positivo")
-                        .font(.caption2.bold())
-                    Spacer()
-                }
-                .foregroundStyle(Color(hex: "#10B981"))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color(hex: "#10B981").opacity(0.14)))
-            }
-
-            HStack(spacing: 14) {
-            Button {
-                toggleBulkSelection(for: tx)
-            } label: {
-                Image(systemName: isEligibleForBulk
-                      ? (isBulkSelected ? "checkmark.square.fill" : "square")
-                      : (tx.isPaid ? "checkmark.square.fill" : "minus.square"))
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(isEligibleForBulk
-                                     ? (isBulkSelected ? Color(hex: "#10B981") : Color.secondary.opacity(0.75))
-                                     : Color.secondary.opacity(0.28))
-            }
-            .buttonStyle(.plain)
-            .disabled(!isEligibleForBulk)
-            .help(isEligibleForBulk
-                  ? "Selecionar para pagamento/recebimento em massa"
-                  : (tx.isPaid ? "Transação já liquidada (ignorada no pagamento em massa)" : "Transação suprimida"))
-
-            CategoryBadgeView(category: cat, size: 40)
-
-            VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
-                    Text(tx.name)
-                        .font(.system(size: 14, weight: isPayoffPlannedAmort ? .bold : .semibold))
-                        .foregroundStyle(isPayoffPlannedAmort ? Color(hex: "#059669") : .primary)
-                        .strikethrough(tx.ignoreInConsolidated || isShadowed, color: .secondary)
-
-                    if let badge = tx.installmentBadge {
-                        Text(badge)
-                            .font(.caption2.bold())
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.blue.opacity(0.15)))
-                            .foregroundStyle(.blue)
+                    Rectangle()
+                        .fill(FinSenseTheme.coral.opacity(0.45))
+                        .frame(height: 1)
+                    HStack(spacing: 5) {
+                        Image(systemName: "scissors")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("Linha de Corte · Caixa negativo a partir daqui")
+                            .font(.system(size: 10.5, weight: .semibold))
                     }
+                    .foregroundStyle(FinSenseTheme.coral)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(FinSenseTheme.coral.opacity(0.12)))
+                    .overlay(Capsule().strokeBorder(FinSenseTheme.coral.opacity(0.30), lineWidth: 0.75))
+                    Rectangle()
+                        .fill(FinSenseTheme.coral.opacity(0.45))
+                        .frame(height: 1)
+                }
+                .padding(.vertical, 2)
+            }
 
-                    if !isShadowed, let cb = correctionBreakdown {
-                        if tx.isPaid, let realCorr = cb.confirmedRealCorrectionAmount {
-                            let sign = realCorr >= 0 ? "+" : ""
-                            Label(
-                                "Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) • Juros/Correção Efetivada: \(sign)\(BRLFormatters.currency(realCorr))",
-                                systemImage: "checkmark.seal.fill"
-                            )
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color(hex: "#10B981").opacity(0.16)))
-                            .foregroundStyle(Color(hex: "#10B981"))
-                        } else if cb.projectedCorrectionAmount > 0.001 {
-                            Label(
-                                "Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) • Projeção (+\(cb.futureMonthStep)m): +\(BRLFormatters.currency(cb.projectedCorrectionAmount))",
-                                systemImage: "chart.line.uptrend.xyaxis"
-                            )
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color(hex: "#8B5CF6").opacity(0.16)))
-                            .foregroundStyle(Color(hex: "#8B5CF6"))
-                            .help("Valor cadastrado da parcela: \(BRLFormatters.currency(cb.baseRegisteredAmount)). Aumento projetado pela média do documento (+\(BRLFormatters.currency(cb.averageMonthlyGrowth))/mês × \(cb.futureMonthStep)m = +\(BRLFormatters.currency(cb.projectedCorrectionAmount))) para o fechamento do mês, sem impacto no valor de quitação.")
+            HStack(spacing: 12) {
+                if isInDeficitZone {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(FinSenseTheme.coral.opacity(0.85))
+                        .frame(width: 3, height: 34)
+                }
+
+                Button(action: onToggleBulkSelection) {
+                    Image(systemName: isEligibleForBulk
+                          ? (isBulkSelected ? "checkmark.square.fill" : "square")
+                          : (tx.isPaid ? "checkmark.square.fill" : "minus.square"))
+                        .font(.system(size: 15.5, weight: .semibold))
+                        .foregroundStyle(isEligibleForBulk
+                                         ? (isBulkSelected ? FinSenseTheme.emerald : Color.secondary.opacity(0.70))
+                                         : Color.secondary.opacity(0.25))
+                }
+                .buttonStyle(.plain)
+                .disabled(!isEligibleForBulk)
+                .help(isEligibleForBulk
+                      ? "Selecionar para pagamento/recebimento em massa"
+                      : (tx.isPaid ? "Transação já liquidada" : "Transação suprimida"))
+
+                CategoryBadgeView(category: cat, size: 38)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 7) {
+                        Text(tx.name)
+                            .font(.system(size: 13.5, weight: isPayoffPlannedAmort ? .bold : .semibold))
+                            .foregroundStyle(isPayoffPlannedAmort ? FinSenseTheme.emerald : .primary)
+                            .strikethrough(tx.ignoreInConsolidated || isShadowed, color: .secondary)
+
+                        if isDeepeningTx && !isCutoffTx {
+                            Text("Déficit")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(Capsule().fill(FinSenseTheme.coral.opacity(0.14)))
+                                .foregroundStyle(FinSenseTheme.coral)
+                        } else if isRecoveryTx {
+                            Label("Caixa Normalizado", systemImage: "arrow.up.right.circle.fill")
+                                .font(.system(size: 9.5, weight: .bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(Capsule().fill(FinSenseTheme.emerald.opacity(0.14)))
+                                .foregroundStyle(FinSenseTheme.emerald)
                         }
-                    }
 
-                    if isShadowed {
-                        Label("Suprimida pelo plano de quitação (R$ 0,00)", systemImage: "eye.slash.fill")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.secondary.opacity(0.18)))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if isPayoffPlannedAmort {
-                        Label("Liquidação Planejada (Quitação Total)", systemImage: "checkmark.seal.fill")
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2.5)
-                            .background(Capsule().fill(Color(hex: "#10B981").opacity(0.22)))
-                            .foregroundStyle(Color(hex: "#10B981"))
-                    } else if isPlannedAmort {
-                        Label("Amortização Planejada", systemImage: "wand.and.stars")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color(hex: "#6366F1").opacity(0.18)))
-                            .foregroundStyle(Color(hex: "#6366F1"))
-                    }
-
-                    if tx.recurrenceMode == .repeated {
-                        Label("Repetida", systemImage: "repeat")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.purple.opacity(0.15)))
-                            .foregroundStyle(.purple)
-                    }
-
-                    if tx.recurrenceMode == .recurring {
-                        let freqLabel = tx.recurrenceFrequency?.shortTitle ?? "Mensal"
-                        let isCanceled = tx.isCanceledRecurringSeries == true
-                        Label(
-                            isCanceled ? "Recorrente (\(freqLabel) • Cancelada)" : "Recorrente • \(freqLabel)",
-                            systemImage: "arrow.triangle.2.circlepath"
-                        )
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill((isCanceled ? Color.secondary : Color(hex: "#06B6D4")).opacity(0.16)))
-                        .foregroundStyle(isCanceled ? Color.secondary : Color(hex: "#06B6D4"))
-                    }
-
-                    if tx.ignoreInConsolidated {
-                        Text("Ignorado no Consolidado")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.orange.opacity(0.16)))
-                            .foregroundStyle(.orange)
-                    }
-
-                    if tx.isCreditCardInvoicePayment {
-                        Label("Pagamento de Fatura", systemImage: "creditcard.and.123")
-                            .font(.caption2.bold())
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color(hex: "#6366F1").opacity(0.18)))
-                            .foregroundStyle(Color(hex: "#6366F1"))
-                    } else if tx.isCreditCardExpense, let card {
-                        let invLabel: String = {
-                            if let ym = tx.creditCardInvoiceYearMonthKey {
-                                let c = CreditCardEngine.yearMonthComponents(fromKey: ym)
-                                return " • Fatura \(CreditCardEngine.shortInvoiceLabel(year: c.year, month: c.month))"
-                            }
-                            return ""
-                        }()
-                        Label("💳 \(card.name)\(invLabel)", systemImage: "creditcard.fill")
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(Color(hex: card.colorHex).opacity(0.16)))
-                            .foregroundStyle(Color(hex: card.colorHex))
-                    }
-
-                    if tx.needsReview == true {
-                        HStack(spacing: 4) {
-                            Label("Revisar", systemImage: "applepay")
+                        if let badge = tx.installmentBadge {
+                            Text(badge)
                                 .font(.caption2.bold())
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Capsule().fill(Color(hex: "#F59E0B").opacity(0.18)))
-                                .foregroundStyle(Color(hex: "#D97706"))
-                            Button {
-                                store.approveTransactionReview(tx.id)
-                            } label: {
-                                Label("Aprovar", systemImage: "checkmark")
-                                    .font(.caption2.bold())
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Capsule().fill(Color(hex: "#10B981").opacity(0.18)))
-                                    .foregroundStyle(Color(hex: "#059669"))
-                            }
-                            .buttonStyle(.plain)
+                                .background(Capsule().fill(FinSenseTheme.cyan.opacity(0.14)))
+                                .foregroundStyle(FinSenseTheme.cyan)
                         }
-                    }
 
-                    if tx.isReimbursable == true {
-                        let rem = tx.remainingReimbursableAmount
-                        let debtorName = (tx.reimbursableDebtor?.isEmpty == false ? tx.reimbursableDebtor! : "A Receber")
-                        Label(
-                            tx.isReimbursementSettled == true
-                                ? "Reembolsado (\(debtorName))"
-                                : "Reembolsável: \(BRLFormatters.currency(rem, currencyCode: tx.effectiveCurrencyCode)) (\(debtorName))",
-                            systemImage: "arrow.uturn.backward.circle.fill"
-                        )
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill((tx.isReimbursementSettled == true ? Color(hex: "#10B981") : Color(hex: "#F59E0B")).opacity(0.16)))
-                        .foregroundStyle(tx.isReimbursementSettled == true ? Color(hex: "#10B981") : Color(hex: "#D97706"))
-                    }
+                        if !isShadowed, let cb = correctionBreakdown {
+                            if tx.isPaid, let realCorr = cb.confirmedRealCorrectionAmount {
+                                let sign = realCorr >= 0 ? "+" : ""
+                                Label(
+                                    "Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) • Real: \(sign)\(BRLFormatters.currency(realCorr))",
+                                    systemImage: "checkmark.seal.fill"
+                                )
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(FinSenseTheme.emerald.opacity(0.14)))
+                                .foregroundStyle(FinSenseTheme.emerald)
+                            } else if cb.projectedCorrectionAmount > 0.001 {
+                                Label(
+                                    "Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) • Proj. (+\(cb.futureMonthStep)m): +\(BRLFormatters.currency(cb.projectedCorrectionAmount))",
+                                    systemImage: "chart.line.uptrend.xyaxis"
+                                )
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(FinSenseTheme.indigo.opacity(0.14)))
+                                .foregroundStyle(FinSenseTheme.indigo)
+                                .help("Aumento projetado pela média do documento (+\(BRLFormatters.currency(cb.averageMonthlyGrowth))/mês × \(cb.futureMonthStep)m)")
+                            }
+                        }
 
-                    if let attName = tx.attachmentName, let attPath = tx.attachmentPath {
-                        Button {
-                            NSWorkspace.shared.open(URL(fileURLWithPath: attPath))
-                        } label: {
-                            Label(attName, systemImage: "paperclip")
+                        if isShadowed {
+                            Label("Suprimida pelo plano (R$ 0,00)", systemImage: "eye.slash.fill")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.secondary.opacity(0.16)))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if isPayoffPlannedAmort {
+                            Label("Quitação Planejada", systemImage: "checkmark.seal.fill")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(FinSenseTheme.emerald.opacity(0.18)))
+                                .foregroundStyle(FinSenseTheme.emerald)
+                        } else if isPlannedAmort {
+                            Label("Amortização Planejada", systemImage: "wand.and.stars")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(FinSenseTheme.indigo.opacity(0.15)))
+                                .foregroundStyle(FinSenseTheme.indigo)
+                        }
+
+                        if tx.recurrenceMode == .repeated {
+                            Label("Repetida", systemImage: "repeat")
                                 .font(.caption2)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Capsule().fill(Color.secondary.opacity(0.15)))
+                                .background(Capsule().fill(FinSenseTheme.indigo.opacity(0.13)))
+                                .foregroundStyle(FinSenseTheme.indigo)
                         }
-                        .buttonStyle(.plain)
-                        .help("Abrir anexo: \(attName)")
-                    }
-                }
 
-                HStack(spacing: 10) {
-                    Text(BRLFormatters.shortDate(tx.date))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    if let cat {
-                        Text("• \(cat.name)")
-                            .font(.caption)
-                            .foregroundStyle(Color(hex: cat.colorHex))
-                    }
-
-                    if let acc {
-                        Text("• \(acc.name)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if let card, tx.isCreditCardExpense {
-                        Text("• 💳 \(card.name)")
-                            .font(.caption)
-                            .foregroundStyle(Color(hex: card.colorHex))
-                    }
-
-                    if !tx.details.isEmpty {
-                        Text("• \(tx.details)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-            }
-
-            Spacer()
-
-            // Paid / Received Status & Action Button (com confirmação explícita / tratamento próprio de Cartão)
-            if tx.isCreditCardExpense {
-                let invoiceSum: CreditCardInvoiceSummary? = {
-                    guard let cid = tx.creditCardId, let ym = tx.creditCardInvoiceYearMonthKey else { return nil }
-                    let comps = CreditCardEngine.yearMonthComponents(fromKey: ym)
-                    return store.invoiceSummary(for: cid, year: comps.year, month: comps.month)
-                }()
-                let invStatus = invoiceSum?.status ?? .open
-                let invColor = Color(hex: invStatus.colorHex)
-
-                Button {
-                    if let cid = tx.creditCardId {
-                        store.selectedCreditCardIdForDetail = cid
-                    }
-                    store.selectedDestination = .creditCards
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: invStatus.iconSymbol)
-                        Text(invStatus == .paid ? "Fatura Paga" : "Na Fatura (\(invStatus.rawValue))")
-                            .font(.caption.weight(.bold))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        Capsule()
-                            .fill(invColor.opacity(0.14))
-                            .overlay(
-                                Capsule()
-                                    .stroke(invColor.opacity(0.35), lineWidth: 1)
+                        if tx.recurrenceMode == .recurring {
+                            let freqLabel = tx.recurrenceFrequency?.shortTitle ?? "Mensal"
+                            let isCanceled = tx.isCanceledRecurringSeries == true
+                            Label(
+                                isCanceled ? "Recorrente (Cancelada)" : "Recorrente • \(freqLabel)",
+                                systemImage: "arrow.triangle.2.circlepath"
                             )
-                    )
-                    .foregroundStyle(invColor)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill((isCanceled ? Color.secondary : FinSenseTheme.cyan).opacity(0.14)))
+                            .foregroundStyle(isCanceled ? Color.secondary : FinSenseTheme.cyan)
+                        }
+
+                        if tx.ignoreInConsolidated {
+                            Text("Ignorado")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(FinSenseTheme.amber.opacity(0.15)))
+                                .foregroundStyle(FinSenseTheme.amber)
+                        }
+
+                        if tx.isCreditCardInvoicePayment {
+                            Label("Pagamento de Fatura", systemImage: "creditcard.and.123")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(FinSenseTheme.indigo.opacity(0.16)))
+                                .foregroundStyle(FinSenseTheme.indigo)
+                        } else if tx.isCreditCardExpense, let card {
+                            let invLabel: String = {
+                                if let ym = tx.creditCardInvoiceYearMonthKey {
+                                    let c = CreditCardEngine.yearMonthComponents(fromKey: ym)
+                                    return " • \(CreditCardEngine.shortInvoiceLabel(year: c.year, month: c.month))"
+                                }
+                                return ""
+                            }()
+                            Label("💳 \(card.name)\(invLabel)", systemImage: "creditcard.fill")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color(hex: card.colorHex).opacity(0.15)))
+                                .foregroundStyle(Color(hex: card.colorHex))
+                        }
+
+                        if tx.needsReview == true {
+                            HStack(spacing: 4) {
+                                Label("Revisar", systemImage: "applepay")
+                                    .font(.caption2.bold())
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(FinSenseTheme.amber.opacity(0.16)))
+                                    .foregroundStyle(FinSenseTheme.amber)
+                                Button {
+                                    store.approveTransactionReview(tx.id)
+                                } label: {
+                                    Label("Aprovar", systemImage: "checkmark")
+                                        .font(.caption2.bold())
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(FinSenseTheme.emerald.opacity(0.16)))
+                                        .foregroundStyle(FinSenseTheme.emerald)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+
+                        if tx.isReimbursable == true {
+                            let rem = tx.remainingReimbursableAmount
+                            let debtorName = (tx.reimbursableDebtor?.isEmpty == false ? tx.reimbursableDebtor! : "A Receber")
+                            Label(
+                                tx.isReimbursementSettled == true
+                                    ? "Reembolsado (\(debtorName))"
+                                    : "Reembolsável: \(BRLFormatters.currency(rem, currencyCode: tx.effectiveCurrencyCode))",
+                                systemImage: "arrow.uturn.backward.circle.fill"
+                            )
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill((tx.isReimbursementSettled == true ? FinSenseTheme.emerald : FinSenseTheme.amber).opacity(0.15)))
+                            .foregroundStyle(tx.isReimbursementSettled == true ? FinSenseTheme.emerald : FinSenseTheme.amber)
+                        }
+
+                        if let attName = tx.attachmentName, let attPath = tx.attachmentPath {
+                            Button {
+                                NSWorkspace.shared.open(URL(fileURLWithPath: attPath))
+                            } label: {
+                                Label(attName, systemImage: "paperclip")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.secondary.opacity(0.14)))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Abrir anexo: \(attName)")
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        Text(BRLFormatters.shortDate(tx.date))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        if let cat {
+                            Text("• \(cat.name)")
+                                .font(.caption)
+                                .foregroundStyle(Color(hex: cat.colorHex))
+                        }
+
+                        if let acc {
+                            Text("• \(acc.name)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if let card, tx.isCreditCardExpense {
+                            Text("• 💳 \(card.name)")
+                                .font(.caption)
+                                .foregroundStyle(Color(hex: card.colorHex))
+                        }
+
+                        if !tx.details.isEmpty {
+                            Text("• \(tx.details)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                 }
-                .buttonStyle(.plain)
-                .help("Compra lançada no cartão de crédito (Regime de Competência). Clique para abrir a fatura correspondente em Cartões de Crédito.")
-            } else {
-                Button {
-                    if tx.isCreditCardInvoicePayment,
-                       !tx.isPaid,
-                       let cid = tx.creditCardId,
-                       let ym = tx.creditCardInvoiceYearMonthKey {
+
+                Spacer(minLength: 8)
+
+                // Paid / Received Status & Action Button (fixed position)
+                if tx.isCreditCardExpense {
+                    let invoiceSum: CreditCardInvoiceSummary? = {
+                        guard let cid = tx.creditCardId, let ym = tx.creditCardInvoiceYearMonthKey else { return nil }
                         let comps = CreditCardEngine.yearMonthComponents(fromKey: ym)
-                        if let summary = store.invoiceSummary(for: cid, year: comps.year, month: comps.month) {
-                            payingCreditCardInvoiceSummary = summary
-                            return
-                        }
-                    }
-                    if !tx.isPaid && correctionBreakdown != nil {
-                        installmentPendingRealPaymentConfirmation = tx
-                    } else {
-                        transactionPendingPaymentToggle = tx
-                    }
-                } label: {
-                    let buttonLabel: String = {
-                        if tx.isPaid {
-                            return tx.type == .expense ? "Pago" : "Recebido"
-                        }
-                        if tx.isCreditCardInvoicePayment { return "Pagar Fatura" }
-                        if isPayoffPlannedAmort { return "Confirmar Liquidação" }
-                        if isPlannedAmort { return "Confirmar Pagamento" }
-                        if correctionBreakdown != nil { return "Confirmar Valor & Pagar" }
-                        return tx.type == .expense ? "Pagar" : "Receber"
+                        return store.invoiceSummary(for: cid, year: comps.year, month: comps.month)
                     }()
-                    let buttonIcon: String = {
-                        if tx.isPaid { return "checkmark.circle.fill" }
-                        if tx.isCreditCardInvoicePayment { return "creditcard.and.123" }
-                        if isPayoffPlannedAmort || isPlannedAmort { return "checkmark.seal.fill" }
-                        return tx.type == .expense ? "creditcard.fill" : "arrow.down.circle.fill"
-                    }()
-                    let buttonTint: Color = {
-                        if tx.isPaid { return .green }
-                        if tx.isCreditCardInvoicePayment { return Color(hex: "#6366F1") }
-                        if isPayoffPlannedAmort { return Color(hex: "#10B981") }
-                        if isPlannedAmort { return Color(hex: "#6366F1") }
-                        return tx.type == .expense ? Color(hex: "#0284C7") : Color(hex: "#10B981")
-                    }()
+                    let invStatus = invoiceSum?.status ?? .open
+                    let invColor = Color(hex: invStatus.colorHex)
 
-                    HStack(spacing: 5) {
-                        Image(systemName: buttonIcon)
-                        Text(buttonLabel)
-                            .font(.caption.weight(.bold))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        Capsule()
-                            .fill(tx.isPaid ? Color.green.opacity(0.14) : buttonTint.opacity(0.16))
-                            .overlay(
-                                Capsule()
-                                    .stroke(tx.isPaid ? Color.clear : buttonTint.opacity(0.45), lineWidth: 1)
-                            )
-                    )
-                    .foregroundStyle(buttonTint)
-                }
-                .buttonStyle(.plain)
-                .disabled(isShadowed)
-                .help(tx.isCreditCardInvoicePayment && !tx.isPaid ? "Abrir tela de pagamento da fatura para revisar conta bancária, data e valor" : (isPayoffPlannedAmort ? "Confirmar pagamento desta liquidação planejada e quitar o contrato" : (isPlannedAmort ? "Confirmar pagamento desta amortização planejada e atualizar o contrato real" : (!tx.isPaid && correctionBreakdown != nil ? "Abrir modal para confirmar o valor real final da parcela e os juros efetivados na ocasião" : (tx.isPaid ? "Clique para desfazer liquidação (com confirmação)" : (isFuture ? "Pagar/Receber agora (a transação será movida para hoje após confirmação)" : (tx.type == .expense ? "Pagar transação (com confirmação)" : "Receber transação (com confirmação)")))))))
-            }
-
-            // Amount
-            VStack(alignment: .trailing, spacing: 1) {
-                Text((tx.type == .expense ? "- " : "+ ") + BRLFormatters.currency(effectiveAmount, currencyCode: tx.effectiveCurrencyCode))
-                    .font(.system(size: 15, weight: .bold, design: .rounded))
-                    .foregroundStyle(
-                        (tx.ignoreInConsolidated || isShadowed)
-                            ? Color.secondary
-                            : (isPayoffPlannedAmort ? Color(hex: "#10B981") : (isPlannedAmort ? Color(hex: "#6366F1") : (tx.type == .expense ? Color(hex: "#EF4444") : Color(hex: "#10B981"))))
-                    )
-                if tx.effectiveCurrencyCode != "BRL" {
-                    Text("≈ \(BRLFormatters.currency(store.effectiveTransactionAmountInBRL(for: tx)))")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                if isShadowed || abs(effectiveAmount - tx.amount) > 0.01 {
-                    Text(BRLFormatters.currency(tx.amount))
-                        .font(.caption2)
-                        .strikethrough(true, color: .secondary)
-                        .foregroundStyle(.secondary)
-                } else if let cb = correctionBreakdown {
-                    if tx.isPaid, let realCorr = cb.confirmedRealCorrectionAmount {
-                        let sign = realCorr >= 0 ? "+" : ""
-                        Text("Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) (\(sign)\(BRLFormatters.currency(realCorr)) real)")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(Color(hex: "#10B981"))
-                    } else if cb.projectedCorrectionAmount > 0.001 {
-                        Text("Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) (+\(BRLFormatters.currency(cb.projectedCorrectionAmount)) proj.)")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundStyle(Color(hex: "#8B5CF6"))
-                    }
-                }
-                if let rb = runningBalance {
-                    Text("Saldo: \(BRLFormatters.currency(rb))")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(rb < -0.005 ? Color(hex: "#EF4444") : .secondary)
-                }
-            }
-            .frame(minWidth: 145, alignment: .trailing)
-
-            // Context actions
-            HStack(spacing: 4) {
-                if tx.recurrenceMode == .recurring && tx.isCanceledRecurringSeries != true {
                     Button {
-                        recurringTransactionPendingCancellation = tx
+                        if let cid = tx.creditCardId {
+                            store.selectedCreditCardIdForDetail = cid
+                        }
+                        store.selectedDestination = .creditCards
                     } label: {
-                        Image(systemName: "stop.circle")
-                            .foregroundStyle(.orange)
-                            .frame(width: 26, height: 26)
+                        HStack(spacing: 5) {
+                            Image(systemName: invStatus.iconSymbol)
+                            Text(invStatus == .paid ? "Fatura Paga" : "Na Fatura (\(invStatus.rawValue))")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule()
+                                .fill(invColor.opacity(0.12))
+                                .overlay(
+                                    Capsule()
+                                        .strokeBorder(invColor.opacity(0.30), lineWidth: 0.75)
+                                )
+                        )
+                        .foregroundStyle(invColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Compra lançada no cartão de crédito. Clique para abrir a fatura correspondente.")
+                } else {
+                    Button(action: onTapPaymentAction) {
+                        let buttonLabel: String = {
+                            if tx.isPaid {
+                                return tx.type == .expense ? "Pago" : "Recebido"
+                            }
+                            if tx.isCreditCardInvoicePayment { return "Pagar Fatura" }
+                            if isPayoffPlannedAmort { return "Confirmar Liquidação" }
+                            if isPlannedAmort { return "Confirmar Pagamento" }
+                            if correctionBreakdown != nil { return "Confirmar & Pagar" }
+                            return tx.type == .expense ? "Pagar" : "Receber"
+                        }()
+                        let buttonIcon: String = {
+                            if tx.isPaid { return "checkmark.circle.fill" }
+                            if tx.isCreditCardInvoicePayment { return "creditcard.and.123" }
+                            if isPayoffPlannedAmort || isPlannedAmort { return "checkmark.seal.fill" }
+                            return tx.type == .expense ? "creditcard.fill" : "arrow.down.circle.fill"
+                        }()
+                        let buttonTint: Color = {
+                            if tx.isPaid { return FinSenseTheme.emerald }
+                            if tx.isCreditCardInvoicePayment { return FinSenseTheme.indigo }
+                            if isPayoffPlannedAmort { return FinSenseTheme.emerald }
+                            if isPlannedAmort { return FinSenseTheme.indigo }
+                            return tx.type == .expense ? FinSenseTheme.cyan : FinSenseTheme.emerald
+                        }()
+
+                        HStack(spacing: 5) {
+                            Image(systemName: buttonIcon)
+                            Text(buttonLabel)
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            Capsule()
+                                .fill(buttonTint.opacity(tx.isPaid ? 0.12 : 0.14))
+                                .overlay(
+                                    Capsule()
+                                        .strokeBorder(tx.isPaid ? Color.clear : buttonTint.opacity(0.35), lineWidth: 0.75)
+                                )
+                        )
+                        .foregroundStyle(buttonTint)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isShadowed)
+                    .help(tx.isPaid ? "Clique para desfazer liquidação" : (isFuture ? "Pagar/Receber agora (movida para hoje após confirmação)" : "Liquidar transação"))
+                }
+
+                // Hover-revealed context actions inside fixed-width slot (zero layout shift!)
+                HStack(spacing: 3) {
+                    if tx.recurrenceMode == .recurring && tx.isCanceledRecurringSeries != true {
+                        Button(action: onCancelRecurring) {
+                            Image(systemName: "stop.circle")
+                                .foregroundStyle(FinSenseTheme.amber)
+                                .frame(width: 24, height: 24)
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Cancelar recorrência / assinatura")
+                    }
+
+                    Button(action: onCreateRule) {
+                        Image(systemName: "wand.and.stars")
+                            .foregroundStyle(FinSenseTheme.indigo)
+                            .frame(width: 24, height: 24)
                     }
                     .buttonStyle(.borderless)
-                    .help("Cancelar recorrência / assinatura")
-                }
+                    .help("Criar regra determinística a partir desta transação")
 
-                Button {
-                    let rule = store.createReconciliationRule(from: tx)
-                    createdRuleBanner = "Regra \"\(rule.name)\" criada com sucesso!"
-                } label: {
-                    Image(systemName: "wand.and.stars")
-                        .foregroundStyle(Color(hex: "#6366F1"))
-                        .frame(width: 26, height: 26)
-                }
-                .buttonStyle(.borderless)
-                .help("Criar regra determinística a partir desta transação")
+                    Button(action: onEdit) {
+                        Image(systemName: "pencil")
+                            .foregroundStyle(.secondary)
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Editar transação")
 
-                Button {
-                    editingTransaction = tx
-                } label: {
-                    Image(systemName: "pencil")
-                        .frame(width: 26, height: 26)
+                    Button(role: .destructive, action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundStyle(FinSenseTheme.coral)
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Excluir transação")
                 }
-                .buttonStyle(.borderless)
-                .help("Editar transação")
+                .frame(width: 108, alignment: .trailing)
+                .opacity(isHovered ? 1.0 : 0.0)
+                .allowsHitTesting(isHovered)
+                .animation(.snappy(duration: 0.16), value: isHovered)
 
-                Button(role: .destructive) {
-                    transactionPendingDeletion = tx
-                } label: {
-                    Image(systemName: "trash")
-                        .foregroundStyle(.red)
-                        .frame(width: 26, height: 26)
+                // Fixed Right-Aligned Amount + Running Balance Column
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text((tx.type == .expense ? "- " : "+ ") + BRLFormatters.currency(effectiveAmount, currencyCode: tx.effectiveCurrencyCode))
+                        .font(.system(size: 14.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(
+                            (tx.ignoreInConsolidated || isShadowed)
+                                ? Color.secondary
+                                : (isPayoffPlannedAmort ? FinSenseTheme.emerald : (isPlannedAmort ? FinSenseTheme.indigo : (tx.type == .expense ? FinSenseTheme.coral : FinSenseTheme.emerald)))
+                        )
+                        .monospacedDigit()
+                    if tx.effectiveCurrencyCode != "BRL" {
+                        Text("≈ \(BRLFormatters.currency(store.effectiveTransactionAmountInBRL(for: tx)))")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    if isShadowed || abs(effectiveAmount - tx.amount) > 0.01 {
+                        Text(BRLFormatters.currency(tx.amount))
+                            .font(.caption2)
+                            .strikethrough(true, color: .secondary)
+                            .foregroundStyle(.secondary)
+                    } else if let cb = correctionBreakdown {
+                        if tx.isPaid, let realCorr = cb.confirmedRealCorrectionAmount {
+                            let sign = realCorr >= 0 ? "+" : ""
+                            Text("Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) (\(sign)\(BRLFormatters.currency(realCorr)) real)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(FinSenseTheme.emerald)
+                        } else if cb.projectedCorrectionAmount > 0.001 {
+                            Text("Base: \(BRLFormatters.currency(cb.baseRegisteredAmount)) (+\(BRLFormatters.currency(cb.projectedCorrectionAmount)) proj.)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(FinSenseTheme.indigo)
+                        }
+                    }
+                    if let rb = runningBalance {
+                        Text("Saldo: \(BRLFormatters.currency(rb))")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(rb < -0.005 ? FinSenseTheme.coral : .secondary)
+                    }
                 }
-                .buttonStyle(.borderless)
-                .help("Excluir transação")
+                .frame(minWidth: 145, alignment: .trailing)
             }
+            .opacity(isShadowed ? 0.50 : 1.0)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(
+                        isInDeficitZone
+                            ? FinSenseTheme.coral.opacity(0.05)
+                            : (isPayoffPlannedAmort
+                                ? FinSenseTheme.emerald.opacity(0.08)
+                                : (isPlannedAmort
+                                    ? FinSenseTheme.indigo.opacity(0.05)
+                                    : (isHovered ? FinSenseTheme.nestedSurface(for: colorScheme) : FinSenseTheme.elevatedSurface(for: colorScheme))))
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(
+                        isInDeficitZone
+                            ? FinSenseTheme.coral.opacity(0.32)
+                            : (isPayoffPlannedAmort
+                                ? FinSenseTheme.emerald.opacity(0.42)
+                                : (isPlannedAmort
+                                    ? FinSenseTheme.indigo.opacity(0.25)
+                                    : FinSenseTheme.cardBorder(for: colorScheme))),
+                        lineWidth: (isInDeficitZone || isPayoffPlannedAmort) ? 1 : FinSenseTheme.hairlineWidth
+                    )
+            )
+            .onHover { hovering in
+                isHovered = hovering
             }
         }
-        .opacity(isShadowed ? 0.50 : 1.0)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(isInDeficitZone ? Color(hex: "#EF4444").opacity(0.06) : (isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.10) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.06) : Color(nsColor: .controlBackgroundColor))))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(isInDeficitZone ? Color(hex: "#EF4444").opacity(0.42) : (isPayoffPlannedAmort ? Color(hex: "#10B981").opacity(0.50) : (isPlannedAmort ? Color(hex: "#6366F1").opacity(0.28) : Color.primary.opacity(0.06))), lineWidth: (isInDeficitZone || isPayoffPlannedAmort) ? 1.5 : 1)
-        )
     }
 }
 
