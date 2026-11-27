@@ -5,6 +5,7 @@ public struct MainContentView: View {
     @ObservedObject public var store: FinancialDataStore
     @ObservedObject public var llmService: LocalLLMService
     @ObservedObject public var syncService: CloudSyncService
+    @Environment(\.colorScheme) private var colorScheme
     @AppStorage("is_patrimony_hidden") private var isPatrimonyHidden: Bool = false
     @AppStorage("sidebar_decisions_expanded") private var isDecisionsExpanded: Bool = false
 
@@ -263,8 +264,10 @@ public struct MainContentView: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
 
                 Divider()
+                    .opacity(0.45)
 
                 // Bottom Consolidated Status & Quick AI Chat Button
                 VStack(alignment: .leading, spacing: 10) {
@@ -280,8 +283,8 @@ public struct MainContentView: View {
                             } else {
                                 Text(BRLFormatters.currency(store.totalConsolidatedPatrimonyNow))
                                     .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .foregroundStyle(store.totalConsolidatedPatrimonyNow >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444"))
-                                    .monospacedDigit()
+                                    .foregroundStyle(store.totalConsolidatedPatrimonyNow >= 0 ? FinSenseTheme.emerald : FinSenseTheme.coral)
+                                    .numericCurrencyTransition(value: store.totalConsolidatedPatrimonyNow)
                             }
                         }
                         Spacer()
@@ -301,26 +304,19 @@ public struct MainContentView: View {
                     Button {
                         store.openAIChat()
                     } label: {
-                        HStack {
+                        HStack(spacing: 6) {
                             Image(systemName: "sparkles.bubble.fill")
-                            Text("Abrir Chat IA Local")
+                                .foregroundStyle(FinSenseTheme.indigo)
+                            Text("Chat IA Local")
                                 .fontWeight(.semibold)
                             Spacer()
+                            Text("⌘K")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.secondary)
                         }
-                        .font(.caption)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(
-                            LinearGradient(
-                                colors: [Color(hex: "#6366F1"), Color(hex: "#8B5CF6")],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 9, verticalPadding: 7, horizontalPadding: 10))
 
                     if store.persistenceEnvironment.isDebug {
                         HStack(spacing: 4) {
@@ -330,12 +326,13 @@ public struct MainContentView: View {
                                 .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                                 .lineLimit(1)
                         }
-                        .foregroundStyle(Color(hex: "#F59E0B"))
+                        .foregroundStyle(FinSenseTheme.amber)
                         .help("Banco de desenvolvimento isolado em: \(store.databaseFileURL.path)")
                     }
                 }
                 .padding(14)
             }
+            .background(.ultraThinMaterial)
             .navigationSplitViewColumnWidth(min: 235, ideal: 250, max: 290)
         } detail: {
             Group {
@@ -365,8 +362,10 @@ public struct MainContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(FinSenseTheme.canvasBackground(for: colorScheme))
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    AppleIntelligenceStatusDot(llmService: llmService, store: store)
                     SyncStatusIndicatorView(syncService: syncService)
                 }
             }

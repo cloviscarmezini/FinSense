@@ -1,5 +1,337 @@
 import SwiftUI
 import AppKit
+
+// MARK: - FinSense 2.0 Bento Design System & Tokens
+
+public enum FinSenseTheme {
+    public static let cardCornerRadius: CGFloat = 15
+    public static let compactCornerRadius: CGFloat = 11
+    public static let hairlineWidth: CGFloat = 0.75
+
+    // 90/10 Controlled Semantic Palette
+    public static let emerald = Color(hex: "#10B981")
+    public static let coral = Color(hex: "#EF4444")
+    public static let softCoral = Color(hex: "#F87171")
+    public static let amber = Color(hex: "#F59E0B")
+    public static let indigo = Color(hex: "#6366F1")
+    public static let cyan = Color(hex: "#0EA5E9")
+
+    public static func canvasBackground(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(hex: "#121214") : Color(hex: "#F5F5F7")
+    }
+
+    public static func elevatedSurface(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(hex: "#1C1C1F") : Color.white
+    }
+
+    public static func nestedSurface(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color(hex: "#232327") : Color(hex: "#F1F1F5")
+    }
+
+    public static func cardBorder(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07)
+    }
+
+    public static func subtleDivider(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.06)
+    }
+
+    public static func glassFill(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.045)
+    }
+
+    public static func glassHoverFill(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.white.opacity(0.11) : Color.black.opacity(0.08)
+    }
+
+    public static func ambientShadow(for scheme: ColorScheme) -> Color {
+        scheme == .dark ? Color.black.opacity(0.32) : Color.black.opacity(0.045)
+    }
+}
+
+public struct BentoCardModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    public let padding: CGFloat
+    public let cornerRadius: CGFloat
+    public let accent: Color?
+    public let isHighlighted: Bool
+
+    public init(
+        padding: CGFloat = 18,
+        cornerRadius: CGFloat = FinSenseTheme.cardCornerRadius,
+        accent: Color? = nil,
+        isHighlighted: Bool = false
+    ) {
+        self.padding = padding
+        self.cornerRadius = cornerRadius
+        self.accent = accent
+        self.isHighlighted = isHighlighted
+    }
+
+    public func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let borderColor: Color = {
+            if isHighlighted, let accent {
+                return accent.opacity(colorScheme == .dark ? 0.38 : 0.30)
+            }
+            return FinSenseTheme.cardBorder(for: colorScheme)
+        }()
+
+        content
+            .padding(padding)
+            .background {
+                ZStack {
+                    shape.fill(FinSenseTheme.elevatedSurface(for: colorScheme))
+                    if isHighlighted, let accent {
+                        shape.fill(
+                            LinearGradient(
+                                colors: [
+                                    accent.opacity(colorScheme == .dark ? 0.11 : 0.06),
+                                    accent.opacity(0.01)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                    }
+                }
+            }
+            .overlay(
+                shape.strokeBorder(borderColor, lineWidth: isHighlighted ? 1 : FinSenseTheme.hairlineWidth)
+            )
+            .shadow(color: FinSenseTheme.ambientShadow(for: colorScheme), radius: isHighlighted ? 14 : 8, x: 0, y: 4)
+    }
+}
+
+extension View {
+    public func bentoCard(
+        padding: CGFloat = 18,
+        cornerRadius: CGFloat = FinSenseTheme.cardCornerRadius,
+        accent: Color? = nil,
+        isHighlighted: Bool = false
+    ) -> some View {
+        modifier(
+            BentoCardModifier(
+                padding: padding,
+                cornerRadius: cornerRadius,
+                accent: accent,
+                isHighlighted: isHighlighted
+            )
+        )
+    }
+
+    public func numericCurrencyTransition<V: Equatable>(value: V) -> some View {
+        self
+            .monospacedDigit()
+            .contentTransition(.numericText())
+            .animation(.snappy(duration: 0.28), value: value)
+    }
+}
+
+public struct BentoGlassButtonStyle: ButtonStyle {
+    public var tint: Color?
+    public var cornerRadius: CGFloat
+    public var verticalPadding: CGFloat
+    public var horizontalPadding: CGFloat
+
+    public init(
+        tint: Color? = nil,
+        cornerRadius: CGFloat = 9,
+        verticalPadding: CGFloat = 6,
+        horizontalPadding: CGFloat = 12
+    ) {
+        self.tint = tint
+        self.cornerRadius = cornerRadius
+        self.verticalPadding = verticalPadding
+        self.horizontalPadding = horizontalPadding
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
+        BentoGlassButtonBody(
+            configuration: configuration,
+            tint: tint,
+            cornerRadius: cornerRadius,
+            verticalPadding: verticalPadding,
+            horizontalPadding: horizontalPadding
+        )
+    }
+
+    private struct BentoGlassButtonBody: View {
+        @Environment(\.colorScheme) private var colorScheme
+        @State private var isHovered = false
+        let configuration: Configuration
+        let tint: Color?
+        let cornerRadius: CGFloat
+        let verticalPadding: CGFloat
+        let horizontalPadding: CGFloat
+
+        var body: some View {
+            let baseFill: Color = {
+                if let tint {
+                    return tint.opacity(isHovered ? 0.18 : 0.11)
+                }
+                return isHovered
+                    ? FinSenseTheme.glassHoverFill(for: colorScheme)
+                    : FinSenseTheme.glassFill(for: colorScheme)
+            }()
+            let strokeColor: Color = {
+                if let tint {
+                    return tint.opacity(isHovered ? 0.35 : 0.22)
+                }
+                return FinSenseTheme.cardBorder(for: colorScheme)
+            }()
+
+            configuration.label
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(tint ?? .primary)
+                .padding(.horizontal, horizontalPadding)
+                .padding(.vertical, verticalPadding)
+                .background(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(baseFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(strokeColor, lineWidth: FinSenseTheme.hairlineWidth)
+                )
+                .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+                .animation(.snappy(duration: 0.16), value: configuration.isPressed)
+                .animation(.snappy(duration: 0.16), value: isHovered)
+                .onHover { hovering in
+                    isHovered = hovering
+                }
+        }
+    }
+}
+
+public struct BentoPrimaryButtonStyle: ButtonStyle {
+    public var color: Color
+    public var cornerRadius: CGFloat
+    public var verticalPadding: CGFloat
+    public var horizontalPadding: CGFloat
+
+    public init(
+        color: Color = FinSenseTheme.indigo,
+        cornerRadius: CGFloat = 9,
+        verticalPadding: CGFloat = 6.5,
+        horizontalPadding: CGFloat = 13
+    ) {
+        self.color = color
+        self.cornerRadius = cornerRadius
+        self.verticalPadding = verticalPadding
+        self.horizontalPadding = horizontalPadding
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
+        BentoPrimaryButtonBody(
+            configuration: configuration,
+            color: color,
+            cornerRadius: cornerRadius,
+            verticalPadding: verticalPadding,
+            horizontalPadding: horizontalPadding
+        )
+    }
+
+    private struct BentoPrimaryButtonBody: View {
+        @State private var isHovered = false
+        let configuration: Configuration
+        let color: Color
+        let cornerRadius: CGFloat
+        let verticalPadding: CGFloat
+        let horizontalPadding: CGFloat
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, horizontalPadding)
+                .padding(.vertical, verticalPadding)
+                .background(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(color.opacity(isHovered ? 0.92 : 1.0))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.75)
+                )
+                .shadow(color: color.opacity(0.24), radius: 6, x: 0, y: 2)
+                .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+                .animation(.snappy(duration: 0.16), value: configuration.isPressed)
+                .animation(.snappy(duration: 0.16), value: isHovered)
+                .onHover { hovering in
+                    isHovered = hovering
+                }
+        }
+    }
+}
+
+public struct AppleIntelligenceStatusDot: View {
+    @ObservedObject public var llmService: LocalLLMService
+    @ObservedObject public var store: FinancialDataStore
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isHovered = false
+
+    public init(llmService: LocalLLMService, store: FinancialDataStore) {
+        self.llmService = llmService
+        self.store = store
+    }
+
+    private var statusColor: Color {
+        if llmService.isDownloading {
+            return FinSenseTheme.cyan
+        } else if store.hasInstalledLLMModel {
+            return FinSenseTheme.emerald
+        } else if LocalLLMRuntime.isAppleIntelligenceAvailable {
+            return FinSenseTheme.amber
+        } else {
+            return .secondary
+        }
+    }
+
+    private var tooltipText: String {
+        if llmService.isDownloading {
+            return "Preparando modelo IA local... Clique para ver detalhes"
+        } else if store.hasInstalledLLMModel {
+            let engine = llmService.activeEngineDescription.isEmpty ? "Apple Intelligence On-Device" : llmService.activeEngineDescription
+            return "\(engine) • Clique para abrir Chat IA (⌘K)"
+        } else if LocalLLMRuntime.isAppleIntelligenceAvailable {
+            return "Apple Intelligence disponível • Clique para ativar ou abrir Chat IA (⌘K)"
+        } else {
+            return "IA Local em espera • Clique para configurar ou abrir assistente (⌘K)"
+        }
+    }
+
+    public var body: some View {
+        Button {
+            store.openAIChat()
+        } label: {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 7, height: 7)
+                    .shadow(color: statusColor.opacity(0.6), radius: 3)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isHovered ? .primary : .secondary)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(isHovered ? FinSenseTheme.glassHoverFill(for: colorScheme) : FinSenseTheme.glassFill(for: colorScheme))
+            )
+            .overlay(
+                Capsule()
+                    .strokeBorder(FinSenseTheme.cardBorder(for: colorScheme), lineWidth: FinSenseTheme.hairlineWidth)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help(tooltipText)
+    }
+}
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import UniformTypeIdentifiers
@@ -313,62 +645,81 @@ public struct CategoryBadgeView: View {
 
 public struct MonthNavigatorBar: View {
     @ObservedObject public var store: FinancialDataStore
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(store: FinancialDataStore) {
         self.store = store
     }
 
     public var body: some View {
-        HStack(spacing: 10) {
-            Button {
-                store.changeMonth(by: -1)
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.bordered)
-            .help("Mês anterior")
+        HStack(spacing: 8) {
+            HStack(spacing: 2) {
+                Button {
+                    withAnimation(.snappy(duration: 0.24)) {
+                        store.changeMonth(by: -1)
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Mês anterior")
 
-            HStack(spacing: 6) {
-                Image(systemName: "calendar")
-                    .foregroundStyle(.secondary)
-                Text(BRLFormatters.monthYear(store.selectedMonth))
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                    .frame(minWidth: 150)
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(BRLFormatters.monthYear(store.selectedMonth))
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .contentTransition(.numericText())
+                        .animation(.snappy(duration: 0.24), value: store.selectedMonth)
+                        .frame(minWidth: 132)
+                }
+                .padding(.horizontal, 6)
+
+                Button {
+                    withAnimation(.snappy(duration: 0.24)) {
+                        store.changeMonth(by: 1)
+                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Próximo mês")
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
+                Capsule()
+                    .fill(FinSenseTheme.elevatedSurface(for: colorScheme))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                Capsule()
+                    .strokeBorder(FinSenseTheme.cardBorder(for: colorScheme), lineWidth: FinSenseTheme.hairlineWidth)
             )
 
             Button {
-                store.changeMonth(by: 1)
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(width: 28, height: 28)
-            }
-            .buttonStyle(.bordered)
-            .help("Próximo mês")
-
-            Menu {
-                Button("Mês Atual (Hoje)") {
+                withAnimation(.snappy(duration: 0.24)) {
                     store.selectedMonth = Date()
                     store.ensureRecurringTransactionsMaterialized(upTo: store.endOfMonth(for: Date()))
                 }
             } label: {
-                Label("Hoje", systemImage: "calendar.badge.clock")
-                    .font(.caption)
+                HStack(spacing: 4) {
+                    Image(systemName: "calendar.badge.clock")
+                        .font(.system(size: 11))
+                    Text("Hoje")
+                        .font(.system(size: 12, weight: .medium))
+                }
             }
-            .menuStyle(.borderedButton)
-            .fixedSize()
+            .buttonStyle(BentoGlassButtonStyle(cornerRadius: 14, verticalPadding: 5, horizontalPadding: 10))
+            .help("Ir para o mês atual")
         }
     }
 }
@@ -377,13 +728,14 @@ public struct MonthNavigatorBar: View {
 
 public struct DashboardPeriodNavigatorBar: View {
     @ObservedObject public var store: FinancialDataStore
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(store: FinancialDataStore) {
         self.store = store
     }
 
     public var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Picker("", selection: $store.dashboardPeriodMode) {
                 ForEach(DashboardPeriodMode.allCases) { mode in
                     Text(mode.title).tag(mode)
@@ -391,7 +743,7 @@ public struct DashboardPeriodNavigatorBar: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 215)
+            .frame(width: 196)
             .onChange(of: store.dashboardPeriodMode) { _, newMode in
                 if newMode == .annual {
                     store.ensureRecurringTransactionsMaterialized(upTo: store.endOfYear(for: store.selectedMonth))
@@ -403,51 +755,69 @@ public struct DashboardPeriodNavigatorBar: View {
             if store.dashboardPeriodMode == .monthly {
                 MonthNavigatorBar(store: store)
             } else {
-                HStack(spacing: 10) {
-                    Button {
-                        store.changeYear(by: -1)
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 13, weight: .bold))
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.bordered)
-                    .help("Ano anterior")
+                HStack(spacing: 8) {
+                    HStack(spacing: 2) {
+                        Button {
+                            withAnimation(.snappy(duration: 0.24)) {
+                                store.changeYear(by: -1)
+                            }
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .frame(width: 26, height: 26)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Ano anterior")
 
-                    HStack(spacing: 6) {
-                        Image(systemName: "calendar")
-                            .foregroundStyle(.secondary)
-                        Text("Ano \(BRLFormatters.yearString(store.selectedMonth)) (Proj. 31/12)")
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .frame(minWidth: 165)
+                        HStack(spacing: 6) {
+                            Image(systemName: "calendar")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text("Ano \(BRLFormatters.yearString(store.selectedMonth))")
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .contentTransition(.numericText())
+                                .animation(.snappy(duration: 0.24), value: store.selectedMonth)
+                                .frame(minWidth: 96)
+                        }
+                        .padding(.horizontal, 6)
+
+                        Button {
+                            withAnimation(.snappy(duration: 0.24)) {
+                                store.changeYear(by: 1)
+                            }
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .frame(width: 26, height: 26)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Próximo ano")
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
                     .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
+                        Capsule()
+                            .fill(FinSenseTheme.elevatedSurface(for: colorScheme))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                        Capsule()
+                            .strokeBorder(FinSenseTheme.cardBorder(for: colorScheme), lineWidth: FinSenseTheme.hairlineWidth)
                     )
 
                     Button {
-                        store.changeYear(by: 1)
+                        withAnimation(.snappy(duration: 0.24)) {
+                            store.selectedMonth = Date()
+                            store.ensureRecurringTransactionsMaterialized(upTo: store.endOfYear(for: Date()))
+                        }
                     } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 13, weight: .bold))
-                            .frame(width: 28, height: 28)
+                        Text("Ano Atual")
+                            .font(.system(size: 12, weight: .medium))
                     }
-                    .buttonStyle(.bordered)
-                    .help("Próximo ano")
-
-                    Button("Ano Atual") {
-                        store.selectedMonth = Date()
-                        store.ensureRecurringTransactionsMaterialized(upTo: store.endOfYear(for: Date()))
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    .buttonStyle(BentoGlassButtonStyle(cornerRadius: 14, verticalPadding: 5, horizontalPadding: 10))
                 }
             }
         }
@@ -458,6 +828,7 @@ public struct DashboardPeriodNavigatorBar: View {
 
 public struct MetricCardView: View {
     public static let standardCardHeight: CGFloat = 120
+    @Environment(\.colorScheme) private var colorScheme
 
     public let title: String
     public let value: String
@@ -474,6 +845,7 @@ public struct MetricCardView: View {
     public var subtitleHelp: String?
     public var intraMonthAnalysis: IntraMonthCashFlowAnalysis?
     public var cardHeight: CGFloat = MetricCardView.standardCardHeight
+    public var isHero: Bool = false
 
     public init(
         title: String,
@@ -490,7 +862,8 @@ public struct MetricCardView: View {
         actionIcon: String? = nil,
         subtitleHelp: String? = nil,
         intraMonthAnalysis: IntraMonthCashFlowAnalysis? = nil,
-        cardHeight: CGFloat = MetricCardView.standardCardHeight
+        cardHeight: CGFloat = MetricCardView.standardCardHeight,
+        isHero: Bool = false
     ) {
         self.title = title
         self.value = value
@@ -507,6 +880,7 @@ public struct MetricCardView: View {
         self.subtitleHelp = subtitleHelp
         self.intraMonthAnalysis = intraMonthAnalysis
         self.cardHeight = cardHeight
+        self.isHero = isHero
     }
 
     public static func despesasLancadasSubtitle(
@@ -524,17 +898,16 @@ public struct MetricCardView: View {
         let pendingPart = "\(BRLFormatters.currency(pendingExpense)) pendentes\(suffix)"
         let text = paidPart + pendingPart
         let styled = Text(paidPart).foregroundColor(.secondary)
-            + Text(pendingPart).foregroundColor(Color(hex: "#EF4444"))
+            + Text(pendingPart).foregroundColor(FinSenseTheme.coral)
         return (text, styled)
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            // 1. Linha de Cabeçalho (Topo) - altura padronizada para manter alinhamento perfeito entre cards de 1 ou 2 linhas
-            HStack(alignment: .top, spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
+            // 1. Linha de Cabeçalho (Topo)
+            HStack(alignment: .center, spacing: 6) {
                 Text(title)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
+                    .font(.system(size: isHero ? 13 : 12.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .minimumScaleFactor(0.85)
@@ -554,61 +927,65 @@ public struct MetricCardView: View {
                                     .font(.system(size: 10.5, weight: .semibold))
                             }
                         }
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
                         .background(tint.opacity(0.12))
                         .foregroundStyle(tint)
                         .clipShape(Capsule())
+                        .overlay(
+                            Capsule()
+                                .strokeBorder(tint.opacity(0.22), lineWidth: 0.5)
+                        )
                     }
                     .buttonStyle(.plain)
                     .help("Editar previsões e tetos deste mês")
                 }
 
                 ZStack {
-                    Circle()
-                        .fill(tint.opacity(0.14))
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(tint.opacity(colorScheme == .dark ? 0.14 : 0.10))
                         .frame(width: 28, height: 28)
                     Image(systemName: icon)
                         .font(.system(size: 12.5, weight: .semibold))
                         .foregroundStyle(tint)
                 }
             }
-            .frame(height: 34, alignment: .top)
+            .frame(minHeight: 30, alignment: .center)
 
-            // 2. Linha do Valor Principal (Centro) - posicionado imediatamente abaixo do cabeçalho
+            // 2. Valor Principal com transição numérica suave
             Text(value)
-                .font(.system(size: 20, weight: .bold, design: .rounded))
+                .font(.system(size: isHero ? 28 : 21, weight: .bold, design: .rounded))
                 .foregroundStyle(valueColor ?? .primary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .monospacedDigit()
+                .minimumScaleFactor(0.72)
+                .numericCurrencyTransition(value: value)
 
-            // 3. Linha de Subtítulo / Metadados (Base) - sem abismo vazio, espaçamento imediato
-            VStack(alignment: .leading, spacing: 2) {
+            // 3. Subtítulo / Metadados
+            VStack(alignment: .leading, spacing: 3) {
                 let subtitleLines = intraMonthAnalysis == nil ? 2 : 3
                 if let customSubtitle {
                     if let subtitleHelp {
                         customSubtitle
-                            .font(.system(size: 11, weight: .regular))
+                            .font(.system(size: 11.5, weight: .regular))
                             .lineLimit(subtitleLines)
                             .minimumScaleFactor(0.78)
                             .help(subtitleHelp)
                     } else {
                         customSubtitle
-                            .font(.system(size: 11, weight: .regular))
+                            .font(.system(size: 11.5, weight: .regular))
                             .lineLimit(subtitleLines)
                             .minimumScaleFactor(0.78)
                     }
                 } else if let subtitleHelp {
                     Text(subtitle)
-                        .font(.system(size: 11, weight: .regular))
+                        .font(.system(size: 11.5, weight: .regular))
                         .foregroundStyle(.secondary)
                         .lineLimit(subtitleLines)
                         .minimumScaleFactor(0.78)
                         .help(subtitleHelp)
-                } else {
+                } else if !subtitle.isEmpty {
                     Text(subtitle)
-                        .font(.system(size: 11, weight: .regular))
+                        .font(.system(size: 11.5, weight: .regular))
                         .foregroundStyle(.secondary)
                         .lineLimit(subtitleLines)
                         .minimumScaleFactor(0.78)
@@ -616,29 +993,25 @@ public struct MetricCardView: View {
 
                 if let footnote, !footnote.isEmpty {
                     Text(footnote)
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(footnoteColor)
                         .lineLimit(1)
                         .minimumScaleFactor(0.8)
                 }
 
                 if let intra = intraMonthAnalysis, !intra.dailyPoints.isEmpty {
-                    IntraMonthSparklineView(analysis: intra, height: 18)
+                    IntraMonthSparklineView(analysis: intra, height: 22)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .frame(minHeight: cardHeight, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        .bentoCard(
+            padding: 16,
+            cornerRadius: FinSenseTheme.cardCornerRadius,
+            accent: tint,
+            isHighlighted: isHero
         )
     }
 }
@@ -647,17 +1020,25 @@ public struct MetricCardView: View {
 
 public struct IntraMonthSparklineView: View {
     public let analysis: IntraMonthCashFlowAnalysis
-    public var height: CGFloat = 20
+    public var height: CGFloat = 22
 
-    public init(analysis: IntraMonthCashFlowAnalysis, height: CGFloat = 20) {
+    public init(analysis: IntraMonthCashFlowAnalysis, height: CGFloat = 22) {
         self.analysis = analysis
         self.height = height
+    }
+
+    private var lineColor: Color {
+        switch analysis.alertLevel {
+        case .confirmedDeficit: return FinSenseTheme.coral
+        case .possibleRisk: return FinSenseTheme.amber
+        case .none: return FinSenseTheme.emerald
+        }
     }
 
     public var body: some View {
         Chart {
             RuleMark(y: .value("Zero", 0))
-                .foregroundStyle(Color.secondary.opacity(0.35))
+                .foregroundStyle(Color.secondary.opacity(0.28))
                 .lineStyle(StrokeStyle(lineWidth: 0.7, dash: [2, 2]))
 
             ForEach(analysis.dailyPoints) { pt in
@@ -665,12 +1046,8 @@ public struct IntraMonthSparklineView: View {
                     x: .value("Dia", pt.day),
                     y: .value("Saldo", pt.closingBalance)
                 )
-                .foregroundStyle(
-                    analysis.alertLevel == .confirmedDeficit
-                        ? Color(hex: "#EF4444")
-                        : (analysis.alertLevel == .possibleRisk ? Color(hex: "#F59E0B") : Color(hex: "#10B981"))
-                )
-                .lineStyle(StrokeStyle(lineWidth: 1.5))
+                .foregroundStyle(lineColor)
+                .lineStyle(StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round))
 
                 if pt.closingBalance < -0.005 {
                     AreaMark(
@@ -678,14 +1055,20 @@ public struct IntraMonthSparklineView: View {
                         yStart: .value("Zero", 0.0),
                         yEnd: .value("Saldo", pt.closingBalance)
                     )
-                    .foregroundStyle(Color(hex: "#EF4444").opacity(0.38))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [FinSenseTheme.coral.opacity(0.35), FinSenseTheme.coral.opacity(0.05)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
 
                     PointMark(
                         x: .value("Dia", pt.day),
                         y: .value("Saldo", pt.closingBalance)
                     )
-                    .symbolSize(10)
-                    .foregroundStyle(Color(hex: "#EF4444"))
+                    .symbolSize(12)
+                    .foregroundStyle(FinSenseTheme.coral)
                 }
             }
         }
