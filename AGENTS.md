@@ -165,6 +165,19 @@ FinSense (macOS App)
 - **Contabilização de Reembolsos (`TransactionOrigin.reimbursementReceipt`):** Despesas marcadas com `isReimbursable = true` debitam **valor integral** da conta bancária ou fatura de cartão, porém tetos orçamentários, `categoryBreakdown`, `monthlyExpense` e KPIs computam **apenas a parcela pessoal não reembolsável**. O submenu `A Receber` (`ReceivablesManagementView`) agrupa valores por devedor e registra recebimentos totais, parciais ou superiores ao previsto sem inflar categorias de Salário/Receita em gráficos; ao finalizar um reembolso com valor menor que o previsto, `reimbursableAmount` é ajustado ao montante efetivamente recebido para que a diferença permaneça contabilizada como gasto próprio do usuário.
 - **Multimoeda (`ExchangeRateService`):** `BankAccount`, `InvestmentItem`, `SinkingFund`, `AssetItem`, `IncomeSource` e `FinancialTransaction` suportam moedas estrangeiras (`USD`, `EUR`, `GBP`, `CAD`, `CHF`, `AUD`, `JPY`). Saldos nativos por conta são preservados enquanto consolidações, KPIs e Net Worth convertem automaticamente para BRL com cache em disco (`fx_rates_cache.json`), atualização pública e suporte a taxa manual offline.
 
+### 2.12. Design System & Interface FinSense 2.0 (Bento UI — macOS)
+- **Tokens Visuais & Superfícies (`FinSenseTheme` em `SharedComponents.swift`):**
+  - Canvas adaptativo em obsidian no Dark Mode (`#121214` / `#F5F5F7` claro), cards Bento elevados (`#1C1C1F` / branco) com cantos de `15–16pt` e borda *hairline* (`0.75pt`, `Color.white.opacity(0.08)` no dark / `Color.black.opacity(0.07)` no light), aplicáveis via `.bentoCard(...)`.
+  - **Regra de Cor 90/10:** 90% neutra; cores semânticas suaves apenas para status (`emerald` `#10B981`, `coral` `#EF4444`, `amber` `#F59E0B`, `indigo` `#6366F1`, `cyan` `#0EA5E9`) e 1 CTA primário por tela (`BentoPrimaryButtonStyle`), com botões secundários translúcidos (`BentoGlassButtonStyle`).
+  - **Sidebar & Toolbar (`FinSenseApp.swift`):** Sidebar translúcida nativa macOS (`.ultraThinMaterial` + `.scrollContentBackground(.hidden)`) e indicador minimalista `AppleIntelligenceStatusDot` na toolbar ao lado do status de sync, substituindo botões redundantes de `"Chat IA Local"` e banners extensos de LLM.
+  - **Tipografia Numérica:** Valores monetários principais usam `SF Pro Rounded` + `.monospacedDigit()` + `.contentTransition(.numericText())` (`.numericCurrencyTransition`).
+- **Dashboard & Gráfico de Despesas (`DashboardView.swift`):**
+  - Card Hero à esquerda (~42%) destacando *Saldo Previsto*, `IntraMonthSparklineView` luminoso e pílula interativa do Vale Intramês (levando à Linha de Corte em Transações), pareado à grade Bento assimétrica de 5 KPIs à direita (~58%).
+  - **Gráfico de Despesas por Categoria (`ExpensesByCategoryCardView`):** Rosca de traço fino (`innerRadius: .ratio(0.74)`) com total centralizado no anel e agrupamento estrito em **Top 5 categorias + 6ª fatia `"Outros"`** (com popover expansível ao clicar para visualizar todas as categorias restantes sem barras de rolagem).
+- **Cockpits de Contratos & Transações:**
+  - `LoansAndFinancingsView` e `DebtsView` utilizam cockpits com destaque de Saldo Presente para Quitação Hoje (PV), barra segmentada com indicador de projeção e *progressive disclosure* (`Detalhes Técnicos & Memória` em popover).
+  - `TransactionsView` exibe divisor horizontal fino coral com pílula para a Linha de Corte, faixa lateral sutil na zona de déficit e botões contextuais de linha revelados apenas no `onHover` em slot fixo sem deslocar colunas de valor.
+
 ---
 
 ## 3. Guia de Arquivos e Estrutura de Código
@@ -175,8 +188,9 @@ FinSense (macOS App)
 | Insights & Cenários | `Sources/FinSense/Services/FinancialDataStore+PlanningAndInsights.swift` | Orquestração de provisões, caixinhas, insights e cenários |
 | Motor Intramês | `Sources/FinSense/Services/IntraMonthCashFlowEngine.swift` | Cálculo cronológico dia a dia e identificação de corte/recuperação |
 | Modelos de Planejamento | `Sources/FinSense/Models/PlanningAndInsightsModels.swift` | Structs do Vale Intramês, Sinking Funds, Insights e Cenários |
-| Extrato Desktop | `Sources/FinSense/Views/TransactionsView.swift` | Listagem mensal, filtros de extrato e badges de corte |
-| Dashboard Desktop | `Sources/FinSense/Views/DashboardView.swift` | Visão executiva de saldo, banner de vale intramês e KPIs |
+| Design System FinSense 2.0 | `Sources/FinSense/Views/SharedComponents.swift` | Tokens `FinSenseTheme`, modificador `.bentoCard`, estilos de botão e cards KPI |
+| Extrato Desktop | `Sources/FinSense/Views/TransactionsView.swift` | Listagem mensal, filtros nativos, divisor de corte e ações no hover |
+| Dashboard Desktop | `Sources/FinSense/Views/DashboardView.swift` | Visão Bento executiva com card Hero, 5 KPIs e rosca Top 5 + Outros |
 | Motor de Cartões | `Sources/FinSense/Services/CreditCardEngine.swift` | Distribuição de compras por fatura, melhor dia e parcelamento |
 
 ---
