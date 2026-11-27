@@ -4,6 +4,7 @@ import Charts
 public struct DashboardView: View {
     @ObservedObject public var store: FinancialDataStore
     @ObservedObject public var llmService: LocalLLMService
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var showCreateExpenseSheet: Bool = false
     @State private var showCreateIncomeSheet: Bool = false
@@ -61,18 +62,18 @@ public struct DashboardView: View {
         let estimatedProvisionsTotal = store.totalEstimatedProvision(for: store.selectedMonth)
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                // MARK: - Top Header Bar with Local LLM Chat Button
+            VStack(alignment: .leading, spacing: 20) {
+                // MARK: - Minimalist Floating Header Toolbar
                 HStack(alignment: .center, spacing: 14) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Dashboard & Insights Financeiros")
-                            .font(.system(size: 26, weight: .bold, design: .rounded))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Dashboard")
+                            .font(.system(size: 24, weight: .bold, design: .rounded))
                         Text(
                             isAnnual
-                                ? "Projeção consolidada para o último dia do ano (31/12/\(yearStr))"
-                                : "Visão consolidada de contas, categorias, investimentos, passivos e projeções"
+                                ? "Projeção consolidada • 31/12/\(yearStr)"
+                                : "Visão consolidada • \(periodFullLabel)"
                         )
-                        .font(.subheadline)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                     }
 
@@ -80,161 +81,93 @@ public struct DashboardView: View {
 
                     DashboardPeriodNavigatorBar(store: store)
 
-                    Button {
-                        store.openAIChat()
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "sparkles.bubble.fill")
-                                .font(.system(size: 15, weight: .semibold))
-                            Text("Chat IA Local")
-                                .fontWeight(.semibold)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
-                        .background(
-                            LinearGradient(
-                                colors: [Color(hex: "#6366F1"), Color(hex: "#8B5CF6")],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                        .shadow(color: Color(hex: "#6366F1").opacity(0.3), radius: 5, x: 0, y: 2)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Perguntar para a LLM local com acesso total à base de dados")
-                }
-
-                // Quick Actions Bar
-                HStack(spacing: 10) {
-                    Button {
-                        showCreateExpenseSheet = true
-                    } label: {
-                        Label("Nova Despesa", systemImage: "minus.circle.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#EF4444"))
-
-                    Button {
-                        showCreateIncomeSheet = true
-                    } label: {
-                        Label("Nova Receita", systemImage: "plus.circle.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color(hex: "#10B981"))
-
-                    Button {
-                        store.requireInstalledLLM(forFeature: "Importar Extrato PDF / Relatório com IA Local") {
-                            showImportStatementSheet = true
-                        }
-                    } label: {
-                        Label("Importar", systemImage: "doc.text.magnifyingglass")
-                    }
-                    .buttonStyle(.bordered)
-
-                    Button {
-                        showProvisionsSheet = true
-                    } label: {
-                        Label("Previsões & Tetos do Mês", systemImage: "tray.full.fill")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(Color(hex: "#6366F1"))
-                    .help("Definir limites/previsões de gastos variáveis por categoria (Envelopes Dinâmicos)")
-
                     Spacer()
 
-                    if let activeModel = store.llmConfig.selectedModel {
-                        Label("LLM Ativa: \(activeModel.displayName)", systemImage: "cpu.fill")
-                            .font(.caption)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Capsule().fill(Color.green.opacity(0.14)))
-                            .foregroundStyle(.green)
-                    } else {
+                    // Single Primary CTA Menu (+ Novo)
+                    Menu {
                         Button {
-                            store.selectedDestination = .settings
-                            store.selectedSettingsSection = .llm
+                            showCreateExpenseSheet = true
                         } label: {
-                            Label("Configurar Modelo Hugging Face", systemImage: "cpu")
-                                .font(.caption)
+                            Label("Nova Despesa", systemImage: "minus.circle")
                         }
-                        .buttonStyle(.link)
+
+                        Button {
+                            showCreateIncomeSheet = true
+                        } label: {
+                            Label("Nova Receita", systemImage: "plus.circle")
+                        }
+
+                        Divider()
+
+                        Button {
+                            store.requireInstalledLLM(forFeature: "Importar Extrato PDF / Relatório com IA Local") {
+                                showImportStatementSheet = true
+                            }
+                        } label: {
+                            Label("Importar Extrato com IA", systemImage: "doc.text.magnifyingglass")
+                        }
+
+                        Button {
+                            showProvisionsSheet = true
+                        } label: {
+                            Label("Previsões & Tetos do Mês", systemImage: "tray.full")
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 11.5, weight: .bold))
+                            Text("Novo")
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .bold))
+                                .opacity(0.8)
+                        }
                     }
+                    .menuStyle(.borderlessButton)
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 7)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(FinSenseTheme.indigo)
+                    )
+                    .foregroundStyle(.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.75)
+                    )
+                    .shadow(color: FinSenseTheme.indigo.opacity(0.24), radius: 6, x: 0, y: 2)
+                    .fixedSize()
                 }
 
-                // MARK: - Alertas Contextuais (Vale Intramês + Central de Insights ML)
+                // MARK: - Alertas Contextuais (Central de Insights ML em pílula sutil)
                 let dashIntraAnalysis: IntraMonthCashFlowAnalysis? = isAnnual ? nil : store.buildIntraMonthCashFlowAnalysis(for: store.selectedMonth)
-                if let intra = dashIntraAnalysis, intra.alertLevel != .none, !kpiSummary.isPast {
-                    let isConfirmed = intra.alertLevel == .confirmedDeficit
-                    let bannerColorHex = isConfirmed ? "#EF4444" : "#F59E0B"
-                    HStack(spacing: 12) {
-                        Image(systemName: isConfirmed ? "exclamationmark.triangle.fill" : "exclamationmark.circle.fill")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(Color(hex: bannerColorHex))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(
-                                isConfirmed
-                                    ? (intra.isTemporaryTrough ? "Alerta de Descasamento de Caixa (Vale Intramês)" : "Falta de Caixa Confirmada no Mês")
-                                    : "Possibilidade de Caixa Negativo no Mês"
-                            )
-                            .font(.caption.bold())
-                            .foregroundStyle(Color(hex: bannerColorHex))
-                            Text(
-                                isConfirmed
-                                    ? "\(intra.alertSummaryText ?? "Saldo acumulado negativo") • Menor saldo por transações: \(BRLFormatters.currency(intra.minimumBalance)) (fechamento sem previsões: \(BRLFormatters.currency(intra.closingBalance)))."
-                                    : "\(intra.alertSummaryText ?? "As transações mantêm saldo positivo, mas há risco pelas previsões.") • Saldo sem previsões: \(BRLFormatters.currency(intra.closingBalance)) • Com previsões: \(BRLFormatters.currency(intra.closingBalanceWithProvisions))."
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button(isConfirmed ? "Ver Linha de Corte" : "Ver Lançamentos") {
-                            store.selectedDestination = .transactions
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color(hex: bannerColorHex).opacity(0.09))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color(hex: bannerColorHex).opacity(0.32), lineWidth: 1)
-                    )
-                }
 
                 if store.activeUnreviewedInsightsCount > 0 {
                     HStack(spacing: 10) {
+                        Circle()
+                            .fill(FinSenseTheme.indigo)
+                            .frame(width: 7, height: 7)
                         Image(systemName: "brain.filled.head.profile")
-                            .foregroundStyle(Color(hex: "#6366F1"))
-                        Text("Central de Insights ML: \(store.activeUnreviewedInsightsCount) alerta(s) ou fechamento mensal aguardando revisão.")
+                            .font(.system(size: 13))
+                            .foregroundStyle(FinSenseTheme.indigo)
+                        Text("Central de Insights ML: \(store.activeUnreviewedInsightsCount) alerta(s) ou fechamento aguardando revisão.")
                             .font(.caption.weight(.medium))
                         Spacer()
-                        Button("Abrir Central de Insights") {
+                        Button("Abrir Central") {
                             store.selectedDestination = .insights
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                        .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.indigo, cornerRadius: 8, verticalPadding: 4, horizontalPadding: 10))
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(hex: "#6366F1").opacity(0.08))
-                    )
+                    .bentoCard(padding: 12, cornerRadius: 12, accent: FinSenseTheme.indigo, isHighlighted: false)
                 }
 
-                // MARK: - Top KPI Cards (6 Sequential Lifecycle Cards - Equal Height Grid)
+                // MARK: - Top Bento KPI Section (Left Hero Projected Balance ~42% + Right 5-KPI Grid ~58%)
                 DashboardTopKPICardsView(
                     summary: kpiSummary,
                     isAnnual: isAnnual,
                     intraMonthAnalysis: dashIntraAnalysis,
                     sinkingFundsReserve: isAnnual ? 0.0 : store.totalMonthlySinkingFundContribution(for: store.selectedMonth),
-                    onEditProvisions: { showProvisionsSheet = true }
+                    onEditProvisions: { showProvisionsSheet = true },
+                    onOpenTransactions: { store.selectedDestination = .transactions }
                 )
 
                 // MARK: - Previsões & Tetos do Mês (Divisão Visual em Dois Blocos Claros)
@@ -281,9 +214,7 @@ public struct DashboardView: View {
                             } label: {
                                 Label("Nova Cota do Mês", systemImage: "plus.square.on.square")
                             }
-                            .buttonStyle(.bordered)
-                            .tint(Color(hex: "#0EA5E9"))
-                            .controlSize(.small)
+                            .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.cyan, cornerRadius: 8, verticalPadding: 5, horizontalPadding: 10))
                             .help("Cadastrar cota de item específico (ex: Galão de Água)")
 
                             Button {
@@ -294,9 +225,7 @@ public struct DashboardView: View {
                                     systemImage: "slider.horizontal.3"
                                 )
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(Color(hex: "#6366F1"))
-                            .controlSize(.small)
+                            .buttonStyle(BentoGlassButtonStyle(tint: FinSenseTheme.indigo, cornerRadius: 8, verticalPadding: 5, horizontalPadding: 10))
                         }
 
                         if !hasAnyProvisionOrQuota {
@@ -420,15 +349,7 @@ public struct DashboardView: View {
                             }
                         }
                     }
-                    .padding(18)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                    )
+                    .bentoCard(padding: 18)
                 }
 
                 // MARK: - Charts Section (Expense by Category + Monthly/Annual Cash Flow)
@@ -629,15 +550,7 @@ public struct DashboardView: View {
                     // MARK: - Painel Analítico: Comprometimento de Renda vs. Obrigações (Fluxo / DTI)
                     DebtCommitmentsDonutChartView(breakdown: debtServiceBreakdown)
                 }
-                .padding(18)
-                .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(nsColor: .controlBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                )
+                .bentoCard(padding: 18)
 
                 // MARK: - Accounts & Investments Quick Overview
                 HStack(alignment: .top, spacing: 16) {
@@ -679,20 +592,12 @@ public struct DashboardView: View {
                                         .foregroundStyle(bal >= 0 ? Color.primary : Color(hex: "#EF4444"))
                                 }
                                 .padding(8)
-                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
+                                .background(RoundedRectangle(cornerRadius: 10).fill(FinSenseTheme.nestedSurface(for: colorScheme)))
                             }
                         }
                     }
-                    .padding(18)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                    )
+                    .bentoCard(padding: 18)
 
                     // Investments Card
                     VStack(alignment: .leading, spacing: 12) {
@@ -734,23 +639,16 @@ public struct DashboardView: View {
 
                                     Text(BRLFormatters.currency(inv.balance))
                                         .font(.subheadline.bold())
-                                        .foregroundStyle(Color(hex: "#10B981"))
+                                        .foregroundStyle(FinSenseTheme.emerald)
+                                        .monospacedDigit()
                                 }
                                 .padding(8)
-                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.03)))
+                                .background(RoundedRectangle(cornerRadius: 10).fill(FinSenseTheme.nestedSurface(for: colorScheme)))
                             }
                         }
                     }
-                    .padding(18)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                    )
+                    .bentoCard(padding: 18)
                 }
 
                 // MARK: - Credit Cards Quick Overview (Limites & Faturas)
@@ -842,16 +740,8 @@ public struct DashboardView: View {
                             }
                         }
                     }
-                    .padding(18)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-                    )
+                    .bentoCard(padding: 18)
                 }
             }
             .padding(24)
@@ -2368,6 +2258,7 @@ public struct MonthlyCashFlowChartView: View {
     public let isAnnual: Bool
     public let yearStr: String
 
+    @Environment(\.colorScheme) private var colorScheme
     @State private var hoveredPoint: MonthlyCashFlowPoint? = nil
 
     public init(points: [MonthlyCashFlowPoint], isAnnual: Bool, yearStr: String) {
@@ -2389,23 +2280,23 @@ public struct MonthlyCashFlowChartView: View {
                 Spacer()
                 HStack(spacing: 12) {
                     HStack(spacing: 4) {
-                        Circle().fill(Color(hex: "#10B981")).frame(width: 8, height: 8)
-                        Text("Receitas").font(.caption2)
+                        Circle().fill(FinSenseTheme.emerald.opacity(0.85)).frame(width: 8, height: 8)
+                        Text("Receitas").font(.caption2).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 4) {
-                        Circle().fill(Color(hex: "#EF4444")).frame(width: 8, height: 8)
-                        Text("Despesas").font(.caption2)
+                        Circle().fill(FinSenseTheme.coral.opacity(0.85)).frame(width: 8, height: 8)
+                        Text("Despesas").font(.caption2).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 4) {
                         RoundedRectangle(cornerRadius: 2)
-                            .fill(Color(hex: "#EF4444").opacity(0.45))
+                            .fill(FinSenseTheme.coral.opacity(0.35))
                             .frame(width: 8, height: 8)
-                        Text("Previsões & Tetos").font(.caption2)
+                        Text("Previsões & Tetos").font(.caption2).foregroundStyle(.secondary)
                     }
                     HStack(spacing: 4) {
-                        Capsule().fill(Color(hex: "#3B82F6")).frame(width: 10, height: 3)
-                        Circle().fill(Color(hex: "#3B82F6")).frame(width: 6, height: 6)
-                        Text("Saldo Final").font(.caption2)
+                        Capsule().fill(FinSenseTheme.cyan).frame(width: 10, height: 3)
+                        Circle().fill(FinSenseTheme.cyan).frame(width: 6, height: 6)
+                        Text("Saldo Final").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
@@ -2415,7 +2306,7 @@ public struct MonthlyCashFlowChartView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "cursorarrow.rays")
                         .font(.caption)
-                        .foregroundStyle(Color(hex: "#6366F1"))
+                        .foregroundStyle(FinSenseTheme.indigo)
                     Text(pt.label)
                         .font(.caption.weight(.bold))
                     Text("•")
@@ -2425,7 +2316,7 @@ public struct MonthlyCashFlowChartView: View {
                         .foregroundStyle(.secondary)
                     + Text(BRLFormatters.currency(pt.expense))
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color(hex: "#EF4444"))
+                        .foregroundStyle(FinSenseTheme.coral)
                     Text("•")
                         .foregroundStyle(.secondary.opacity(0.5))
                     Text("Previsões/Tetos: ")
@@ -2433,7 +2324,7 @@ public struct MonthlyCashFlowChartView: View {
                         .foregroundStyle(.secondary)
                     + Text(BRLFormatters.currency(pt.remainingProvisions))
                         .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color(hex: "#6366F1"))
+                        .foregroundStyle(FinSenseTheme.indigo)
                     Text("•")
                         .foregroundStyle(.secondary.opacity(0.5))
                     Text("Total Orçado: ")
@@ -2449,12 +2340,12 @@ public struct MonthlyCashFlowChartView: View {
                         .foregroundStyle(.secondary)
                     + Text(BRLFormatters.currency(pt.accumulatedBalance))
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(Color(hex: "#3B82F6"))
+                        .foregroundStyle(FinSenseTheme.cyan)
                     Spacer()
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.05))
+                .background(FinSenseTheme.nestedSurface(for: colorScheme))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .transition(.opacity)
             }
@@ -2466,9 +2357,15 @@ public struct MonthlyCashFlowChartView: View {
                         x: .value("Mês", pt.label),
                         y: .value("Valor", pt.income)
                     )
-                    .foregroundStyle(Color(hex: "#10B981"))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [FinSenseTheme.emerald.opacity(0.92), FinSenseTheme.emerald.opacity(0.55)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
                     .position(by: .value("Tipo", "Receitas"))
-                    .cornerRadius(4)
+                    .cornerRadius(6)
 
                     // Base sólida: Despesas já lançadas
                     BarMark(
@@ -2476,9 +2373,15 @@ public struct MonthlyCashFlowChartView: View {
                         yStart: .value("Base", 0),
                         yEnd: .value("Valor", pt.expense)
                     )
-                    .foregroundStyle(Color(hex: "#EF4444"))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [FinSenseTheme.coral.opacity(0.90), FinSenseTheme.coral.opacity(0.55)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
                     .position(by: .value("Tipo", "Despesas"))
-                    .cornerRadius(!pt.isPastMonth && pt.remainingProvisions > 0 ? 0 : 4)
+                    .cornerRadius(!pt.isPastMonth && pt.remainingProvisions > 0 ? 0 : 6)
 
                     // Topo translúcido: Margem de Previsões & Tetos restantes
                     if !pt.isPastMonth && pt.remainingProvisions > 0 {
@@ -2487,9 +2390,9 @@ public struct MonthlyCashFlowChartView: View {
                             yStart: .value("Base", pt.expense),
                             yEnd: .value("Valor", pt.totalBudgetedExpense)
                         )
-                        .foregroundStyle(Color(hex: "#EF4444").opacity(0.45))
+                        .foregroundStyle(FinSenseTheme.coral.opacity(0.28))
                         .position(by: .value("Tipo", "Despesas"))
-                        .cornerRadius(4)
+                        .cornerRadius(6)
                     }
 
                     // Linha sobreposta e pontos: Evolução do Saldo Final
@@ -2497,16 +2400,32 @@ public struct MonthlyCashFlowChartView: View {
                         x: .value("Mês", pt.label),
                         y: .value("Saldo Final", pt.accumulatedBalance)
                     )
-                    .foregroundStyle(Color(hex: "#3B82F6"))
+                    .foregroundStyle(FinSenseTheme.cyan)
                     .interpolationMethod(.catmullRom)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5))
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
 
                     PointMark(
                         x: .value("Mês", pt.label),
                         y: .value("Saldo Final", pt.accumulatedBalance)
                     )
-                    .foregroundStyle(Color(hex: "#3B82F6"))
-                    .symbolSize(32)
+                    .foregroundStyle(FinSenseTheme.cyan)
+                    .symbolSize(30)
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .leading) { _ in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.6, dash: [3, 4]))
+                        .foregroundStyle(Color.primary.opacity(0.08))
+                    AxisValueLabel()
+                        .font(.system(size: 10, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .chartXAxis {
+                AxisMarks { _ in
+                    AxisValueLabel()
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(height: 205)
@@ -2534,16 +2453,8 @@ public struct MonthlyCashFlowChartView: View {
                 }
             }
         }
-        .padding(18)
         .frame(maxWidth: .infinity, minHeight: 290, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
-        )
+        .bentoCard(padding: 18)
     }
 }
 
@@ -2998,222 +2909,262 @@ public struct DashboardTopKPICardsView: View {
     public var intraMonthAnalysis: IntraMonthCashFlowAnalysis?
     public var sinkingFundsReserve: Double
     public var onEditProvisions: () -> Void
+    public var onOpenTransactions: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
 
     public init(
         summary: UnifiedFinancialKPISummary,
         isAnnual: Bool,
         intraMonthAnalysis: IntraMonthCashFlowAnalysis? = nil,
         sinkingFundsReserve: Double = 0.0,
-        onEditProvisions: @escaping () -> Void
+        onEditProvisions: @escaping () -> Void,
+        onOpenTransactions: @escaping () -> Void = {}
     ) {
         self.summary = summary
         self.isAnnual = isAnnual
         self.intraMonthAnalysis = intraMonthAnalysis
         self.sinkingFundsReserve = sinkingFundsReserve
         self.onEditProvisions = onEditProvisions
+        self.onOpenTransactions = onOpenTransactions
     }
 
     public var body: some View {
-        let rowCardHeight: CGFloat = (intraMonthAnalysis != nil && !summary.isPast) ? 142 : MetricCardView.standardCardHeight
-        Grid(horizontalSpacing: 12, verticalSpacing: 12) {
-            GridRow {
-                // Card 1 — Receitas Previstas
-                MetricCardView(
-                    title: isAnnual ? "Receitas Previstas (Ano)" : "Receitas Previstas",
-                    value: BRLFormatters.currency(summary.projectedIncome),
-                    subtitle: summary.isPast
-                        ? "\(BRLFormatters.currency(summary.receivedIncome)) recebidos"
-                        : "\(BRLFormatters.currency(summary.receivedIncome)) recebidos • \(BRLFormatters.currency(summary.pendingIncome)) a receber",
-                    icon: "arrow.down.left.circle.fill",
-                    tint: Color(hex: "#10B981"),
-                    footnote: summary.extraordinaryIncome > 0
-                        ? "Habitual: \(BRLFormatters.currency(summary.habitualIncome)) • Extra: \(BRLFormatters.currency(summary.extraordinaryIncome))"
-                        : nil,
-                    footnoteColor: Color(hex: "#8B5CF6"),
-                    cardHeight: rowCardHeight
-                )
-                .frame(maxWidth: .infinity)
+        let projectedBalanceValue = summary.isPast
+            ? summary.projectedAccountBalance
+            : summary.balanceIfAllBudgetsConsumed
 
-                // Card 2 — Despesas Lançadas (Estritamente despesas registradas, NUNCA somar tetos/cotas)
-                let despesasSub = MetricCardView.despesasLancadasSubtitle(
-                    paidExpense: summary.paidExpense,
-                    pendingExpense: summary.pendingExpense,
-                    isPast: summary.isPast,
-                    isAnnual: isAnnual
-                )
-                MetricCardView(
-                    title: isAnnual ? "Despesas Lançadas (Ano)" : "Despesas Lançadas",
-                    value: BRLFormatters.currency(summary.recordedExpense),
-                    subtitle: despesasSub.text,
-                    customSubtitle: despesasSub.styled,
-                    icon: "arrow.up.right.circle.fill",
-                    tint: Color(hex: "#EF4444"),
-                    cardHeight: rowCardHeight
-                )
-                .frame(maxWidth: .infinity)
+        let cardAlertLevel: IntraMonthAlertLevel = summary.isPast ? .none : (intraMonthAnalysis?.alertLevel ?? .none)
+        let projectedBalanceTint: Color = {
+            if cardAlertLevel == .confirmedDeficit || projectedBalanceValue < 0 { return FinSenseTheme.coral }
+            if cardAlertLevel == .possibleRisk { return FinSenseTheme.amber }
+            return FinSenseTheme.emerald
+        }()
 
-                // Card 3 — Orçamentos e Cotas Restantes
-                let budgetSubtitle: String = {
-                    if summary.isPast {
-                        return "Período fechado (sem orçamentos ativos)"
-                    }
-                    if summary.hasBudgetOverrun {
-                        return "Estouro de teto: \(BRLFormatters.currency(summary.totalBudgetsOverrun)) excedente"
-                    }
-                    if sinkingFundsReserve > 0.01 {
-                        return "Tetos: \(BRLFormatters.currency(summary.categoryCeilingsRemaining)) • Cotas: \(BRLFormatters.currency(summary.specificQuotasRemaining)) • Caixinhas: \(BRLFormatters.currency(sinkingFundsReserve))"
-                    }
-                    return "Tetos: \(BRLFormatters.currency(summary.categoryCeilingsRemaining)) • Cotas: \(BRLFormatters.currency(summary.specificQuotasRemaining))"
-                }()
-
-                MetricCardView(
-                    title: isAnnual ? "Orçamentos Restantes (Ano)" : "Orçamentos e Cotas Restantes",
-                    value: BRLFormatters.currency(summary.remainingBudgetsAndQuotas),
-                    subtitle: budgetSubtitle,
-                    icon: "tray.full.fill",
-                    tint: summary.hasBudgetOverrun ? Color(hex: "#EF4444") : Color(hex: "#3B82F6"),
-                    footnote: summary.isPast ? nil : (summary.hasBudgetOverrun ? "Alerta de orçamento ultrapassado" : "Valores reservados para consumo"),
-                    footnoteColor: summary.hasBudgetOverrun ? Color(hex: "#EF4444") : .secondary,
-                    action: onEditProvisions,
-                    actionLabel: "Ver",
-                    actionIcon: "pencil",
-                    cardHeight: rowCardHeight
-                )
-                .frame(maxWidth: .infinity)
-
-                // Card 4 — Total de Gastos Planejados
-                MetricCardView(
-                    title: isAnnual ? "Gastos Planejados (Ano)" : "Total de Gastos Planejados",
-                    value: BRLFormatters.currency(summary.totalPlannedExpenses),
-                    subtitle: summary.isPast
-                        ? "Gastos consolidados realizados"
-                        : "\(BRLFormatters.currency(summary.recordedExpense)) despesas + \(BRLFormatters.currency(summary.remainingBudgetsAndQuotas)) orçados",
-                    icon: "chart.bar.doc.horizontal.fill",
-                    tint: Color(hex: "#3B82F6"),
-                    footnote: summary.isPast ? nil : "Teto máximo planejado",
-                    footnoteColor: .secondary,
-                    cardHeight: rowCardHeight
-                )
-                .frame(maxWidth: .infinity)
-
-                // Card 5 — Sobra Após Planejamento (Destaque visual máximo)
-                let surplusSubtitle: String = {
-                    if summary.surplusAfterPlanning > 0 {
-                        return "Superávit após todas despesas e tetos"
-                    } else if summary.surplusAfterPlanning < 0 {
-                        return "Déficit: gastos superam receitas em \(BRLFormatters.currency(abs(summary.surplusAfterPlanning)))"
-                    } else {
-                        return "Equilíbrio orçamentário exato (R$ 0)"
-                    }
-                }()
-
-                let surplusTint: Color = {
-                    if summary.surplusAfterPlanning > 0 { return Color(hex: "#10B981") }
-                    if summary.surplusAfterPlanning < 0 { return Color(hex: "#EF4444") }
-                    return Color(hex: "#64748B")
-                }()
-
-                MetricCardView(
-                    title: isAnnual ? "Sobra Após Planejamento (Ano)" : "Sobra Após Planejamento",
-                    value: BRLFormatters.currency(summary.surplusAfterPlanning),
-                    subtitle: surplusSubtitle,
-                    icon: summary.surplusAfterPlanning >= 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
-                    tint: surplusTint,
-                    footnote: summary.surplusAfterPlanning >= 0 ? "Planejamento sustentável" : "Déficit no planejamento",
-                    footnoteColor: surplusTint,
-                    cardHeight: rowCardHeight
-                )
-                .frame(maxWidth: .infinity)
-
-                // Card 6 — Saldo Previsto na Conta (com alerta em 2 níveis + sparkline)
-                let projectedBalanceValue = summary.isPast
-                    ? summary.projectedAccountBalance
-                    : summary.balanceIfAllBudgetsConsumed
-
-                let cardAlertLevel: IntraMonthAlertLevel = summary.isPast ? .none : (intraMonthAnalysis?.alertLevel ?? .none)
-                let projectedBalanceTint: Color = {
-                    if cardAlertLevel == .confirmedDeficit || projectedBalanceValue < 0 { return Color(hex: "#EF4444") }
-                    if cardAlertLevel == .possibleRisk { return Color(hex: "#F59E0B") }
-                    return Color(hex: "#10B981")
-                }()
-
-                let accountSubtitleText: String = {
-                    if summary.isPast {
-                        return "Saldo final histórico conciliado"
-                    }
-                    if cardAlertLevel != .none, let alertText = intraMonthAnalysis?.alertSummaryText {
-                        return alertText
-                    }
-                    return "Se não usar o orçamento: \(BRLFormatters.currency(summary.projectedAccountBalance))"
-                }()
-
-                let accountCustomSubtitle: Text? = {
-                    if summary.isPast {
-                        return Text("Saldo final histórico conciliado").foregroundColor(.secondary)
-                    }
-                    if cardAlertLevel == .confirmedDeficit, let alertText = intraMonthAnalysis?.alertSummaryText {
-                        return Text("⚠️ \(alertText)").fontWeight(.semibold).foregroundColor(Color(hex: "#EF4444"))
-                    }
-                    if cardAlertLevel == .possibleRisk, let alertText = intraMonthAnalysis?.alertSummaryText {
-                        return Text("⚠️ \(alertText)").fontWeight(.semibold).foregroundColor(Color(hex: "#D97706"))
-                    }
-                    let prefix = "Se não usar o orçamento: "
-                    let valueStr = BRLFormatters.currency(summary.projectedAccountBalance)
-                    let amountColor = summary.projectedAccountBalance >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
-                    return Text(prefix).foregroundColor(.secondary) + Text(valueStr).foregroundColor(amountColor)
-                }()
-
-                let accountFootnote: String? = {
-                    if summary.isPast {
-                        return "Resultado final registrado"
-                    }
-                    switch cardAlertLevel {
-                    case .confirmedDeficit:
-                        return intraMonthAnalysis?.isTemporaryTrough == true
-                            ? "Vale intramês detectado"
-                            : "Falta de caixa confirmada"
-                    case .possibleRisk:
-                        return "Possível déficit por previsões"
-                    case .none:
-                        if projectedBalanceValue < 0 {
-                            return "Alerta: Risco de caixa negativo"
-                        }
-                        return "Saldo projetado em conta"
-                    }
-                }()
-
-                let accountFootnoteColor: Color = {
-                    if summary.isPast { return .secondary }
-                    switch cardAlertLevel {
-                    case .confirmedDeficit: return Color(hex: "#EF4444")
-                    case .possibleRisk: return Color(hex: "#D97706")
-                    case .none: return projectedBalanceValue >= 0 ? Color(hex: "#10B981") : Color(hex: "#EF4444")
-                    }
-                }()
-
-                let accountIcon: String = {
-                    switch cardAlertLevel {
-                    case .confirmedDeficit: return "exclamationmark.triangle.fill"
-                    case .possibleRisk: return "exclamationmark.circle.fill"
-                    case .none: return summary.isPast ? "checkmark.seal.fill" : "building.columns.fill"
-                    }
-                }()
-
-                MetricCardView(
-                    title: summary.projectedAccountBalanceTitle,
-                    value: BRLFormatters.currency(projectedBalanceValue),
-                    valueColor: nil,
-                    subtitle: accountSubtitleText,
-                    customSubtitle: accountCustomSubtitle,
-                    icon: accountIcon,
-                    tint: projectedBalanceTint,
-                    footnote: accountFootnote,
-                    footnoteColor: accountFootnoteColor,
-                    intraMonthAnalysis: summary.isPast ? nil : intraMonthAnalysis,
-                    cardHeight: rowCardHeight
-                )
-                .frame(maxWidth: .infinity)
+        let accountIcon: String = {
+            switch cardAlertLevel {
+            case .confirmedDeficit: return "exclamationmark.triangle.fill"
+            case .possibleRisk: return "exclamationmark.circle.fill"
+            case .none: return summary.isPast ? "checkmark.seal.fill" : "building.columns.fill"
             }
+        }()
+
+        let despesasSub = MetricCardView.despesasLancadasSubtitle(
+            paidExpense: summary.paidExpense,
+            pendingExpense: summary.pendingExpense,
+            isPast: summary.isPast,
+            isAnnual: isAnnual
+        )
+
+        let budgetSubtitle: String = {
+            if summary.isPast {
+                return "Período fechado (sem orçamentos)"
+            }
+            if summary.hasBudgetOverrun {
+                return "Estouro: \(BRLFormatters.currency(summary.totalBudgetsOverrun))"
+            }
+            if sinkingFundsReserve > 0.01 {
+                return "Tetos: \(BRLFormatters.currency(summary.categoryCeilingsRemaining)) • Cotas: \(BRLFormatters.currency(summary.specificQuotasRemaining)) • Caixinhas: \(BRLFormatters.currency(sinkingFundsReserve))"
+            }
+            return "Tetos: \(BRLFormatters.currency(summary.categoryCeilingsRemaining)) • Cotas: \(BRLFormatters.currency(summary.specificQuotasRemaining))"
+        }()
+
+        let surplusTint: Color = {
+            if summary.surplusAfterPlanning > 0 { return FinSenseTheme.emerald }
+            if summary.surplusAfterPlanning < 0 { return FinSenseTheme.coral }
+            return Color(hex: "#64748B")
+        }()
+
+        let surplusSubtitle: String = {
+            if summary.surplusAfterPlanning > 0 {
+                return "Superávit após despesas e tetos"
+            } else if summary.surplusAfterPlanning < 0 {
+                return "Déficit de \(BRLFormatters.currency(abs(summary.surplusAfterPlanning)))"
+            } else {
+                return "Equilíbrio exato (R$ 0)"
+            }
+        }()
+
+        HStack(alignment: .top, spacing: 14) {
+            // MARK: Left Hero Card (~42% width) — Saldo Previsto na Conta + Sparkline + Vale Intramês
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text(summary.projectedAccountBalanceTitle)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(projectedBalanceTint.opacity(colorScheme == .dark ? 0.16 : 0.12))
+                            .frame(width: 30, height: 30)
+                        Image(systemName: accountIcon)
+                            .font(.system(size: 13.5, weight: .semibold))
+                            .foregroundStyle(projectedBalanceTint)
+                    }
+                }
+
+                Text(BRLFormatters.currency(projectedBalanceValue))
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .foregroundStyle(projectedBalanceValue < 0 ? FinSenseTheme.coral : .primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .numericCurrencyTransition(value: projectedBalanceValue)
+
+                if summary.isPast {
+                    Text("Saldo final histórico conciliado")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                } else {
+                    (
+                        Text("Se não usar o orçamento: ")
+                            .foregroundColor(.secondary)
+                        + Text(BRLFormatters.currency(summary.projectedAccountBalance))
+                            .fontWeight(.semibold)
+                            .foregroundColor(summary.projectedAccountBalance >= 0 ? FinSenseTheme.emerald : FinSenseTheme.coral)
+                    )
+                    .font(.system(size: 12))
+                }
+
+                if let intra = intraMonthAnalysis, !summary.isPast, !intra.dailyPoints.isEmpty {
+                    IntraMonthSparklineView(analysis: intra, height: 52)
+                        .padding(.top, 2)
+                } else {
+                    Spacer(minLength: 8)
+                }
+
+                Spacer(minLength: 0)
+
+                // Hero Inline Footer Pill (Vale Intramês / Status Conciliado)
+                if !summary.isPast, cardAlertLevel != .none, let intra = intraMonthAnalysis {
+                    let pillColor = cardAlertLevel == .confirmedDeficit ? FinSenseTheme.coral : FinSenseTheme.amber
+                    Button(action: onOpenTransactions) {
+                        HStack(spacing: 8) {
+                            Image(systemName: cardAlertLevel == .confirmedDeficit ? "exclamationmark.triangle.fill" : "exclamationmark.circle.fill")
+                                .font(.system(size: 11.5, weight: .bold))
+                                .foregroundStyle(pillColor)
+                            Text(intra.alertSummaryText ?? (cardAlertLevel == .confirmedDeficit ? "Vale intramês detectado" : "Possível déficit por previsões"))
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(pillColor)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            Spacer(minLength: 4)
+                            Text(cardAlertLevel == .confirmedDeficit ? "Ver Corte →" : "Lançamentos →")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(pillColor)
+                        }
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(pillColor.opacity(colorScheme == .dark ? 0.14 : 0.10))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(pillColor.opacity(0.32), lineWidth: 0.75)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help(
+                        cardAlertLevel == .confirmedDeficit
+                            ? "Menor saldo projetado por transações: \(BRLFormatters.currency(intra.minimumBalance))"
+                            : "Com previsões: \(BRLFormatters.currency(intra.closingBalanceWithProvisions))"
+                    )
+                } else {
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(projectedBalanceTint)
+                            .frame(width: 6, height: 6)
+                        Text(
+                            summary.isPast
+                                ? "Resultado final registrado"
+                                : (projectedBalanceValue < 0 ? "Alerta: Risco de caixa negativo" : "Caixa intramês saudável")
+                        )
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(summary.isPast ? Color.secondary : projectedBalanceTint)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(FinSenseTheme.nestedSurface(for: colorScheme))
+                    )
+                }
+            }
+            .frame(minWidth: 330, idealWidth: 400, maxWidth: 460, minHeight: 256, alignment: .topLeading)
+            .bentoCard(padding: 18, cornerRadius: FinSenseTheme.cardCornerRadius, accent: projectedBalanceTint, isHighlighted: true)
+
+            // MARK: Right Asymmetric 5-KPI Bento Grid (~58% width)
+            VStack(spacing: 12) {
+                HStack(spacing: 12) {
+                    MetricCardView(
+                        title: isAnnual ? "Receitas Previstas (Ano)" : "Receitas Previstas",
+                        value: BRLFormatters.currency(summary.projectedIncome),
+                        subtitle: summary.isPast
+                            ? "\(BRLFormatters.currency(summary.receivedIncome)) recebidos"
+                            : "\(BRLFormatters.currency(summary.receivedIncome)) recebidos • \(BRLFormatters.currency(summary.pendingIncome)) a receber",
+                        icon: "arrow.down.left.circle.fill",
+                        tint: FinSenseTheme.emerald,
+                        footnote: summary.extraordinaryIncome > 0
+                            ? "Habitual: \(BRLFormatters.currency(summary.habitualIncome)) • Extra: \(BRLFormatters.currency(summary.extraordinaryIncome))"
+                            : nil,
+                        footnoteColor: FinSenseTheme.indigo,
+                        cardHeight: 122
+                    )
+
+                    MetricCardView(
+                        title: isAnnual ? "Despesas Lançadas (Ano)" : "Despesas Lançadas",
+                        value: BRLFormatters.currency(summary.recordedExpense),
+                        subtitle: despesasSub.text,
+                        customSubtitle: despesasSub.styled,
+                        icon: "arrow.up.right.circle.fill",
+                        tint: FinSenseTheme.coral,
+                        cardHeight: 122
+                    )
+                }
+
+                HStack(spacing: 12) {
+                    MetricCardView(
+                        title: isAnnual ? "Orçamentos Restantes" : "Orçamentos & Cotas",
+                        value: BRLFormatters.currency(summary.remainingBudgetsAndQuotas),
+                        subtitle: budgetSubtitle,
+                        icon: "tray.full.fill",
+                        tint: summary.hasBudgetOverrun ? FinSenseTheme.coral : FinSenseTheme.cyan,
+                        footnote: summary.isPast ? nil : (summary.hasBudgetOverrun ? "Orçamento excedido" : "Reservado para consumo"),
+                        footnoteColor: summary.hasBudgetOverrun ? FinSenseTheme.coral : .secondary,
+                        action: onEditProvisions,
+                        actionLabel: "Ver",
+                        actionIcon: "pencil",
+                        cardHeight: 122
+                    )
+
+                    MetricCardView(
+                        title: isAnnual ? "Gastos Planejados (Ano)" : "Gastos Planejados",
+                        value: BRLFormatters.currency(summary.totalPlannedExpenses),
+                        subtitle: summary.isPast
+                            ? "Gastos consolidados realizados"
+                            : "\(BRLFormatters.currency(summary.recordedExpense)) lançados + \(BRLFormatters.currency(summary.remainingBudgetsAndQuotas)) orçados",
+                        icon: "chart.bar.doc.horizontal.fill",
+                        tint: FinSenseTheme.cyan,
+                        footnote: summary.isPast ? nil : "Teto máximo planejado",
+                        footnoteColor: .secondary,
+                        cardHeight: 122
+                    )
+
+                    MetricCardView(
+                        title: isAnnual ? "Sobra Planejada (Ano)" : "Sobra Planejada",
+                        value: BRLFormatters.currency(summary.surplusAfterPlanning),
+                        valueColor: summary.surplusAfterPlanning < 0 ? FinSenseTheme.coral : nil,
+                        subtitle: surplusSubtitle,
+                        icon: summary.surplusAfterPlanning >= 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
+                        tint: surplusTint,
+                        footnote: summary.surplusAfterPlanning >= 0 ? "Sustentável" : "Déficit planejado",
+                        footnoteColor: surplusTint,
+                        cardHeight: 122
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 }
